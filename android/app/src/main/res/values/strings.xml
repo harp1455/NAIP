@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">NAIP</string>
+    <string name="title_activity_main">NAIP</string>
+    <string name="package_name">io.github.harp1455.naip</string>
+    <string name="custom_url_scheme">io.github.harp1455.naip</string>
+</resources>

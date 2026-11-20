@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="naip_bg">#111111</color>
+    <color name="naip_accent">#E8914F</color>
+</resources>

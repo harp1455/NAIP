@@ -1,0 +1,88 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-bg: #111111;
+  --color-panel: #1a1a1a;
+  --color-field: #121212;
+  --color-raised: #262626;
+  --color-line: #2e2e2e;
+  --color-fg: #ececec;
+  --color-dim: #9a9a9a;
+  --color-accent: #e8914f;
+  --color-accent-fg: #1b1206;
+  --color-danger: #e5645a;
+  --font-sans: Pretendard, 'Noto Sans KR', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'Roboto Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+textarea,
+input {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+input[type='range'] {
+  accent-color: var(--color-accent);
+}
+
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a3a transparent;
+}
+
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@keyframes sheet-in {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+}
+
+.sheet-in {
+  animation: sheet-in 0.18s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet-in {
+    animation: none;
+  }
+}
