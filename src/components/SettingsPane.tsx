@@ -2,10 +2,17 @@ import { useState, type ReactNode } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import { shareImage as shareFile } from '../lib/native'
 import { useCharacters } from '../stores/characters'
+import { useFragments } from '../stores/fragments'
+import { useScenes } from '../stores/scenes'
 import { useHistory } from '../stores/history'
 import { usePrompt } from '../stores/prompt'
 import { anlasOf, DELAY_MAX, DELAY_MIN, useSettings } from '../stores/settings'
-import { Button, IconButton, Row, SliderRow, TextInput, Toggle } from './ui'
+import { Button, IconButton, Row, Select, SliderRow, TextInput, Toggle } from './ui'
+
+const LIMITS = [0, 200, 500, 1000, 3000].map((value) => ({
+  value,
+  label: value ? `최근 ${value.toLocaleString()}장` : '제한 없음'
+}))
 
 const TIER_LABEL = { paper: 'Paper (무료)', tablet: 'Tablet', scroll: 'Scroll', opus: 'Opus' } as const
 
@@ -21,9 +28,13 @@ function Group(props: { title: string; children: ReactNode }): ReactNode {
 function exportBackup(): void {
   const p = usePrompt.getState()
   const c = useCharacters.getState()
+  const f = useFragments.getState()
+  const sc = useScenes.getState()
   const data = {
     app: 'naip',
-    version: 1,
+    version: 2,
+    fragments: { folders: f.folders, fragments: f.fragments },
+    scenes: { folders: sc.folders, scenes: sc.scenes },
     prompt: {
       base: p.base,
       additional: p.additional,
@@ -52,13 +63,17 @@ function importBackup(): void {
           app?: string
           prompt?: Record<string, unknown>
           characters?: Record<string, unknown>
+          fragments?: Record<string, unknown>
+          scenes?: Record<string, unknown>
         }
         if (data.app !== 'naip' || !data.prompt || !data.characters) {
           throw new Error('NAIP 백업 파일이 아닙니다')
         }
-        if (!window.confirm('현재 프롬프트·프리셋·캐릭터를 백업 내용으로 덮어쓸까요?')) return
+        if (!window.confirm('현재 프롬프트·프리셋·캐릭터·조각·씬을 백업 내용으로 덮어쓸까요?')) return
         usePrompt.setState(data.prompt)
         useCharacters.setState(data.characters)
+        if (data.fragments) useFragments.setState(data.fragments)
+        if (data.scenes) useScenes.setState(data.scenes)
         window.alert('백업을 불러왔습니다')
       } catch (e) {
         window.alert(`불러오기 실패: ${(e as Error).message}`)
@@ -149,13 +164,34 @@ export function SettingsPane(): ReactNode {
           <Row label="생성 중 화면 켜 두기" hint="화면이 꺼지면 안드로이드가 생성을 멈출 수 있습니다">
             <Toggle label="생성 중 화면 켜 두기" checked={s.keepAwake} onChange={(keepAwake) => s.patch({ keepAwake })} />
           </Row>
+          <Row label="백그라운드에서 계속 생성" hint="다른 앱을 쓰거나 화면을 꺼도 알림과 함께 계속 진행합니다">
+            <Toggle label="백그라운드에서 계속 생성" checked={s.background} onChange={(background) => s.patch({ background })} />
+          </Row>
+          <Row label="완료 시 진동" hint="여러 장 생성이 끝나면 진동으로 알립니다">
+            <Toggle label="완료 시 진동" checked={s.vibrate} onChange={(vibrate) => s.patch({ vibrate })} />
+          </Row>
+        </Group>
+
+        <Group title="저장">
           <Row label="갤러리에 자동 저장" hint="생성될 때마다 Pictures/NAIP 폴더에 저장">
             <Toggle label="갤러리에 자동 저장" checked={s.autoSave} onChange={(autoSave) => s.patch({ autoSave })} />
+          </Row>
+          <Row label="씬별 폴더로 나눠 저장" hint="씬으로 만든 이미지는 Pictures/NAIP/씬 이름 에 저장">
+            <Toggle label="씬별 폴더로 나눠 저장" checked={s.sceneFolders} onChange={(sceneFolders) => s.patch({ sceneFolders })} />
+          </Row>
+          <Row label="히스토리 보관 한도" hint="넘으면 즐겨찾기를 뺀 오래된 이미지부터 앱에서 지웁니다">
+            <Select
+              label="히스토리 보관 한도"
+              className="w-36"
+              value={s.historyLimit}
+              options={LIMITS}
+              onChange={(historyLimit) => s.patch({ historyLimit })}
+            />
           </Row>
         </Group>
 
         <Group title="데이터">
-          <Row label="백업" hint="프롬프트·프리셋·캐릭터를 JSON 파일로 내보내거나 불러옵니다">
+          <Row label="백업" hint="프롬프트·프리셋·캐릭터·조각·씬을 JSON 파일로 내보내거나 불러옵니다">
             <div className="flex gap-1.5">
               <Button onClick={exportBackup}>내보내기</Button>
               <Button onClick={importBackup}>불러오기</Button>

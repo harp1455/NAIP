@@ -14,11 +14,23 @@ interface SettingsState {
   delayMax: number
   autoSave: boolean
   keepAwake: boolean
+  /** 앱이 뒤로 가도 계속 생성 (포그라운드 서비스 + 진행 알림) */
+  background: boolean
+  /** 배치가 끝나면 진동 */
+  vibrate: boolean
+  /** 히스토리 보관 한도 (0 = 무제한). 넘으면 즐겨찾기를 뺀 오래된 것부터 삭제 */
+  historyLimit: number
+  /** 자동 저장 시 씬 이름 하위 폴더로 나눠 저장 */
+  sceneFolders: boolean
   subscription: SubscriptionInfo | null
   subscriptionError: string | null
   setToken: (token: string) => void
   setDelay: (min: number, max: number) => void
-  patch: (p: Partial<Pick<SettingsState, 'autoSave' | 'keepAwake'>>) => void
+  patch: (
+    p: Partial<
+      Pick<SettingsState, 'autoSave' | 'keepAwake' | 'background' | 'vibrate' | 'historyLimit' | 'sceneFolders'>
+    >
+  ) => void
   refreshSubscription: () => Promise<void>
 }
 
@@ -30,6 +42,10 @@ export const useSettings = create<SettingsState>()(
       delayMax: 1.3,
       autoSave: false,
       keepAwake: true,
+      background: true,
+      vibrate: true,
+      historyLimit: 0,
+      sceneFolders: true,
       subscription: null,
       subscriptionError: null,
       setToken: (token) => set({ token: token.trim(), subscription: null, subscriptionError: null }),
@@ -60,7 +76,11 @@ export const useSettings = create<SettingsState>()(
         delayMin: s.delayMin,
         delayMax: s.delayMax,
         autoSave: s.autoSave,
-        keepAwake: s.keepAwake
+        keepAwake: s.keepAwake,
+        background: s.background,
+        vibrate: s.vibrate,
+        historyLimit: s.historyLimit,
+        sceneFolders: s.sceneFolders
       })
     }
   )

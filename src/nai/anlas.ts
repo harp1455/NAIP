@@ -76,3 +76,27 @@ export function estimateAnlas(input: AnlasEstimateInput): AnlasEstimate {
     usesOpusUsage: isV5 && free
   }
 }
+
+export const UPSCALE_ANLAS_COST = 1
+
+/** 디렉터 툴 비용 (NAIS3 directorAugmentCost): 1~3MP로 정규화한 28스텝 생성 비용. 배경 제거는 3배+5, 무료 없음 */
+export function directorCost(method: string, width: number, height: number, isOpus: boolean): number {
+  if (width <= 0 || height <= 0) return 0
+  let w = width
+  let h = height
+  const maxPixels = 3_145_728
+  const minPixels = 1_048_576
+  if (w * h > maxPixels) {
+    const r = Math.sqrt(maxPixels / (w * h))
+    w = Math.floor(w * r)
+    h = Math.floor(h * r)
+  }
+  if (w * h < minPixels) {
+    const r = Math.sqrt(minPixels / (w * h))
+    w = Math.floor(w * r)
+    h = Math.floor(h * r)
+  }
+  const bg = method === 'bg-removal'
+  const est = estimateAnlas({ width: w, height: h, steps: 28, isOpus: bg ? false : isOpus, batchCount: 1 })
+  return bg ? est.perImage * 3 + 5 : est.generation
+}

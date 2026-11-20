@@ -10,9 +10,13 @@ import {
   processCharRefImage,
   resizeToPngBase64
 } from '../lib/image'
-import { fileNameFor, saveToGallery, setKeepAwake } from '../lib/native'
+import type { SettingsSnapshot } from '../lib/db'
+import { processWildcards, resetSequentialCounters } from '../nai/fragments'
+import { fileNameFor, job, saveToGallery, setKeepAwake } from '../lib/native'
 import { randomSeed, sleep, uid } from '../lib/util'
 import { useCharacters } from './characters'
+import { fragmentSource } from './fragments'
+import { appendPrompt, useScenes } from './scenes'
 import { useHistory } from './history'
 import { mergePromptParts, usePrompt } from './prompt'
 import { useRefs, vibeKey } from './refs'
@@ -30,7 +34,10 @@ interface GenerationState {
   error: string | null
   /** 미리보기에 띄울 가장 최근 결과 */
   latestId: number | null
-  start: () => Promise<void>
+  /** 배치 시작 시각 (남은 시간 추정용) */
+  startedAt: number
+  /** scenes를 주면 그 씬들의 예약분을, 없으면 메인 프롬프트를 장수만큼 생성 */
+  start: (scenes?: number[]) => Promise<void>
   stop: () => void
   setLatest: (id: number | null) => void
 }
@@ -82,9 +89,10 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
   failed: 0,
   error: null,
   latestId: null,
+  startedAt: 0,
   setLatest: (id) => set({ latestId: id }),
   stop: () => controller?.abort(),
-  start: async () => {
+  start: async (sceneIds) => {
     if (get().running) return
     const settings = useSettings.getState()
     const token = settings.token
@@ -92,11 +100,55 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
 
     // ── 시작 시점의 설정을 스냅샷 — 진행 중 편집은 다음 배치부터 반영
     const prompt = usePrompt.getState()
-    const count = Math.max(1, Math.floor(prompt.count))
     const fixedSeed = prompt.seed.trim() === '' ? null : Number(prompt.seed)
     const base = buildRequest(0)
     const caps = modelCapabilities(base.model)
     const source = useSource.getState()
+    const fragments = fragmentSource()
+    const snap: SettingsSnapshot = {
+      base: prompt.base,
+      additional: prompt.additional,
+      detail: prompt.detail,
+      negative: prompt.negative,
+      params: { ...prompt.params },
+      chars: base.characterPrompts
+        .filter((c) => c.enabled)
+        .map((c) => ({
+          name: c.name ?? '',
+          prompt: c.prompt,
+          negative: c.negativePrompt,
+          ...(c.center ? { center: c.center } : {})
+        }))
+    }
+
+    // ── 생성 계획: 한 항목 = 서버 요청 1번 = 이미지 1장
+    interface PlanItem {
+      scene?: { id: number; name: string; prompt: string; negative: string }
+      size?: { width: number; height: number }
+      /** 고정 시드일 때 더할 오프셋 (씬마다 0부터) */
+      offset: number
+    }
+    const plan: PlanItem[] = []
+    if (sceneIds) {
+      const want = new Set(sceneIds)
+      for (const sc of useScenes.getState().scenes) {
+        if (!want.has(sc.id)) continue
+        for (let i = 0; i < sc.reserve; i++) {
+          plan.push({
+            scene: { id: sc.id, name: sc.name, prompt: sc.prompt, negative: sc.negative },
+            // i2i 소스가 있으면 소스에 맞춘 메인 해상도를 유지한다
+            ...(sc.size && !source.image ? { size: sc.size } : {}),
+            offset: i
+          })
+        }
+      }
+      if (!plan.length) return set({ error: '예약된 씬이 없습니다. 씬 카드에서 장수를 정해 주세요' })
+    } else {
+      const count = Math.max(1, Math.floor(prompt.count))
+      for (let i = 0; i < count; i++) plan.push({ offset: i })
+    }
+    const count = plan.length
+
     const vibeRows = caps.vibes ? useRefs.getState().vibes.filter((v) => v.enabled) : []
     const refRows = caps.characterReferences
       ? useRefs.getState().charRefs.filter((r) => r.enabled)
@@ -104,8 +156,19 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
 
     controller = new AbortController()
     const signal = controller.signal
-    set({ running: true, phase: 'preparing', total: count, done: 0, failed: 0, error: null })
+    set({
+      running: true,
+      phase: 'preparing',
+      total: count,
+      done: 0,
+      failed: 0,
+      error: null,
+      startedAt: Date.now()
+    })
     if (settings.keepAwake) setKeepAwake(true)
+    if (settings.background) job.start(`0/${count}장 준비 중`)
+    resetSequentialCounters()
+    let stoppedByUser = false
 
     try {
       // ── 레퍼런스 준비 (배치당 1회)
@@ -114,6 +177,7 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
         const key = vibeKey(base.model, v.infoExtracted)
         let encoded = v.encodings[key]
         if (!encoded) {
+          if (!v.image) throw new Error(`"${v.name}" 바이브에 ${base.model} 인코딩이 없습니다`)
           encoded = await encodeVibe(token, v.image, v.infoExtracted, base.model, signal)
           useRefs.getState().setVibeEncoding(v.id, key, encoded)
         }
@@ -150,13 +214,33 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
 
       // ── 1장씩 count번 요청 (요청당 n_samples: 1)
       for (let i = 0; i < count; i++) {
-        const seed = fixedSeed === null || !Number.isFinite(fixedSeed) ? randomSeed() : fixedSeed + i
-        const request: GenerationRequest = { ...base, model, seed }
+        const item = plan[i]
+        const seed =
+          fixedSeed === null || !Number.isFinite(fixedSeed)
+            ? randomSeed()
+            : (fixedSeed + item.offset) % 4294967296
+        // 조각(와일드카드)은 장마다 새로 뽑는다
+        const wild = (text: string): string => processWildcards(text, fragments)
+        const request: GenerationRequest = {
+          ...base,
+          ...(item.size ?? {}),
+          model,
+          seed,
+          prompt: wild(appendPrompt(base.prompt, item.scene?.prompt ?? '')),
+          negativePrompt: wild(appendPrompt(base.negativePrompt, item.scene?.negative ?? '')),
+          characterPrompts: base.characterPrompts.map((c) => ({
+            ...c,
+            prompt: wild(c.prompt),
+            negativePrompt: wild(c.negativePrompt)
+          }))
+        }
         const buildOpts: BuildOptions = {
           ...(vibes.length ? { vibes } : {}),
           ...(characterReferences.length ? { characterReferences } : {}),
           ...(i2iBase ? { i2i: { ...i2iBase, extraNoiseSeed: Math.max(0, seed - 1) } } : {})
         }
+        const label = item.scene ? ` · ${item.scene.name}` : ''
+        if (settings.background) job.update(`${i + 1}/${count}장 생성 중${label}`, i, count)
 
         // 재시도 대상은 네트워크 요청뿐 — 응답을 받은 뒤의 저장 오류로 다시 요청(이중 과금)하지 않는다
         let result: Awaited<ReturnType<typeof generateImage>> | null = null
@@ -202,16 +286,22 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
               kind,
               prompt: payload.input,
               negative: String(payload.parameters.negative_prompt ?? ''),
-              mime: image.type
+              mime: image.type,
+              snap,
+              ...(item.scene ? { sceneId: item.scene.id, sceneName: item.scene.name } : {})
             },
             image
           )
           set((s) => ({ done: s.done + 1, latestId: id, error: null }))
+          // 씬 예약은 실제로 뽑힌 만큼만 줄인다 (중지·실패분은 예약에 남는다)
+          if (item.scene) useScenes.getState().bumpReserve([item.scene.id], -1)
           if (settings.autoSave) {
-            void saveToGallery(image, fileNameFor(id, seed, image.type)).catch((e: Error) =>
+            const folder = settings.sceneFolders ? item.scene?.name : undefined
+            void saveToGallery(image, fileNameFor(id, seed, image.type), folder).catch((e: Error) =>
               set({ error: `갤러리 저장 실패: ${e.message}` })
             )
           }
+          if ((i + 1) % 10 === 0) void useSettings.getState().refreshSubscription()
         }
 
         if (i < count - 1) {
@@ -222,18 +312,26 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
         }
       }
     } catch (e) {
-      if (!isAbort(e)) set({ error: (e as Error).message })
+      if (isAbort(e)) stoppedByUser = true
+      else set({ error: (e as Error).message })
     } finally {
       controller = null
+      const { done, failed, error } = get()
       set({ running: false, phase: 'idle' })
       setKeepAwake(false)
+      const summary = error
+        ? `오류로 중단 — ${done}/${count}장 완료`
+        : `${done}장 생성 완료${failed ? ` (실패 ${failed}장)` : ''}`
+      job.stop(stoppedByUser ? undefined : summary, settings.vibrate && !stoppedByUser && count > 1)
       void useSettings.getState().refreshSubscription()
     }
   }
 }))
 
 /** 현재 설정 기준 예상 Anlas (상단 표시용) */
-export function estimateCurrent(): AnlasEstimate {
+export function estimateCurrent(
+  override?: { width: number; height: number; batchCount: number }
+): AnlasEstimate {
   const p = usePrompt.getState()
   const caps = modelCapabilities(p.params.model)
   const source = useSource.getState()
@@ -242,15 +340,35 @@ export function estimateCurrent(): AnlasEstimate {
   const sub = useSettings.getState().subscription
   return estimateAnlas({
     model: p.params.model,
-    width: p.params.width,
-    height: p.params.height,
+    width: override?.width ?? p.params.width,
+    height: override?.height ?? p.params.height,
     steps: p.params.steps,
     strength: source.image ? source.strength : 1,
     charRefCount: caps.characterReferences ? refs.charRefs.filter((r) => r.enabled).length : 0,
     isOpus: sub?.tier === 'opus',
-    batchCount: Math.max(1, p.count),
+    batchCount: override?.batchCount ?? Math.max(1, p.count),
     unencodedVibes: vibes.filter((v) => !v.encodings[vibeKey(p.params.model, v.infoExtracted)]).length,
     vibeCount: vibes.length,
     opusUsageExhausted: sub?.usage ? sub.usage.isNegative : undefined
   })
+}
+
+/** 씬 예약분 전체의 예상 Anlas (씬마다 해상도가 다를 수 있어 따로 더한다) */
+export function estimateScenes(sceneIds: number[]): { count: number; total: number } {
+  const p = usePrompt.getState().params
+  const hasSource = !!useSource.getState().image
+  const want = new Set(sceneIds)
+  let count = 0
+  let total = 0
+  let first = true
+  for (const sc of useScenes.getState().scenes) {
+    if (!want.has(sc.id) || sc.reserve <= 0) continue
+    const size = sc.size && !hasSource ? sc.size : { width: p.width, height: p.height }
+    const est = estimateCurrent({ ...size, batchCount: sc.reserve })
+    // 바이브 인코딩 비용은 배치당 한 번만
+    total += est.total - (first ? 0 : est.vibeEncoding)
+    count += sc.reserve
+    first = false
+  }
+  return { count, total }
 }

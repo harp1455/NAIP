@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Coins, History, Image as ImageIcon, PenLine, Settings } from 'lucide-react'
+import { Clapperboard, Coins, History, Image as ImageIcon, PenLine, Settings } from 'lucide-react'
 import { App as CapApp } from '@capacitor/app'
 import { closeTop } from './lib/back'
 import { isNative } from './lib/native'
@@ -10,7 +10,11 @@ import { usePrompt } from './stores/prompt'
 import { useRefs } from './stores/refs'
 import { anlasOf, useSettings } from './stores/settings'
 import { useSource } from './stores/source'
+import { useDirector } from './stores/director'
 import { CharacterSheet } from './components/CharacterSheet'
+import { DirectorSheet } from './components/DirectorSheet'
+import { FragmentSheet } from './components/FragmentSheet'
+import { ScenePane } from './components/ScenePane'
 import { GenerateBar } from './components/GenerateBar'
 import { ImageViewer } from './components/ImageViewer'
 import { HistoryPane, PreviewPane } from './components/Panes'
@@ -21,10 +25,11 @@ import { CharRefSheet, VibeSheet } from './components/RefSheets'
 import { SettingsPane } from './components/SettingsPane'
 import { SourceSheet } from './components/SourceSheet'
 
-type Tab = 'prompt' | 'result' | 'history' | 'settings'
+type Tab = 'prompt' | 'scenes' | 'result' | 'history' | 'settings'
 
 const TABS: { id: Tab; label: string; icon: typeof PenLine }[] = [
   { id: 'prompt', label: '프롬프트', icon: PenLine },
+  { id: 'scenes', label: '씬', icon: Clapperboard },
   { id: 'result', label: '결과', icon: ImageIcon },
   { id: 'history', label: '히스토리', icon: History },
   { id: 'settings', label: '설정', icon: Settings }
@@ -78,6 +83,7 @@ export default function App(): ReactNode {
   const [sheet, setSheet] = useState<SheetName | null>(null)
   const viewing = useHistory((s) => s.viewing)
   const running = useGeneration((s) => s.running)
+  const directorOpen = useDirector((s) => s.open)
   const shown: Tab = wide && tab === 'prompt' ? 'result' : tab
 
   useEffect(() => {
@@ -87,8 +93,15 @@ export default function App(): ReactNode {
 
   // 생성을 시작하면 좁은 화면에서는 결과 탭으로 넘어가 진행을 보여 준다
   useEffect(() => {
-    if (running) setTab((t) => (t === 'prompt' ? 'result' : t))
+    if (running) setTab((t) => (t === 'prompt' || t === 'scenes' ? 'result' : t))
   }, [running])
+
+  // 다른 화면에서 탭 전환을 요청할 때 (예: 씬 카드의 "이미지 보기")
+  useEffect(() => {
+    const on = (e: Event): void => setTab((e as CustomEvent<Tab>).detail)
+    window.addEventListener('naip:tab', on)
+    return () => window.removeEventListener('naip:tab', on)
+  }, [])
 
   useEffect(() => {
     if (!isNative) return
@@ -144,6 +157,13 @@ export default function App(): ReactNode {
         )}
         {shown !== 'prompt' && (
           <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {shown === 'scenes' && (
+              <ScenePane
+                bar={(ids, count, cost) => (
+                  <GenerateBar openParams={() => setSheet('params')} scene={{ ids, count, cost }} />
+                )}
+              />
+            )}
             {shown === 'result' && <PreviewPane />}
             {shown === 'history' && <HistoryPane />}
             {shown === 'settings' && <SettingsPane />}
@@ -180,6 +200,8 @@ export default function App(): ReactNode {
       {sheet === 'refs' && <CharRefSheet onClose={() => setSheet(null)} />}
       {sheet === 'params' && <ParamsSheet onClose={() => setSheet(null)} />}
       {sheet === 'presets' && <PresetSheet onClose={() => setSheet(null)} />}
+      {sheet === 'fragments' && <FragmentSheet onClose={() => setSheet(null)} />}
+      {directorOpen && <DirectorSheet />}
       {viewing !== null && (
         <ImageViewer
           onUseSource={() => {

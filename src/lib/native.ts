@@ -3,8 +3,16 @@ import { blobToBase64 } from './image'
 
 /** android/app/src/main/java/.../NaipNativePlugin.java 와 짝 */
 interface NaipNativePlugin {
-  saveToGallery(opts: { base64: string; fileName: string; mimeType: string }): Promise<{ uri: string }>
+  saveToGallery(opts: {
+    base64: string
+    fileName: string
+    mimeType: string
+    folder?: string
+  }): Promise<{ uri: string }>
   setKeepAwake(opts: { on: boolean }): Promise<void>
+  startJob(opts: { text: string }): Promise<void>
+  updateJob(opts: { text: string; done: number; total: number }): Promise<void>
+  stopJob(opts: { text?: string; vibrate: boolean }): Promise<void>
 }
 
 const NaipNative = registerPlugin<NaipNativePlugin>('NaipNative')
@@ -18,12 +26,14 @@ export function fileNameFor(id: number, seed: number, mime: string): string {
 }
 
 /** 갤러리(Pictures/NAIP)에 저장. 웹에서는 다운로드로 대체 */
-export async function saveToGallery(blob: Blob, fileName: string): Promise<void> {
+export async function saveToGallery(blob: Blob, fileName: string, folder?: string): Promise<void> {
   if (isNative) {
+    const sub = folder?.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim().slice(0, 60)
     await NaipNative.saveToGallery({
       base64: await blobToBase64(blob),
       fileName,
-      mimeType: blob.type || 'image/png'
+      mimeType: blob.type || 'image/png',
+      ...(sub ? { folder: sub } : {})
     })
     return
   }
@@ -55,4 +65,19 @@ export async function shareImage(blob: Blob, fileName: string): Promise<void> {
 
 export function setKeepAwake(on: boolean): void {
   if (isNative) void NaipNative.setKeepAwake({ on }).catch(() => {})
+}
+
+/** 백그라운드 생성용 포그라운드 서비스 + 진행 알림 (웹에서는 아무것도 하지 않음) */
+export const job = {
+  start(text: string): void {
+    if (isNative) void NaipNative.startJob({ text }).catch(() => {})
+  },
+  update(text: string, done: number, total: number): void {
+    if (isNative) void NaipNative.updateJob({ text, done, total }).catch(() => {})
+  },
+  /** text를 주면 앱이 뒤에 있을 때 완료 알림을 남긴다 */
+  stop(text: string | undefined, vibrate: boolean): void {
+    if (isNative) void NaipNative.stopJob({ ...(text ? { text } : {}), vibrate }).catch(() => {})
+    else if (vibrate) navigator.vibrate?.(200)
+  }
 }

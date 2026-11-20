@@ -6,11 +6,14 @@ import { usePrompt } from '../stores/prompt'
 import { useRefs, vibeKey } from '../stores/refs'
 import { Button, Empty, IconButton, Select, Sheet, SliderRow, Toggle } from './ui'
 
-function useAdder(add: (files: File[]) => Promise<void>): [boolean, string | null, () => void] {
+function useAdder(
+  add: (files: File[]) => Promise<void>,
+  accept?: string
+): [boolean, string | null, () => void] {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const run = (): void => {
-    void pickImageFiles(true).then(async (files) => {
+    void pickImageFiles(true, accept).then(async (files) => {
       if (!files.length) return
       setBusy(true)
       setError(null)
@@ -29,7 +32,7 @@ function useAdder(add: (files: File[]) => Promise<void>): [boolean, string | nul
 export function VibeSheet(props: { onClose: () => void }): ReactNode {
   const { vibes, addVibes, patchVibe, removeVibe } = useRefs()
   const model = usePrompt((p) => p.params.model)
-  const [busy, error, add] = useAdder(addVibes)
+  const [busy, error, add] = useAdder(addVibes, 'image/*,.naiv4vibe,application/json')
   return (
     <Sheet
       title="바이브 트랜스퍼"
@@ -43,7 +46,7 @@ export function VibeSheet(props: { onClose: () => void }): ReactNode {
     >
       <p className="mb-2 text-xs text-dim">
         켜 둔 바이브는 생성 시작 때 한 번 인코딩됩니다(이미지당 2 Anlas). 같은 모델·정보 추출값이면
-        저장된 인코딩을 다시 씁니다.
+        저장된 인코딩을 다시 씁니다. NovelAI에서 내보낸 .naiv4vibe 파일도 추가할 수 있습니다(인코딩 비용 없음).
       </p>
       {error && <p className="mb-2 text-xs text-danger">{error}</p>}
       {vibes.length === 0 && <Empty>추가된 바이브가 없습니다</Empty>}
@@ -53,10 +56,14 @@ export function VibeSheet(props: { onClose: () => void }): ReactNode {
           return (
             <li key={v.id} className="rounded-lg border border-line bg-field p-2.5">
               <div className="flex items-center gap-2.5">
-                <img src={v.thumb} alt="" className="h-14 w-14 shrink-0 rounded-md object-cover" />
+                {v.thumb ? (
+                  <img src={v.thumb} alt="" className="h-14 w-14 shrink-0 rounded-md object-cover" />
+                ) : (
+                  <div className="h-14 w-14 shrink-0 rounded-md bg-raised" />
+                )}
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm">{v.name}</div>
-                  <div className="text-xs text-dim">{encoded ? '인코딩됨' : '미인코딩 · 2 Anlas'}</div>
+                  <div className="text-xs text-dim">{encoded ? '인코딩됨' : v.image ? '미인코딩 · 2 Anlas' : '이 모델·추출값의 인코딩 없음'}</div>
                 </div>
                 <Toggle
                   label={`${v.name} 사용`}

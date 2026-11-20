@@ -62,3 +62,39 @@ describe('anlas', () => {
     expect(estimateAnlas({ ...base, isOpus: false }).total).toBe(20 * 8)
   })
 })
+
+import { processWildcards, resetSequentialCounters } from '../src/nai/fragments'
+import { appendPrompt } from '../src/stores/scenes'
+
+describe('fragments', () => {
+  const source = {
+    getLines: (path: string) =>
+      ({ hair: ['black hair', 'blonde hair'], 'set/pose': ['sitting, <hair>'] })[path] ?? null
+  }
+
+  it('replaces fragment references, including nested and folder paths', () => {
+    const out = processWildcards('1girl, <Hair>, <set / pose>', source, () => 0)
+    expect(out).toBe('1girl, black hair, sitting, black hair')
+  })
+
+  it('walks sequential fragments in order and keeps unknown references', () => {
+    resetSequentialCounters()
+    expect(processWildcards('<*hair>', source)).toBe('black hair')
+    expect(processWildcards('<*hair>', source)).toBe('blonde hair')
+    expect(processWildcards('<*hair>, <nope>', source)).toBe('black hair, <nope>')
+  })
+
+  it('picks from inline and slash alternatives without touching weights', () => {
+    expect(processWildcards('<a|b>, red/blue, 1.2::artist:x::', source, () => 0.99)).toBe(
+      'b, blue, 1.2::artist:x::'
+    )
+  })
+})
+
+describe('scenes', () => {
+  it('appends scene prompts without doubling commas', () => {
+    expect(appendPrompt('1girl, ', ', beach')).toBe('1girl, beach')
+    expect(appendPrompt('', 'beach')).toBe('beach')
+    expect(appendPrompt('1girl', '')).toBe('1girl')
+  })
+})

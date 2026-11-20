@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ChevronLeft,
   ChevronRight,
@@ -7,15 +7,22 @@ import {
   Info,
   Pin,
   Share2,
+  SlidersHorizontal,
+  Star,
+  Wand2,
   Trash2,
   X
 } from 'lucide-react'
 import * as db from '../lib/db'
+import { applyImported, applySnapshot } from '../lib/apply'
 import { useBackClose } from '../lib/back'
+import { readImageSettings } from '../lib/metadata'
 import { fileNameFor, saveToGallery, shareImage } from '../lib/native'
 import { cx } from '../lib/util'
 import { imageUrl, useHistory } from '../stores/history'
+import { useDirector } from '../stores/director'
 import { usePrompt } from '../stores/prompt'
+import { useSettings } from '../stores/settings'
 import { useSource } from '../stores/source'
 
 function Action(props: {
@@ -23,24 +30,27 @@ function Action(props: {
   onClick: () => void
   children: ReactNode
   danger?: boolean
+  pressed?: boolean
 }): ReactNode {
   return (
     <button
       type="button"
+      aria-pressed={props.pressed}
       onClick={props.onClick}
       className={cx(
-        'flex h-14 min-w-0 flex-1 flex-col items-center justify-center gap-1 text-[11px] active:bg-white/10',
+        'flex h-14 min-w-[68px] shrink-0 grow flex-col items-center justify-center gap-1 whitespace-nowrap px-2 text-[11px] active:bg-white/10',
         props.danger ? 'text-danger' : 'text-fg'
       )}
     >
       {props.children}
-      <span className="truncate">{props.label}</span>
+      <span>{props.label}</span>
     </button>
   )
 }
 
 export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
-  const { items, viewing, view, remove } = useHistory()
+  const { items, viewing, view, remove, toggleFav } = useHistory()
+  const swipe = useRef<{ x: number; y: number } | null>(null)
   const index = items.findIndex((m) => m.id === viewing)
   const meta = items[index]
   const [url, setUrl] = useState<string | null>(null)
@@ -105,6 +115,22 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
       <div
         className={cx('relative min-h-0 flex-1', zoomed ? 'overflow-auto' : 'overflow-hidden')}
         onClick={() => setZoomed(!zoomed)}
+        onTouchStart={(e) => {
+          const t = e.touches[0]
+          swipe.current = e.touches.length === 1 ? { x: t.clientX, y: t.clientY } : null
+        }}
+        onTouchEnd={(e) => {
+          const from = swipe.current
+          swipe.current = null
+          if (!from || zoomed) return
+          const t = e.changedTouches[0]
+          const dx = t.clientX - from.x
+          // 가로로 충분히 밀었을 때만 넘긴다 (세로 스크롤·탭과 구분)
+          if (Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(t.clientY - from.y) * 1.5) {
+            e.preventDefault()
+            go(dx < 0 ? 1 : -1)
+          }
+        }}
       >
         {url ? (
           <img
@@ -152,7 +178,8 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
       {info && (
         <div className="scroll-thin max-h-[32vh] shrink-0 select-text overflow-y-auto border-t border-line bg-panel p-3 text-xs">
           <p className="text-dim">
-            {meta.model} · {meta.kind} · {new Date(meta.ts).toLocaleString('ko-KR')}
+            {meta.model} · {meta.kind}
+            {meta.sceneName ? ` · 씬 ${meta.sceneName}` : ''} · {new Date(meta.ts).toLocaleString('ko-KR')}
           </p>
           <p className="mt-2 text-dim">프롬프트</p>
           <p className="mt-0.5 whitespace-pre-wrap break-words font-mono">{meta.prompt}</p>
@@ -162,8 +189,20 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
       )}
 
       <footer className="safe-bottom shrink-0 border-t border-line bg-panel">
-        <div className="flex">
-          <Action label="저장" onClick={() => void withBlob(saveToGallery, '갤러리에 저장했습니다')}>
+        <div className="scroll-thin flex overflow-x-auto">
+          <Action label="즐겨찾기" pressed={!!meta.fav} onClick={() => void toggleFav(meta.id)}>
+            <Star size={19} className={meta.fav ? 'fill-accent text-accent' : ''} />
+          </Action>
+          <Action
+            label="저장"
+            onClick={() =>
+              void withBlob(
+                (blob, name) =>
+                  saveToGallery(blob, name, useSettings.getState().sceneFolders ? meta.sceneName : undefined),
+                '갤러리에 저장했습니다'
+              )
+            }
+          >
             <Download size={19} />
           </Action>
           <Action label="공유" onClick={() => void withBlob(shareImage)}>
@@ -180,6 +219,34 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
             }
           >
             <ImageUp size={19} />
+          </Action>
+          <Action
+            label="도구"
+            onClick={() =>
+              void withBlob(async (blob) => {
+                view(null)
+                useDirector.getState().show(blob)
+              })
+            }
+          >
+            <Wand2 size={19} />
+          </Action>
+          <Action
+            label="설정 적용"
+            onClick={() => {
+              if (!window.confirm('이 이미지의 프롬프트·설정·캐릭터로 현재 내용을 덮어쓸까요?')) return
+              if (meta.snap) {
+                applySnapshot(meta.snap)
+                return setNote('설정을 적용했습니다')
+              }
+              void withBlob(async (blob) => {
+                const m = await readImageSettings(blob)
+                if (!m) throw new Error('이 이미지에는 생성 정보가 없습니다')
+                applyImported(m)
+              }, '설정을 적용했습니다')
+            }}
+          >
+            <SlidersHorizontal size={19} />
           </Action>
           <Action
             label="시드 고정"

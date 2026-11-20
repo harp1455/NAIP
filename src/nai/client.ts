@@ -100,3 +100,74 @@ export async function encodeVibe(
   }
   return btoa(bin)
 }
+
+async function lastZipImage(res: Response, pick?: RegExp): Promise<Blob> {
+  const zip = await JSZip.loadAsync(await res.arrayBuffer())
+  const names = Object.keys(zip.files)
+  const entry = pick ? names.find((n) => pick.test(n)) : names[names.length - 1]
+  if (!entry) throw new Error('응답 zip에 이미지가 없습니다')
+  const bytes = await zip.file(entry)!.async('uint8array')
+  return new Blob([bytes as BlobPart], { type: 'image/png' })
+}
+
+export type DirectorMethod =
+  | 'bg-removal'
+  | 'lineart'
+  | 'sketch'
+  | 'colorize'
+  | 'emotion'
+  | 'declutter'
+  | 'declutter-keep-bubbles'
+
+/** 디렉터 툴 (augment-image). colorize/emotion만 prompt·defry를 보낸다. zip의 마지막 항목이 결과 */
+export async function augmentImage(
+  token: string,
+  opts: {
+    method: DirectorMethod
+    imageBase64: string
+    width: number
+    height: number
+    prompt?: string
+    defry?: number
+  },
+  signal?: AbortSignal
+): Promise<Blob> {
+  const body: Record<string, unknown> = {
+    req_type: opts.method,
+    image: opts.imageBase64,
+    width: opts.width,
+    height: opts.height
+  }
+  if (opts.prompt !== undefined) body.prompt = opts.prompt
+  if (opts.defry !== undefined) body.defry = opts.defry
+  const res = await fetch(ENDPOINTS.augmentImage, {
+    method: 'POST',
+    headers: headers(token),
+    body: JSON.stringify(body),
+    signal
+  })
+  if (!res.ok) await fail('디렉터 툴 실패', res)
+  return lastZipImage(res)
+}
+
+export const UPSCALE_MODEL = 'nai-diffusion-5-curated'
+
+/** V5 Curated 2x 업스케일 (고정 1 Anlas). multipart: image 파트 + request(JSON) 파트 */
+export async function upscaleImage(token: string, image: Blob, signal?: AbortSignal): Promise<Blob> {
+  const body = new FormData()
+  body.append('image', image)
+  body.append(
+    'request',
+    new Blob([JSON.stringify({ image: 'image', model: UPSCALE_MODEL, declared_blur_sigma: 0 })], {
+      type: 'application/json'
+    })
+  )
+  const res = await fetch(ENDPOINTS.upscale, {
+    method: 'POST',
+    headers: headers(token, false),
+    body,
+    signal
+  })
+  if (!res.ok) await fail('업스케일 실패', res)
+  return lastZipImage(res, /^image.*\.png$/i)
+}

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import * as db from '../lib/db'
-import type { HistoryMeta } from '../lib/db'
+import type { HistoryFilter, HistoryMeta } from '../lib/db'
+import { useSettings } from './settings'
 
 const PAGE = 60
 
@@ -11,6 +12,10 @@ interface HistoryState {
   hasMore: boolean
   /** 뷰어에 열린 이미지 id */
   viewing: number | null
+  /** null = 전체. 즐겨찾기/씬 필터가 걸리면 items는 필터 결과 전체 */
+  filter: HistoryFilter
+  setFilter: (filter: HistoryFilter) => Promise<void>
+  toggleFav: (id: number) => Promise<void>
   init: () => Promise<void>
   loadMore: () => Promise<void>
   add: (meta: HistoryMeta, blob: Blob) => Promise<void>
@@ -25,12 +30,30 @@ export const useHistory = create<HistoryState>()((set, get) => ({
   loaded: false,
   hasMore: false,
   viewing: null,
+  filter: null,
+  setFilter: async (filter) => {
+    if (!filter) {
+      set({ filter: null })
+      return get().init()
+    }
+    set({ filter, items: await db.listFiltered(filter), hasMore: false })
+  },
+  toggleFav: async (id) => {
+    const meta = get().items.find((m) => m.id === id)
+    if (!meta) return
+    const next = { ...meta }
+    if (meta.fav) delete next.fav
+    else next.fav = 1
+    await db.putMeta(next)
+    set((s) => ({ items: s.items.map((m) => (m.id === id ? next : m)) }))
+  },
   init: async () => {
     const [items, total] = await Promise.all([db.listMeta(PAGE), db.countImages()])
     set({ items, total, loaded: true, hasMore: items.length < total })
   },
   loadMore: async () => {
-    const { items, total } = get()
+    const { items, total, filter } = get()
+    if (filter) return
     const last = items[items.length - 1]
     if (!last) return
     const more = await db.listMeta(PAGE, last.id)
@@ -39,7 +62,16 @@ export const useHistory = create<HistoryState>()((set, get) => ({
   },
   add: async (meta, blob) => {
     await db.addImage(meta, blob)
-    set((s) => ({ items: [meta, ...s.items], total: s.total + 1 }))
+    const f = get().filter
+    const matches = !f || ('sceneId' in f && f.sceneId === meta.sceneId)
+    set((s) => ({ items: matches ? [meta, ...s.items] : s.items, total: s.total + 1 }))
+    // 보관 한도를 넘으면 즐겨찾기를 뺀 오래된 것부터 정리
+    const limit = useSettings.getState().historyLimit
+    const over = limit > 0 ? get().total - limit : 0
+    if (over > 0) {
+      const ids = await db.oldestIds(over)
+      if (ids.length) await get().remove(ids)
+    }
   },
   remove: async (ids) => {
     await db.deleteImages(ids)

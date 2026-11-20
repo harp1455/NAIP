@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Check, CheckSquare, Download, Trash2, X } from 'lucide-react'
+import { Check, CheckSquare, Download, Star, Trash2, X } from 'lucide-react'
 import * as db from '../lib/db'
 import { fileNameFor, saveToGallery } from '../lib/native'
 import { cx } from '../lib/util'
 import { useGeneration } from '../stores/generation'
+import { useScenes } from '../stores/scenes'
+import { useSettings } from '../stores/settings'
 import { imageUrl, useHistory } from '../stores/history'
 import { Button, Empty, IconButton } from './ui'
 
@@ -72,7 +74,12 @@ export function PreviewPane(): ReactNode {
 }
 
 export function HistoryPane(): ReactNode {
-  const { items, total, hasMore, loadMore, view, remove } = useHistory()
+  const { items, total, hasMore, loadMore, view, remove, filter, setFilter } = useHistory()
+  const scenes = useScenes((x) => x.scenes)
+  const sceneName =
+    filter && 'sceneId' in filter
+      ? (scenes.find((x) => x.id === filter.sceneId)?.name ?? items[0]?.sceneName ?? '삭제된 씬')
+      : null
   const [selected, setSelected] = useState<Set<number> | null>(null)
   const [busy, setBusy] = useState(false)
   const sentinel = useRef<HTMLDivElement>(null)
@@ -99,7 +106,12 @@ export function HistoryPane(): ReactNode {
     try {
       for (const m of items.filter((x) => selected.has(x.id))) {
         const blob = await db.getBlob(m.id, m.mime)
-        if (blob) await saveToGallery(blob, fileNameFor(m.id, m.seed, m.mime))
+        if (blob)
+          await saveToGallery(
+            blob,
+            fileNameFor(m.id, m.seed, m.mime),
+            useSettings.getState().sceneFolders ? m.sceneName : undefined
+          )
       }
       setSelected(null)
     } catch (e) {
@@ -140,9 +152,36 @@ export function HistoryPane(): ReactNode {
           </>
         ) : (
           <>
-            <span className="flex-1 text-sm font-semibold">
-              히스토리 <span className="ml-1 font-mono text-xs font-normal text-dim">{total}</span>
+            <span className="shrink-0 text-sm font-semibold">
+              히스토리{' '}
+              <span className="ml-1 font-mono text-xs font-normal text-dim">
+                {filter ? `${items.length}/${total}` : total}
+              </span>
             </span>
+            <div className="scroll-thin flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto px-2">
+              <button
+                type="button"
+                aria-pressed={!!filter && 'fav' in filter}
+                onClick={() => void setFilter(filter && 'fav' in filter ? null : { fav: true })}
+                className={cx(
+                  'flex h-8 shrink-0 items-center gap-1 rounded-full border px-2.5 text-xs',
+                  filter && 'fav' in filter ? 'border-accent bg-accent/15 text-accent' : 'border-line text-dim'
+                )}
+              >
+                <Star size={13} />
+                즐겨찾기
+              </button>
+              {sceneName !== null && (
+                <button
+                  type="button"
+                  onClick={() => void setFilter(null)}
+                  className="flex h-8 shrink-0 items-center gap-1 rounded-full border border-accent bg-accent/15 px-2.5 text-xs text-accent"
+                >
+                  <span className="max-w-32 truncate">씬: {sceneName}</span>
+                  <X size={13} />
+                </button>
+              )}
+            </div>
             <Button variant="ghost" disabled={!items.length} onClick={() => setSelected(new Set())}>
               선택
             </Button>
@@ -151,7 +190,7 @@ export function HistoryPane(): ReactNode {
       </div>
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-1.5">
         {items.length === 0 ? (
-          <Empty>생성한 이미지가 여기에 쌓입니다</Empty>
+          <Empty>{filter ? '조건에 맞는 이미지가 없습니다' : '생성한 이미지가 여기에 쌓입니다'}</Empty>
         ) : (
           <ul className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-1.5">
             {items.map((m) => {
@@ -171,8 +210,11 @@ export function HistoryPane(): ReactNode {
                     <img src={m.thumb} alt="" loading="lazy" className="h-full w-full object-cover" />
                     {m.kind !== 't2i' && (
                       <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 text-[10px]">
-                        {m.kind === 'i2i' ? 'i2i' : '인페'}
+                        {{ i2i: 'i2i', inpaint: '인페', director: '도구', upscale: '2x', t2i: '' }[m.kind]}
                       </span>
+                    )}
+                    {m.fav && !on && (
+                      <Star size={14} className="absolute right-1 top-1 fill-accent text-accent drop-shadow" />
                     )}
                     {on && (
                       <span className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-accent-fg">

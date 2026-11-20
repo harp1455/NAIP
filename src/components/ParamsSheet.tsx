@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Dices } from 'lucide-react'
+import { ArrowLeftRight, Dices } from 'lucide-react'
 import { MODELS, NOISE_SCHEDULES, SAMPLERS, UC_PRESET_OPTIONS } from '../nai/constants'
 import { isMediumEffortModel, isV5Model, MEDIUM_EFFORT_FIXED, modelCapabilities } from '../nai/models'
 import { fitNaiGenerationResolution } from '../nai/resolution'
@@ -41,7 +41,19 @@ export function ParamsSheet(props: { onClose: () => void }): ReactNode {
               value={w}
               onChange={setW}
             />
-            <span className="text-dim">×</span>
+            <button
+              type="button"
+              aria-label="너비와 높이 바꾸기"
+              title="너비와 높이 바꾸기"
+              className="flex h-11 w-8 items-center justify-center text-dim active:text-fg"
+              onClick={() => {
+                p.patchParams({ width: params.height, height: params.width })
+                setW(String(params.height))
+                setH(String(params.width))
+              }}
+            >
+              <ArrowLeftRight size={16} />
+            </button>
             <TextInput
               label="높이"
               inputMode="numeric"

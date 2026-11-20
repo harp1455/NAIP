@@ -130,11 +130,11 @@ export async function normalizeInpaintMask(
   return stripDataUrl(c.toDataURL('image/png'))
 }
 
-export function pickImageFiles(multiple = false): Promise<File[]> {
+export function pickImageFiles(multiple = false, accept = 'image/*'): Promise<File[]> {
   return new Promise((resolve) => {
     const input = document.createElement('input')
     input.type = 'file'
-    input.accept = 'image/*'
+    input.accept = accept
     input.multiple = multiple
     input.onchange = () => resolve(Array.from(input.files ?? []))
     input.oncancel = () => resolve([])

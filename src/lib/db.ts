@@ -1,4 +1,16 @@
 /** 히스토리 저장소 (IndexedDB). meta(썸네일 포함)와 원본 blob을 분리해 목록 로딩을 가볍게 한다. */
+/** 생성 당시의 설정 원본(조각 치환 전) — "설정 적용"으로 그대로 되돌리기 위해 보관 */
+export interface SettingsSnapshot {
+  base: string
+  additional: string
+  detail: string
+  negative: string
+  params: Record<string, unknown>
+  chars: { name: string; prompt: string; negative: string; center?: { x: number; y: number } }[]
+}
+
+export type ImageKind = 't2i' | 'i2i' | 'inpaint' | 'director' | 'upscale'
+
 export interface HistoryMeta {
   id: number
   ts: number
@@ -7,23 +19,37 @@ export interface HistoryMeta {
   height: number
   seed: number
   model: string
-  kind: 't2i' | 'i2i' | 'inpaint'
+  kind: ImageKind
   prompt: string
   negative: string
   mime: string
+  /** 씬 생성이면 씬 id·이름 */
+  sceneId?: number
+  sceneName?: string
+  /** 즐겨찾기 (IndexedDB 인덱스용으로 1 또는 없음) */
+  fav?: 1
+  snap?: SettingsSnapshot
 }
+
+export type HistoryFilter = { fav: true } | { sceneId: number } | null
 
 const DB_NAME = 'naip'
 let dbp: Promise<IDBDatabase> | null = null
 
 function open(): Promise<IDBDatabase> {
   dbp ??= new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1)
+    const req = indexedDB.open(DB_NAME, 2)
     req.onupgradeneeded = () => {
       const db = req.result
-      db.createObjectStore('meta', { keyPath: 'id' })
-      db.createObjectStore('blobs')
-      db.createObjectStore('kv')
+      if (!db.objectStoreNames.contains('meta')) {
+        db.createObjectStore('meta', { keyPath: 'id' })
+        db.createObjectStore('blobs')
+        db.createObjectStore('kv')
+      }
+      // v2: 즐겨찾기·씬 필터용 인덱스 (값이 없는 레코드는 인덱스에 들어가지 않는다)
+      const meta = req.transaction!.objectStore('meta')
+      if (!meta.indexNames.contains('fav')) meta.createIndex('fav', 'fav')
+      if (!meta.indexNames.contains('scene')) meta.createIndex('scene', 'sceneId')
     }
     req.onsuccess = () => resolve(req.result)
     req.onerror = () => reject(req.error)
@@ -68,6 +94,41 @@ export async function listMeta(limit: number, beforeId?: number): Promise<Histor
       const cur = req.result
       if (!cur || out.length >= limit) return resolve(out)
       out.push(cur.value as HistoryMeta)
+      cur.continue()
+    }
+    req.onerror = () => reject(req.error)
+  })
+}
+
+/** 필터에 맞는 전체 목록 (최신순). 즐겨찾기·씬 단위라 한 번에 읽는다 */
+export async function listFiltered(filter: NonNullable<HistoryFilter>): Promise<HistoryMeta[]> {
+  const db = await open()
+  const store = db.transaction('meta').objectStore('meta')
+  const req =
+    'fav' in filter
+      ? store.index('fav').getAll(IDBKeyRange.only(1))
+      : store.index('scene').getAll(IDBKeyRange.only(filter.sceneId))
+  return ((await done(req)) as HistoryMeta[]).sort((a, b) => b.id - a.id)
+}
+
+export async function putMeta(meta: HistoryMeta): Promise<void> {
+  const db = await open()
+  const tx = db.transaction('meta', 'readwrite')
+  tx.objectStore('meta').put(meta)
+  await txDone(tx)
+}
+
+/** 보관 한도 정리용: 즐겨찾기를 뺀 가장 오래된 n장의 id */
+export async function oldestIds(n: number): Promise<number[]> {
+  const db = await open()
+  const store = db.transaction('meta').objectStore('meta')
+  return new Promise((resolve, reject) => {
+    const out: number[] = []
+    const req = store.openCursor()
+    req.onsuccess = () => {
+      const cur = req.result
+      if (!cur || out.length >= n) return resolve(out)
+      if (!(cur.value as HistoryMeta).fav) out.push(cur.value.id as number)
       cur.continue()
     }
     req.onerror = () => reject(req.error)

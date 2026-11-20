@@ -1,17 +1,22 @@
 import type { ReactNode } from 'react'
-import { ChevronDown, Image as ImageIcon, Layers, ScanFace, Users } from 'lucide-react'
+import { ChevronDown, FileSearch, Image as ImageIcon, Layers, Puzzle, ScanFace, Users, Wand2 } from 'lucide-react'
 import { RESOLUTIONS } from '../nai/constants'
 import { modelCapabilities, promptTokenLimit, isMediumEffortModel, MEDIUM_EFFORT_FIXED } from '../nai/models'
 import { mergeQualityTags, mergeUcPresetForModel, removeComments } from '../nai/presets'
+import { applyImported } from '../lib/apply'
+import { pickImageFiles } from '../lib/image'
+import { readImageSettings } from '../lib/metadata'
 import { useTokenCount } from '../lib/tokens'
 import { cx } from '../lib/util'
 import { useCharacters } from '../stores/characters'
+import { useDirector } from '../stores/director'
+import { useFragments } from '../stores/fragments'
 import { mergePromptParts, usePrompt } from '../stores/prompt'
 import { useRefs } from '../stores/refs'
 import { useSource } from '../stores/source'
 import { Section, Select, Stepper, TextArea } from './ui'
 
-export type SheetName = 'characters' | 'source' | 'vibes' | 'refs' | 'params' | 'presets'
+export type SheetName = 'characters' | 'source' | 'vibes' | 'refs' | 'params' | 'presets' | 'fragments'
 
 function TokenBadge(props: { count: number | null; chars: number; limit: number }): ReactNode {
   if (props.count === null) return <span className="font-mono text-dim">{props.chars}자</span>
@@ -57,6 +62,15 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
   const { cast, characters } = useCharacters()
   const refs = useRefs()
   const source = useSource()
+  const fragmentCount = useFragments((f) => f.fragments.length)
+  const importSettings = (): void => {
+    void pickImageFiles().then(async ([file]) => {
+      if (!file) return
+      const meta = await readImageSettings(file).catch(() => null)
+      if (!meta) return window.alert('이 이미지에서 NovelAI 생성 정보를 찾지 못했습니다.\n(메신저·SNS를 거치면 정보가 지워집니다)')
+      if (window.confirm('이미지의 프롬프트·설정·캐릭터로 현재 내용을 덮어쓸까요?')) applyImported(meta)
+    })
+  }
   const caps = modelCapabilities(p.params.model)
   const limit = promptTokenLimit(p.params.model)
   const medium = isMediumEffortModel(p.params.model)
@@ -173,6 +187,16 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
           disabled={!caps.characterReferences}
           onClick={() => props.open('refs')}
         />
+      </div>
+
+      <div className="flex gap-1">
+        <ToolButton
+          icon={<Puzzle size={16} />}
+          label={fragmentCount ? `조각 ${fragmentCount}` : '조각'}
+          onClick={() => props.open('fragments')}
+        />
+        <ToolButton icon={<Wand2 size={16} />} label="디렉터 툴" onClick={() => useDirector.getState().show()} />
+        <ToolButton icon={<FileSearch size={16} />} label="설정 불러오기" onClick={importSettings} />
       </div>
 
       <div className="mt-1 flex gap-2">
