@@ -114,3 +114,12 @@ input[type='range'] {
 textarea.no-scrollbar:focus-visible {
   outline: none;
 }
+
+/* 태그 자동완성 줄(48px)이 떠 있을 때 앱과 시트를 그만큼 줄인다 */
+body.suggesting #root {
+  height: calc(100% - 48px);
+}
+
+body.suggesting .sheet-overlay {
+  bottom: 48px;
+}

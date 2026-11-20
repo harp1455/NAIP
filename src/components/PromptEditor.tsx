@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { X } from 'lucide-react'
 import { highlightRanges } from '../nai/weights'
 import { formatCount, searchTags, type TagCategory, type TagHit, type TagSourceSetting } from '../lib/tags'
 import { cx } from '../lib/util'
@@ -30,6 +31,8 @@ const CATEGORY_LABEL: Record<TagCategory, string> = {
   p: '종',
   l: '설정'
 }
+
+let releaseTimer: ReturnType<typeof setTimeout> | undefined
 
 interface Token {
   start: number
@@ -63,9 +66,20 @@ function SuggestionBar(props: {
   source: TagSourceSetting
   onPick: (hit: TagHit) => void
   onCycleSource: () => void
+  onDismiss: () => void
 }): ReactNode {
   // 누를 때 textarea의 포커스(키보드)를 잃지 않게 한다
   const keepFocus = (e: React.SyntheticEvent): void => e.preventDefault()
+  // 줄이 떠 있는 동안 화면을 그 높이만큼 줄여, 아래쪽 버튼(저장·생성)이 가려지지 않게 한다
+  useEffect(() => {
+    clearTimeout(releaseTimer)
+    document.body.classList.add('suggesting')
+    return () => {
+      // 바로 되돌리면 버튼을 누르는 도중(포커스가 빠지는 순간) 화면이 밀려 탭이 빗나간다.
+      // 탭이 끝날 만큼 기다렸다가 되돌린다.
+      releaseTimer = setTimeout(() => document.body.classList.remove('suggesting'), 400)
+    }
+  }, [])
   return createPortal(
     <div
       role="listbox"
@@ -83,7 +97,6 @@ function SuggestionBar(props: {
         {SOURCE_LABEL[props.source]}
       </button>
       <div className="scroll-thin flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-x-auto px-2">
-        {props.hits.length === 0 && <span className="px-1 text-xs text-dim">일치하는 태그 없음</span>}
         {props.hits.map((hit) => (
           <button
             key={hit.tag}
@@ -108,6 +121,14 @@ function SuggestionBar(props: {
           </button>
         ))}
       </div>
+      <button
+        type="button"
+        aria-label="자동완성 닫기"
+        onClick={props.onDismiss}
+        className="flex h-full w-11 shrink-0 items-center justify-center border-l border-line text-dim"
+      >
+        <X size={18} />
+      </button>
     </div>,
     document.body
   )
@@ -227,8 +248,9 @@ export function PromptEditor(props: {
           text
         )}
       />
-      {focused && hits && (
+      {focused && hits && hits.length > 0 && (
         <SuggestionBar
+          onDismiss={() => setHits(null)}
           hits={hits}
           source={source}
           onPick={pick}

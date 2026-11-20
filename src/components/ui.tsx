@@ -15,7 +15,7 @@ export function Sheet(props: {
   useBackClose(props.onClose)
   return (
     <div
-      className="fixed inset-0 z-40 flex items-end justify-center bg-black/60 sm:items-center"
+      className="sheet-overlay fixed inset-0 z-40 flex items-end justify-center bg-black/60 sm:items-center"
       onClick={(e) => e.target === e.currentTarget && props.onClose()}
     >
       <div
