@@ -3,7 +3,7 @@ import { ChevronDown, FileSearch, Image as ImageIcon, Layers, Puzzle, ScanFace, 
 import { RESOLUTIONS } from '../nai/constants'
 import { modelCapabilities, promptTokenLimit, isMediumEffortModel, MEDIUM_EFFORT_FIXED } from '../nai/models'
 import { mergeQualityTags, mergeUcPresetForModel, removeComments } from '../nai/presets'
-import { applyImported } from '../lib/apply'
+import { fromMetadata } from '../lib/apply'
 import { pickImageFiles } from '../lib/image'
 import { readImageSettings } from '../lib/metadata'
 import { useTokenCount } from '../lib/tokens'
@@ -11,6 +11,7 @@ import { cx } from '../lib/util'
 import { useCharacters } from '../stores/characters'
 import { useDirector } from '../stores/director'
 import { useFragments } from '../stores/fragments'
+import { useImporter } from '../stores/importer'
 import { mergePromptParts, usePrompt } from '../stores/prompt'
 import { useRefs } from '../stores/refs'
 import { useSource } from '../stores/source'
@@ -68,7 +69,7 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
       if (!file) return
       const meta = await readImageSettings(file).catch(() => null)
       if (!meta) return window.alert('이 이미지에서 NovelAI 생성 정보를 찾지 못했습니다.\n(메신저·SNS를 거치면 정보가 지워집니다)')
-      if (window.confirm('이미지의 프롬프트·설정·캐릭터로 현재 내용을 덮어쓸까요?')) applyImported(meta)
+      useImporter.getState().open(fromMetadata(meta), file.name.replace(/\.[^.]+$/, ''))
     })
   }
   const caps = modelCapabilities(p.params.model)

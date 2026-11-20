@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { X } from 'lucide-react'
+import { ClipboardPaste, Eraser, Undo2, X } from 'lucide-react'
+import { readClipboard } from '../lib/native'
 import { highlightRanges } from '../nai/weights'
 import { formatCount, searchTags, type TagCategory, type TagHit, type TagSourceSetting } from '../lib/tags'
 import { cx } from '../lib/util'
@@ -148,6 +149,11 @@ export function PromptEditor(props: {
   const area = useRef<HTMLTextAreaElement>(null)
   const backdrop = useRef<HTMLDivElement>(null)
   const pendingCaret = useRef<number | null>(null)
+  /** 마지막 커서 위치 — 붙여넣기 버튼은 포커스가 없어도 여기에 넣는다 (없으면 맨 끝) */
+  const lastCaret = useRef<number | null>(null)
+  /** 비우기 직전 내용 — 값이 그대로 비어 있는 동안 되돌릴 수 있다 */
+  const [cleared, setCleared] = useState<string | null>(null)
+  const [pasteError, setPasteError] = useState(false)
   const source = useSettings((s) => s.tagSource)
   const [focused, setFocused] = useState(false)
   const [token, setToken] = useState<Token | null>(null)
@@ -157,6 +163,7 @@ export function PromptEditor(props: {
 
   const syncToken = (): void => {
     const el = area.current
+    if (el) lastCaret.current = el.selectionEnd
     if (!el || el.selectionStart !== el.selectionEnd) return setToken(null)
     setToken(currentToken(el.value, el.selectionStart))
   }
@@ -197,9 +204,32 @@ export function PromptEditor(props: {
     el.focus()
   }
 
+  const paste = async (): Promise<void> => {
+    try {
+      const clip = await readClipboard()
+      if (!clip) return
+      const at = Math.min(lastCaret.current ?? props.value.length, props.value.length)
+      pendingCaret.current = at + clip.length
+      lastCaret.current = at + clip.length
+      props.onChange(props.value.slice(0, at) + clip + props.value.slice(at))
+      setCleared(null)
+      setPasteError(false)
+    } catch {
+      setPasteError(true)
+      setTimeout(() => setPasteError(false), 2500)
+    }
+  }
+  const clear = (): void => {
+    setCleared(props.value)
+    lastCaret.current = 0
+    props.onChange('')
+  }
+  const tool = 'flex h-8 items-center gap-1 rounded-md px-2 text-xs text-dim active:bg-raised disabled:opacity-40'
+
   const text = 'p-2.5 font-mono text-[13px] leading-relaxed whitespace-pre-wrap break-words'
   return (
     <div className="relative rounded-lg border border-line bg-field focus-within:border-accent">
+      <div className="relative">
       <div
         ref={backdrop}
         aria-hidden="true"
@@ -231,6 +261,7 @@ export function PromptEditor(props: {
         autoCorrect="off"
         autoComplete="off"
         onChange={(e) => {
+          setCleared(null)
           props.onChange(e.target.value)
           setToken(currentToken(e.target.value, e.target.selectionStart))
         }}
@@ -248,6 +279,39 @@ export function PromptEditor(props: {
           text
         )}
       />
+      </div>
+      <div className="relative flex items-center justify-end gap-0.5 border-t border-line/60 px-1">
+        {pasteError && <span className="mr-auto pl-1.5 text-xs text-danger">클립보드를 읽지 못했습니다</span>}
+        <button type="button" className={tool} aria-label={`${props.label} 붙여넣기`} onClick={() => void paste()}>
+          <ClipboardPaste size={14} />
+          붙여넣기
+        </button>
+        {cleared !== null && props.value === '' ? (
+          <button
+            type="button"
+            className={tool}
+            aria-label={`${props.label} 비우기 되돌리기`}
+            onClick={() => {
+              props.onChange(cleared)
+              setCleared(null)
+            }}
+          >
+            <Undo2 size={14} />
+            되돌리기
+          </button>
+        ) : (
+          <button
+            type="button"
+            className={tool}
+            aria-label={`${props.label} 비우기`}
+            disabled={props.value === ''}
+            onClick={clear}
+          >
+            <Eraser size={14} />
+            비우기
+          </button>
+        )}
+      </div>
       {focused && hits && hits.length > 0 && (
         <SuggestionBar
           onDismiss={() => setHits(null)}

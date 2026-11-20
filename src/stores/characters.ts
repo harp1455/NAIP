@@ -32,6 +32,7 @@ interface CharactersState {
   renameFolder: (id: number, name: string) => void
   deleteFolder: (id: number, deleteCharacters: boolean) => void
   saveCharacter: (c: Omit<Character, 'id'> & { id?: number }) => number
+  duplicateCharacter: (id: number) => void
   deleteCharacter: (id: number) => void
   moveCharacter: (id: number, folderId: number | null) => void
   toggleCast: (charId: number) => void
@@ -78,6 +79,13 @@ export const useCharacters = create<CharactersState>()(
         }))
         return id
       },
+      duplicateCharacter: (id) =>
+        set((s) => {
+          const i = s.characters.findIndex((c) => c.id === id)
+          if (i < 0) return s
+          const copy = { ...s.characters[i], id: uid(), name: `${s.characters[i].name} 복사` }
+          return { characters: [...s.characters.slice(0, i + 1), copy, ...s.characters.slice(i + 1)] }
+        }),
       deleteCharacter: (id) =>
         set((s) => ({
           characters: s.characters.filter((c) => c.id !== id),

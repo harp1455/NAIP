@@ -3,6 +3,7 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
+  Copy,
   FolderPlus,
   MapPin,
   Pencil,
@@ -335,6 +336,9 @@ export function CharacterSheet(props: { onClose: () => void }): ReactNode {
                       </span>
                     </span>
                   </button>
+                  <IconButton label={`${c.name} 복제`} onClick={() => s.duplicateCharacter(c.id)}>
+                    <Copy size={17} />
+                  </IconButton>
                   <IconButton label={`${c.name} 편집`} onClick={() => setEditing(c)}>
                     <Pencil size={17} />
                   </IconButton>

@@ -46,6 +46,7 @@ interface PromptState {
   overwritePreset: (id: number) => void
   applyPreset: (id: number) => void
   renamePreset: (id: number, name: string) => void
+  duplicatePreset: (id: number) => void
   deletePreset: (id: number) => void
 }
 
@@ -125,6 +126,13 @@ export const usePrompt = create<PromptState>()(
         set((s) => ({
           presets: s.presets.map((p) => (p.id === id ? { ...p, name: name.trim() || p.name } : p))
         })),
+      duplicatePreset: (id) =>
+        set((s) => {
+          const i = s.presets.findIndex((p) => p.id === id)
+          if (i < 0) return s
+          const copy = { ...s.presets[i], id: uid(), name: `${s.presets[i].name} 복사` }
+          return { presets: [...s.presets.slice(0, i + 1), copy, ...s.presets.slice(i + 1)] }
+        }),
       deletePreset: (id) =>
         set((s) => ({
           presets: s.presets.filter((p) => p.id !== id),

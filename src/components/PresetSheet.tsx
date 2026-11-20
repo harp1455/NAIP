@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Pencil, Save, Trash2 } from 'lucide-react'
+import { Copy, Pencil, Save, Trash2 } from 'lucide-react'
 import { cx } from '../lib/util'
 import { usePrompt } from '../stores/prompt'
 import { Button, Empty, IconButton, Sheet } from './ui'
@@ -57,6 +57,9 @@ export function PresetSheet(props: { onClose: () => void }): ReactNode {
                 }}
               >
                 <Save size={17} />
+              </IconButton>
+              <IconButton label="복제" onClick={() => p.duplicatePreset(preset.id)}>
+                <Copy size={17} />
               </IconButton>
               <IconButton
                 label="이름 바꾸기"

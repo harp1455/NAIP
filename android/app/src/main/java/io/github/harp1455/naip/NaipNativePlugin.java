@@ -2,6 +2,8 @@ package io.github.harp1455.naip;
 
 import android.Manifest;
 import android.app.NotificationManager;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Intent;
@@ -27,6 +29,7 @@ import java.io.OutputStream;
  * 웹뷰에서 할 수 없는 일을 맡는다 (src/lib/native.ts 와 짝):
  * - saveToGallery: MediaStore로 Pictures/NAIP[/하위폴더] 에 저장 (Android 10+ 는 권한 불필요)
  * - setKeepAwake: 대량 생성 중 화면 꺼짐 방지
+ * - readClipboard: 프롬프트 칸의 붙여넣기 버튼 (웹뷰는 클립보드 읽기 권한이 없음)
  * - startJob / updateJob / stopJob: 백그라운드 생성용 포그라운드 서비스와 진행·완료 알림
  */
 @CapacitorPlugin(name = "NaipNative")
@@ -149,6 +152,16 @@ public class NaipNativePlugin extends Plugin {
 
         JSObject result = new JSObject();
         result.put("uri", uri.toString());
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void readClipboard(PluginCall call) {
+        ClipboardManager clipboard = getContext().getSystemService(ClipboardManager.class);
+        ClipData clip = clipboard != null ? clipboard.getPrimaryClip() : null;
+        CharSequence text = clip != null && clip.getItemCount() > 0 ? clip.getItemAt(0).coerceToText(getContext()) : null;
+        JSObject result = new JSObject();
+        result.put("text", text != null ? text.toString() : "");
         call.resolve(result);
     }
 

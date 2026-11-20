@@ -11,6 +11,8 @@ import { useRefs } from './stores/refs'
 import { anlasOf, useSettings } from './stores/settings'
 import { useSource } from './stores/source'
 import { useDirector } from './stores/director'
+import { useImporter } from './stores/importer'
+import { ImportSheet } from './components/ImportSheet'
 import { CharacterSheet } from './components/CharacterSheet'
 import { DirectorSheet } from './components/DirectorSheet'
 import { FragmentSheet } from './components/FragmentSheet'
@@ -84,6 +86,7 @@ export default function App(): ReactNode {
   const viewing = useHistory((s) => s.viewing)
   const running = useGeneration((s) => s.running)
   const directorOpen = useDirector((s) => s.open)
+  const importing = useImporter((s) => s.data !== null)
   const shown: Tab = wide && tab === 'prompt' ? 'result' : tab
 
   useEffect(() => {
@@ -202,6 +205,7 @@ export default function App(): ReactNode {
       {sheet === 'presets' && <PresetSheet onClose={() => setSheet(null)} />}
       {sheet === 'fragments' && <FragmentSheet onClose={() => setSheet(null)} />}
       {directorOpen && <DirectorSheet />}
+      {importing && <ImportSheet />}
       {viewing !== null && (
         <ImageViewer
           onUseSource={() => {

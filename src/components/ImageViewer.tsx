@@ -14,13 +14,14 @@ import {
   X
 } from 'lucide-react'
 import * as db from '../lib/db'
-import { applyImported, applySnapshot } from '../lib/apply'
+import { fromMetadata, fromSnapshot } from '../lib/apply'
 import { useBackClose } from '../lib/back'
 import { readImageSettings } from '../lib/metadata'
 import { fileNameFor, saveToGallery, shareImage } from '../lib/native'
 import { cx } from '../lib/util'
 import { imageUrl, useHistory } from '../stores/history'
 import { useDirector } from '../stores/director'
+import { useImporter } from '../stores/importer'
 import { usePrompt } from '../stores/prompt'
 import { useSettings } from '../stores/settings'
 import { useSource } from '../stores/source'
@@ -234,16 +235,17 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
           <Action
             label="설정 적용"
             onClick={() => {
-              if (!window.confirm('이 이미지의 프롬프트·설정·캐릭터로 현재 내용을 덮어쓸까요?')) return
+              const origin = meta.sceneName ?? `seed ${meta.seed}`
               if (meta.snap) {
-                applySnapshot(meta.snap)
-                return setNote('설정을 적용했습니다')
+                view(null)
+                return useImporter.getState().open(fromSnapshot(meta.snap, meta.seed), origin)
               }
               void withBlob(async (blob) => {
                 const m = await readImageSettings(blob)
                 if (!m) throw new Error('이 이미지에는 생성 정보가 없습니다')
-                applyImported(m)
-              }, '설정을 적용했습니다')
+                view(null)
+                useImporter.getState().open(fromMetadata(m), origin)
+              })
             }}
           >
             <SlidersHorizontal size={19} />

@@ -10,6 +10,7 @@ interface NaipNativePlugin {
     folder?: string
   }): Promise<{ uri: string }>
   setKeepAwake(opts: { on: boolean }): Promise<void>
+  readClipboard(): Promise<{ text: string }>
   startJob(opts: { text: string }): Promise<void>
   updateJob(opts: { text: string; done: number; total: number }): Promise<void>
   stopJob(opts: { text?: string; vibrate: boolean }): Promise<void>
@@ -80,4 +81,10 @@ export const job = {
     if (isNative) void NaipNative.stopJob({ ...(text ? { text } : {}), vibrate }).catch(() => {})
     else if (vibrate) navigator.vibrate?.(200)
   }
+}
+
+/** 클립보드의 텍스트. 웹뷰는 clipboard-read 권한이 없어 네이티브로 읽는다 */
+export async function readClipboard(): Promise<string> {
+  if (isNative) return (await NaipNative.readClipboard()).text
+  return navigator.clipboard.readText()
 }
