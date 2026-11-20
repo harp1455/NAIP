@@ -265,27 +265,8 @@ export function Stepper(props: {
   )
 }
 
-export function TextArea(props: {
-  value: string
-  onChange: (v: string) => void
-  placeholder?: string
-  rows?: number
-  label: string
-}): ReactNode {
-  return (
-    <textarea
-      aria-label={props.label}
-      value={props.value}
-      rows={props.rows ?? 3}
-      placeholder={props.placeholder}
-      spellCheck={false}
-      autoCapitalize="off"
-      autoCorrect="off"
-      onChange={(e) => props.onChange(e.target.value)}
-      className="scroll-thin block w-full resize-y rounded-lg border border-line bg-field p-2.5 font-mono text-[13px] leading-relaxed text-fg placeholder:text-dim/60"
-    />
-  )
-}
+/** 프롬프트용 여러 줄 입력 — 가중치 색상 표시와 태그 자동완성이 붙은 에디터 */
+export { PromptEditor as TextArea } from './PromptEditor'
 
 export function TextInput(props: {
   value: string

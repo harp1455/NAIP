@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 import { fetchSubscription } from '../nai/client'
 import type { SubscriptionInfo } from '../nai/types'
 import { clamp, round1 } from '../lib/util'
+import type { TagSourceSetting } from '../lib/tags'
 
 export const DELAY_MIN = 1
 export const DELAY_MAX = 2
@@ -22,13 +23,15 @@ interface SettingsState {
   historyLimit: number
   /** 자동 저장 시 씬 이름 하위 폴더로 나눠 저장 */
   sceneFolders: boolean
+  /** 태그 자동완성 출처 */
+  tagSource: TagSourceSetting
   subscription: SubscriptionInfo | null
   subscriptionError: string | null
   setToken: (token: string) => void
   setDelay: (min: number, max: number) => void
   patch: (
     p: Partial<
-      Pick<SettingsState, 'autoSave' | 'keepAwake' | 'background' | 'vibrate' | 'historyLimit' | 'sceneFolders'>
+      Pick<SettingsState, 'autoSave' | 'keepAwake' | 'background' | 'vibrate' | 'historyLimit' | 'sceneFolders' | 'tagSource'>
     >
   ) => void
   refreshSubscription: () => Promise<void>
@@ -46,6 +49,7 @@ export const useSettings = create<SettingsState>()(
       vibrate: true,
       historyLimit: 0,
       sceneFolders: true,
+      tagSource: 'both',
       subscription: null,
       subscriptionError: null,
       setToken: (token) => set({ token: token.trim(), subscription: null, subscriptionError: null }),
@@ -80,7 +84,8 @@ export const useSettings = create<SettingsState>()(
         background: s.background,
         vibrate: s.vibrate,
         historyLimit: s.historyLimit,
-        sceneFolders: s.sceneFolders
+        sceneFolders: s.sceneFolders,
+        tagSource: s.tagSource
       })
     }
   )

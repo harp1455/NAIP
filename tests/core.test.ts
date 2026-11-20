@@ -98,3 +98,23 @@ describe('scenes', () => {
     expect(appendPrompt('1girl', '')).toBe('1girl')
   })
 })
+
+import { highlightRanges, parseWeights } from '../src/nai/weights'
+
+describe('weights', () => {
+  it('parses numeric, negative, brace and bracket weights', () => {
+    const w = (text: string): number[] => parseWeights(text).map((s) => Math.round(s.weight * 1000) / 1000)
+    expect(w('a, 1.2::b::, c')).toEqual([1, 1.2, 1])
+    expect(w('-1::x::')).toEqual([-1])
+    expect(w('{a}')).toEqual([1.05])
+    expect(w('[a]')).toEqual([0.952])
+  })
+
+  it('classifies ranges by kind', () => {
+    const kinds = (text: string): (string | null)[] => highlightRanges(text).map((r) => r.kind)
+    expect(kinds('a, 1.2::b::, 0.7::c::, -2::d::, <frag>')).toEqual([
+      null, 'up', null, 'down', null, 'negative', null, 'fragment'
+    ])
+    expect(kinds('# note\n1girl')).toEqual(['comment', null])
+  })
+})

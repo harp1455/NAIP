@@ -172,6 +172,29 @@ export function SettingsPane(): ReactNode {
           </Row>
         </Group>
 
+        <Group title="프롬프트 입력">
+          <Row label="태그 자동완성" hint="입력 중인 태그를 정확도 순으로 제안합니다. 한국어로도 찾을 수 있습니다">
+            <Select
+              label="태그 자동완성"
+              className="w-40"
+              value={s.tagSource}
+              options={[
+                { value: 'both', label: '단부루 + e621' },
+                { value: 'danbooru', label: '단부루만' },
+                { value: 'e621', label: 'e621만' },
+                { value: 'off', label: '끄기' }
+              ]}
+              onChange={(tagSource) => s.patch({ tagSource })}
+            />
+          </Row>
+          <p className="pb-2 text-xs text-dim">
+            가중치 색상: <span className="rounded px-1" style={{ background: 'color-mix(in srgb, var(--mark-up) 40%, transparent)' }}>강조 1.2::…::, {'{…}'}</span>{' '}
+            <span className="rounded px-1" style={{ background: 'color-mix(in srgb, var(--mark-down) 40%, transparent)' }}>약화 0.7::…::, […]</span>{' '}
+            <span className="rounded px-1" style={{ background: 'color-mix(in srgb, var(--mark-negative) 40%, transparent)' }}>음수 -1::…::</span>{' '}
+            <span className="rounded px-1" style={{ background: 'color-mix(in srgb, var(--mark-fragment) 30%, transparent)' }}>{'<조각>'}</span>
+          </p>
+        </Group>
+
         <Group title="저장">
           <Row label="갤러리에 자동 저장" hint="생성될 때마다 Pictures/NAIP 폴더에 저장">
             <Toggle label="갤러리에 자동 저장" checked={s.autoSave} onChange={(autoSave) => s.patch({ autoSave })} />

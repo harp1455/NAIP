@@ -5,9 +5,7 @@ const config: CapacitorConfig = {
   appName: 'NAIP',
   webDir: 'dist',
   android: {
-    backgroundColor: '#111111',
-    // Android 15+ 강제 edge-to-edge에서 시스템 바 밑으로 UI가 깔리지 않게 한다
-    adjustMarginsForEdgeToEdge: 'force'
+    backgroundColor: '#111111'
   }
 }
 
