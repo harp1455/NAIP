@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from 'react'
 import { ArrowLeftRight, Dices } from 'lucide-react'
-import { MODELS, NOISE_SCHEDULES, SAMPLERS, UC_PRESET_OPTIONS } from '../nai/constants'
+import { MODELS, NOISE_SCHEDULES, RESOLUTIONS, SAMPLERS, UC_PRESET_OPTIONS } from '../nai/constants'
 import { isMediumEffortModel, isV5Model, MEDIUM_EFFORT_FIXED, modelCapabilities } from '../nai/models'
 import { fitNaiGenerationResolution } from '../nai/resolution'
 import { usePrompt } from '../stores/prompt'
+import { ResolutionSelect } from './ResolutionSelect'
 import { IconButton, Row, Select, Sheet, SliderRow, TextInput, Toggle } from './ui'
 
 export function ParamsSheet(props: { onClose: () => void }): ReactNode {
@@ -13,6 +14,10 @@ export function ParamsSheet(props: { onClose: () => void }): ReactNode {
   const medium = isMediumEffortModel(params.model)
   const [w, setW] = useState(String(params.width))
   const [h, setH] = useState(String(params.height))
+  // 목록에 없는 크기면 처음부터 사용자 지정 입력을 펼친다
+  const [custom, setCustom] = useState(
+    () => !RESOLUTIONS.some((r) => r.width === params.width && r.height === params.height)
+  )
 
   const commitSize = (edited: 'width' | 'height'): void => {
     const fit = fitNaiGenerationResolution(Number(w), Number(h), edited)
@@ -32,20 +37,27 @@ export function ParamsSheet(props: { onClose: () => void }): ReactNode {
         <Row label="모델">
           <Select label="모델" className="w-48" value={params.model} options={MODELS} onChange={p.setModel} />
         </Row>
-        <Row label="해상도" hint="64 배수로 맞춰집니다 (최대 약 3MP)">
-          <div className="flex items-center gap-1.5">
-            <TextInput
-              label="너비"
-              inputMode="numeric"
-              className="!w-[72px] text-center font-mono"
-              value={w}
-              onChange={setW}
+        <div className="py-1.5">
+          <div className="flex min-h-12 items-center gap-2">
+            <span className="flex-1 text-sm">해상도</span>
+            <ResolutionSelect
+              className="w-56"
+              width={params.width}
+              height={params.height}
+              custom={custom}
+              onPick={(size) => {
+                setCustom(false)
+                p.patchParams(size)
+                setW(String(size.width))
+                setH(String(size.height))
+              }}
+              onCustom={() => setCustom(true)}
             />
             <button
               type="button"
-              aria-label="너비와 높이 바꾸기"
-              title="너비와 높이 바꾸기"
-              className="flex h-11 w-8 items-center justify-center text-dim active:text-fg"
+              aria-label="가로세로 바꾸기"
+              title="가로세로 바꾸기"
+              className="flex h-11 w-9 shrink-0 items-center justify-center rounded-lg text-dim active:bg-raised"
               onClick={() => {
                 p.patchParams({ width: params.height, height: params.width })
                 setW(String(params.height))
@@ -54,22 +66,35 @@ export function ParamsSheet(props: { onClose: () => void }): ReactNode {
             >
               <ArrowLeftRight size={16} />
             </button>
-            <TextInput
-              label="높이"
-              inputMode="numeric"
-              className="!w-[72px] text-center font-mono"
-              value={h}
-              onChange={setH}
-            />
-            <button
-              type="button"
-              className="h-11 rounded-lg bg-raised px-3 text-sm"
-              onClick={() => commitSize('width')}
-            >
-              적용
-            </button>
           </div>
-        </Row>
+          {custom && (
+            <div className="flex items-center justify-end gap-1.5 pb-1 pt-1.5">
+              <span className="mr-auto text-xs text-dim">64 배수로 맞춰집니다 (최대 약 3MP)</span>
+              <TextInput
+                label="너비"
+                inputMode="numeric"
+                className="!w-[72px] text-center font-mono"
+                value={w}
+                onChange={setW}
+              />
+              <span className="text-dim">×</span>
+              <TextInput
+                label="높이"
+                inputMode="numeric"
+                className="!w-[72px] text-center font-mono"
+                value={h}
+                onChange={setH}
+              />
+              <button
+                type="button"
+                className="h-11 rounded-lg bg-raised px-3 text-sm"
+                onClick={() => commitSize('width')}
+              >
+                적용
+              </button>
+            </div>
+          )}
+        </div>
         <SliderRow
           label="스텝"
           value={medium ? MEDIUM_EFFORT_FIXED.steps : params.steps}

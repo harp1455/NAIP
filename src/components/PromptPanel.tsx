@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react'
 import { ChevronDown, FileSearch, Image as ImageIcon, Layers, Puzzle, ScanFace, Users, Wand2 } from 'lucide-react'
-import { RESOLUTIONS } from '../nai/constants'
 import { modelCapabilities, promptTokenLimit, isMediumEffortModel, MEDIUM_EFFORT_FIXED } from '../nai/models'
 import { mergeQualityTags, mergeUcPresetForModel, removeComments } from '../nai/presets'
 import { fromMetadata } from '../lib/apply'
@@ -15,7 +14,8 @@ import { useImporter } from '../stores/importer'
 import { mergePromptParts, usePrompt } from '../stores/prompt'
 import { useRefs } from '../stores/refs'
 import { useSource } from '../stores/source'
-import { Section, Select, Stepper, TextArea } from './ui'
+import { ResolutionSelect } from './ResolutionSelect'
+import { Section, Stepper, TextArea } from './ui'
 
 export type SheetName = 'characters' | 'source' | 'vibes' | 'refs' | 'params' | 'presets' | 'fragments'
 
@@ -91,16 +91,6 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
   const negCount = useTokenCount(p.params.model, [mergedUc, ...activeChars.map((c) => c.negative)])
 
   const preset = p.presets.find((x) => x.id === p.activePresetId)
-  const resIndex = RESOLUTIONS.findIndex(
-    (r) => r.width === p.params.width && r.height === p.params.height
-  )
-  const resOptions = [
-    ...RESOLUTIONS.map((r, i) => ({ value: i, label: `${r.label} (${r.width}×${r.height})` })),
-    ...(resIndex < 0
-      ? [{ value: -1, label: `사용자 지정 (${p.params.width}×${p.params.height})` }]
-      : [])
-  ]
-
   return (
     <div className="flex flex-col gap-1 p-3">
       <button
@@ -201,15 +191,12 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
       </div>
 
       <div className="mt-1 flex gap-2">
-        <Select
-          label="해상도"
+        <ResolutionSelect
           className="min-w-0 flex-1"
-          value={resIndex}
-          options={resOptions}
-          onChange={(i) => {
-            const r = RESOLUTIONS[i]
-            if (r) p.patchParams({ width: r.width, height: r.height })
-          }}
+          width={p.params.width}
+          height={p.params.height}
+          onPick={(size) => p.patchParams(size)}
+          onCustom={() => props.open('params')}
         />
         <div className="flex items-center gap-2">
           <span className="text-xs text-dim">스텝</span>
