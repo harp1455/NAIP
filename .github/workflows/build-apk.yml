@@ -5,6 +5,14 @@ on:
     branches: [main, 'claude/**']
   workflow_dispatch:
 
+# 릴리스를 만들어 APK를 올린다 (앱의 업데이트 확인이 최신 릴리스를 본다)
+permissions:
+  contents: write
+
+env:
+  # 빌드 번호 = 실행 번호. 앱의 versionCode(1000 + 번호)와 업데이트 비교에 쓴다
+  NAIP_BUILD_NUMBER: ${{ github.run_number }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -29,3 +37,16 @@ jobs:
         with:
           name: naip-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          apk="NAIP-${version}-b${NAIP_BUILD_NUMBER}.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "$apk"
+          git log -1 --pretty=%B | sed '/^Co-Authored-By:/d;/^Claude-Session:/d' > notes.md
+          gh release create "build-${NAIP_BUILD_NUMBER}" "$apk" \
+            --title "NAIP ${version} (build ${NAIP_BUILD_NUMBER})" \
+            --notes-file notes.md \
+            --target "$GITHUB_SHA"

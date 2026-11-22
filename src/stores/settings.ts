@@ -34,13 +34,16 @@ interface SettingsState {
   nameMode: 'auto' | 'manual'
   /** 자동 번호를 이어 매기기 위한 마지막 번호 (`폴더/이름` → 번호) */
   nameCounters: Record<string, number>
+  /** 업데이트를 확인할 GitHub 저장소 (owner/repo) 와, 비공개 저장소일 때 쓰는 읽기 전용 토큰 */
+  updateRepo: string
+  githubToken: string
   subscription: SubscriptionInfo | null
   subscriptionError: string | null
   setToken: (token: string) => void
   setDelay: (min: number, max: number) => void
   patch: (
     p: Partial<
-      Pick<SettingsState, 'autoSave' | 'keepAwake' | 'background' | 'vibrate' | 'historyLimit' | 'sceneFolders' | 'tagSource' | 'saveFolders' | 'saveFolder' | 'stripMeta' | 'nameMode' | 'nameCounters'>
+      Pick<SettingsState, 'autoSave' | 'keepAwake' | 'background' | 'vibrate' | 'historyLimit' | 'sceneFolders' | 'tagSource' | 'saveFolders' | 'saveFolder' | 'stripMeta' | 'nameMode' | 'nameCounters' | 'updateRepo' | 'githubToken'>
     >
   ) => void
   refreshSubscription: () => Promise<void>
@@ -64,6 +67,8 @@ export const useSettings = create<SettingsState>()(
       stripMeta: false,
       nameMode: 'auto',
       nameCounters: {},
+      updateRepo: 'harp1455/NAIP',
+      githubToken: '',
       subscription: null,
       subscriptionError: null,
       setToken: (token) => set({ token: token.trim(), subscription: null, subscriptionError: null }),
@@ -104,7 +109,9 @@ export const useSettings = create<SettingsState>()(
         saveFolder: s.saveFolder,
         stripMeta: s.stripMeta,
         nameMode: s.nameMode,
-        nameCounters: s.nameCounters
+        nameCounters: s.nameCounters,
+        updateRepo: s.updateRepo,
+        githubToken: s.githubToken
       })
     }
   )

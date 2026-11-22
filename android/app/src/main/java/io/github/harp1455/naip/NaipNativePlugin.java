@@ -7,12 +7,14 @@ import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 import android.net.Uri;
 import android.os.Environment;
 import android.provider.MediaStore;
@@ -23,12 +25,20 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 
 /**
  * 웹뷰에서 할 수 없는 일을 맡는다 (src/lib/native.ts 와 짝):
  * - saveToGallery: MediaStore로 Pictures/NAIP[/하위폴더] 에 저장 (Android 10+ 는 권한 불필요)
  * - setKeepAwake: 대량 생성 중 화면 꺼짐 방지
+ * - httpGet / installUpdate: GitHub 릴리스에서 새 APK를 확인·다운로드하고 설치 화면을 띄운다
  * - readClipboard: 프롬프트 칸의 붙여넣기 버튼 (웹뷰는 클립보드 읽기 권한이 없음)
  * - startJob / updateJob / stopJob: 백그라운드 생성용 포그라운드 서비스와 진행·완료 알림
  */
@@ -174,5 +184,113 @@ public class NaipNativePlugin extends Plugin {
                 else getActivity().getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 call.resolve();
             });
+    }
+
+    private static HttpURLConnection open(String url, String accept, String token) throws Exception {
+        if (!url.startsWith("https://")) throw new IllegalArgumentException("https only");
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        c.setConnectTimeout(15000);
+        c.setReadTimeout(30000);
+        c.setInstanceFollowRedirects(false);
+        c.setRequestProperty("Accept", accept);
+        c.setRequestProperty("User-Agent", "NAIP-updater");
+        if (token != null && !token.isEmpty()) c.setRequestProperty("Authorization", "Bearer " + token);
+        return c;
+    }
+
+    /** 업데이트 확인용 GET (웹뷰의 CORS·권한과 무관하게 동작하도록 네이티브로 요청) */
+    @PluginMethod
+    public void httpGet(PluginCall call) {
+        String url = call.getString("url", "");
+        String token = call.getString("token");
+        new Thread(() -> {
+            HttpURLConnection c = null;
+            try {
+                c = open(url, "application/vnd.github+json", token);
+                int status = c.getResponseCode();
+                InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
+                ByteArrayOutputStream buf = new ByteArrayOutputStream();
+                if (in != null) {
+                    byte[] chunk = new byte[8192];
+                    for (int n; (n = in.read(chunk)) > 0;) buf.write(chunk, 0, n);
+                }
+                JSObject result = new JSObject();
+                result.put("status", status);
+                result.put("body", new String(buf.toByteArray(), StandardCharsets.UTF_8));
+                call.resolve(result);
+            } catch (Exception e) {
+                call.reject("request failed: " + e.getMessage(), e);
+            } finally {
+                if (c != null) c.disconnect();
+            }
+        })
+            .start();
+    }
+
+    /** 새 APK를 캐시에 내려받아(진행률은 updateProgress 이벤트) 시스템 설치 화면을 띄운다 */
+    @PluginMethod
+    public void installUpdate(PluginCall call) {
+        String url = call.getString("url", "");
+        String token = call.getString("token");
+        new Thread(() -> {
+            HttpURLConnection c = null;
+            try {
+                File dir = new File(getContext().getCacheDir(), "updates");
+                if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("cannot create cache dir");
+                File apk = new File(dir, "NAIP-update.apk");
+
+                String current = url;
+                int status = 0;
+                for (int hop = 0; hop < 6; hop++) {
+                    // 토큰은 처음 요청(GitHub)에만 — 리다이렉트된 저장소 주소로는 보내지 않는다
+                    c = open(current, "application/octet-stream", hop == 0 ? token : null);
+                    status = c.getResponseCode();
+                    if (status < 300 || status >= 400) break;
+                    current = c.getHeaderField("Location");
+                    c.disconnect();
+                    c = null;
+                    if (current == null) throw new IllegalStateException("redirect without location");
+                }
+                if (c == null || status != 200) throw new IllegalStateException("download failed (" + status + ")");
+
+                long total = c.getContentLengthLong();
+                long received = 0;
+                long lastNotified = 0;
+                try (InputStream in = c.getInputStream(); OutputStream out = new FileOutputStream(apk)) {
+                    byte[] chunk = new byte[65536];
+                    for (int n; (n = in.read(chunk)) > 0;) {
+                        out.write(chunk, 0, n);
+                        received += n;
+                        long now = System.currentTimeMillis();
+                        if (now - lastNotified > 150) {
+                            lastNotified = now;
+                            JSObject progress = new JSObject();
+                            progress.put("received", received);
+                            progress.put("total", total);
+                            notifyListeners("updateProgress", progress);
+                        }
+                    }
+                }
+
+                // 받은 파일이 정말 이 앱의 APK인지 확인하고 나서 설치 화면으로 넘긴다
+                PackageInfo info = getContext().getPackageManager().getPackageArchiveInfo(apk.getPath(), 0);
+                if (info == null || !getContext().getPackageName().equals(info.packageName)) {
+                    apk.delete();
+                    throw new IllegalStateException("downloaded file is not a NAIP package");
+                }
+
+                Uri uri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".fileprovider", apk);
+                Intent install = new Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                getActivity().startActivity(install);
+                call.resolve();
+            } catch (Exception e) {
+                call.reject(e.getMessage(), e);
+            } finally {
+                if (c != null) c.disconnect();
+            }
+        })
+            .start();
     }
 }

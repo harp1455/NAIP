@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Clapperboard, Coins, History, Image as ImageIcon, PenLine, Settings } from 'lucide-react'
+import { ArrowDownToLine, Clapperboard, Coins, History, Image as ImageIcon, PenLine, Settings, X } from 'lucide-react'
 import { App as CapApp } from '@capacitor/app'
 import { closeTop } from './lib/back'
 import { isNative } from './lib/native'
@@ -13,6 +13,7 @@ import { useSource } from './stores/source'
 import { useDirector } from './stores/director'
 import { useImporter } from './stores/importer'
 import { useSaver } from './stores/saver'
+import { CURRENT_BUILD, useUpdate } from './stores/update'
 import { SaveSheet } from './components/SaveSheet'
 import { ImportSheet } from './components/ImportSheet'
 import { CharacterSheet } from './components/CharacterSheet'
@@ -81,6 +82,39 @@ function AnlasChip(): ReactNode {
   )
 }
 
+/** 새 빌드가 있으면 화면 위에 띄우는 한 줄 — 버튼 하나로 내려받아 설치 화면까지 간다 */
+function UpdateBanner(): ReactNode {
+  const u = useUpdate()
+  const generating = useGeneration((s) => s.running)
+  if (!u.info || u.info.build <= CURRENT_BUILD || u.dismissed) return null
+  const downloading = u.status === 'downloading'
+  return (
+    <div className="flex shrink-0 items-center gap-2 border-b border-line bg-accent/15 py-1.5 pl-3 pr-1 text-xs">
+      <span className="min-w-0 flex-1 truncate">
+        {u.status === 'error' ? (u.error ?? '업데이트 실패') : `새 버전이 있습니다 · ${u.info.title}`}
+      </span>
+      <button
+        type="button"
+        disabled={downloading || generating}
+        onClick={() => void u.install()}
+        className="flex h-9 shrink-0 items-center gap-1 rounded-lg bg-accent px-3 font-semibold text-accent-fg"
+      >
+        <ArrowDownToLine size={14} />
+        {downloading
+          ? `${u.progress === null ? '…' : `${Math.round(u.progress * 100)}%`}`
+          : generating
+            ? '생성 후 가능'
+            : u.status === 'error'
+              ? '다시 시도'
+              : '업데이트'}
+      </button>
+      <button type="button" aria-label="업데이트 알림 닫기" disabled={downloading} onClick={u.dismiss} className="flex h-9 w-9 shrink-0 items-center justify-center text-dim">
+        <X size={16} />
+      </button>
+    </div>
+  )
+}
+
 export default function App(): ReactNode {
   const wide = useWide()
   const [tab, setTab] = useState<Tab>('prompt')
@@ -95,6 +129,8 @@ export default function App(): ReactNode {
   useEffect(() => {
     void useHistory.getState().init()
     void useSettings.getState().refreshSubscription()
+    // 앱을 열 때마다 조용히 새 빌드를 확인한다
+    void useUpdate.getState().check(true)
   }, [])
 
   // 생성을 시작하면 좁은 화면에서는 결과 탭으로 넘어가 진행을 보여 준다
@@ -146,6 +182,7 @@ export default function App(): ReactNode {
           </nav>
         )}
       </header>
+      <UpdateBanner />
 
       <div className="flex min-h-0 flex-1">
         {(wide || shown === 'prompt') && (

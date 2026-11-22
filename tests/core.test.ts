@@ -118,3 +118,25 @@ describe('weights', () => {
     expect(kinds('# note\n1girl')).toEqual(['comment', null])
   })
 })
+
+import { parseRelease } from '../src/stores/update'
+
+describe('update', () => {
+  it('reads the build number and APK asset from a release', () => {
+    const info = parseRelease({
+      tag_name: 'build-12',
+      name: 'NAIP 0.6.0 (build 12)',
+      body: 'notes\n',
+      assets: [
+        { name: 'other.txt', size: 1, url: 'u0', browser_download_url: 'd0' },
+        { name: 'NAIP-0.6.0-b12.apk', size: 100, url: 'u1', browser_download_url: 'd1' }
+      ]
+    })
+    expect(info).toMatchObject({ build: 12, downloadUrl: 'd1', assetApiUrl: 'u1', notes: 'notes' })
+  })
+
+  it('ignores releases that are not app builds', () => {
+    expect(parseRelease({ tag_name: 'v1.0', assets: [] })).toBeNull()
+    expect(parseRelease({ tag_name: 'build-3', assets: [] })).toBeNull()
+  })
+})

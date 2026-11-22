@@ -7,6 +7,8 @@ import { useScenes } from '../stores/scenes'
 import { useHistory } from '../stores/history'
 import { usePrompt } from '../stores/prompt'
 import { anlasOf, DELAY_MAX, DELAY_MIN, useSettings } from '../stores/settings'
+import { CURRENT_BUILD, useUpdate } from '../stores/update'
+import { useGeneration } from '../stores/generation'
 import { Button, IconButton, Row, Select, SliderRow, TextInput, Toggle } from './ui'
 
 const LIMITS = [0, 200, 500, 1000, 3000].map((value) => ({
@@ -22,6 +24,89 @@ function Group(props: { title: string; children: ReactNode }): ReactNode {
       <h3 className="py-1 text-xs font-semibold text-dim">{props.title}</h3>
       {props.children}
     </section>
+  )
+}
+
+function UpdateGroup(): ReactNode {
+  const s = useSettings()
+  const u = useUpdate()
+  const generating = useGeneration((g) => g.running)
+  const [showToken, setShowToken] = useState(false)
+  const newer = u.info !== null && u.info.build > CURRENT_BUILD
+  const busy = u.status === 'checking' || u.status === 'downloading'
+  return (
+    <Group title="앱 업데이트">
+      <Row
+        label={`NAIP ${__APP_VERSION__}${CURRENT_BUILD ? ` (빌드 ${CURRENT_BUILD})` : ' (직접 설치한 빌드)'}`}
+        hint={
+          u.status === 'checking'
+            ? '확인하는 중…'
+            : newer
+              ? `새 버전이 있습니다: ${u.info!.title}`
+              : u.status === 'latest'
+                ? '최신 버전입니다'
+                : '앱을 열 때마다 자동으로 확인합니다'
+        }
+      >
+        <Button disabled={busy} onClick={() => void u.check()}>
+          업데이트 확인
+        </Button>
+      </Row>
+      {u.error && (
+        <p role="alert" className="mb-2 rounded-md bg-danger/15 px-2.5 py-1.5 text-xs text-danger">
+          {u.error}
+        </p>
+      )}
+      {newer && (
+        <div className="mb-2 rounded-lg border border-accent bg-accent/10 p-2.5">
+          {u.info!.notes && (
+            <p className="mb-2 line-clamp-6 whitespace-pre-wrap break-words text-xs text-fg">{u.info!.notes}</p>
+          )}
+          <Button
+            variant="primary"
+            className="w-full"
+            disabled={busy || generating}
+            onClick={() => void u.install()}
+          >
+            {u.status === 'downloading'
+              ? `내려받는 중 ${u.progress === null ? '…' : `${Math.round(u.progress * 100)}%`}`
+              : `내려받아 설치 (${(u.info!.size / 1048576).toFixed(1)}MB)`}
+          </Button>
+          <p className="mt-1.5 text-[11px] text-dim">
+            {generating
+              ? '생성이 끝난 뒤 설치할 수 있습니다.'
+              : '내려받은 뒤 뜨는 설치 화면에서 "업데이트"를 누르면 됩니다. 처음 한 번은 "이 출처 허용"을 켜야 합니다. 데이터는 그대로 유지됩니다.'}
+          </p>
+        </div>
+      )}
+      <details className="pb-2 text-xs text-dim">
+        <summary className="cursor-pointer py-1.5">저장소 · 비공개 저장소용 토큰</summary>
+        <label className="mt-1 flex flex-col gap-1">
+          GitHub 저장소 (소유자/이름)
+          <TextInput label="GitHub 저장소" value={s.updateRepo} onChange={(updateRepo) => s.patch({ updateRepo })} className="font-mono" />
+        </label>
+        <label className="mt-2 flex flex-col gap-1">
+          GitHub 토큰 — 저장소가 비공개일 때만 필요합니다
+          <span className="flex gap-1.5">
+            <TextInput
+              label="GitHub 토큰"
+              type={showToken ? 'text' : 'password'}
+              value={s.githubToken}
+              onChange={(githubToken) => s.patch({ githubToken: githubToken.trim() })}
+              placeholder="github_pat_..."
+              className="font-mono"
+            />
+            <IconButton label={showToken ? '토큰 숨기기' : '토큰 보기'} onClick={() => setShowToken(!showToken)} className="h-11 w-11">
+              {showToken ? <EyeOff size={18} /> : <Eye size={18} />}
+            </IconButton>
+          </span>
+        </label>
+        <p className="mt-1.5 leading-relaxed">
+          GitHub → Settings → Developer settings → Fine-grained tokens 에서 이 저장소만 고르고 Contents 권한을
+          "Read-only"로 준 토큰을 만들어 넣으세요. 토큰은 이 기기에만 저장되고 GitHub에만 보냅니다.
+        </p>
+      </details>
+    </Group>
   )
 }
 
@@ -213,6 +298,8 @@ export function SettingsPane(): ReactNode {
           </Row>
         </Group>
 
+        <UpdateGroup />
+
         <Group title="데이터">
           <Row label="백업" hint="프롬프트·프리셋·캐릭터·조각·씬을 JSON 파일로 내보내거나 불러옵니다">
             <div className="flex gap-1.5">
@@ -235,7 +322,8 @@ export function SettingsPane(): ReactNode {
         </Group>
 
         <p className="px-1 pb-4 text-[11px] leading-relaxed text-dim">
-          NAIP {__APP_VERSION__} · NAIS3(sunanakgo) 기반 · GPL-3.0. NovelAI와 무관한 비공식 개인용
+          NAIP {__APP_VERSION__}
+          {CURRENT_BUILD ? ` (빌드 ${CURRENT_BUILD})` : ''} · NAIS3(sunanakgo) 기반 · GPL-3.0. NovelAI와 무관한 비공식 개인용
           클라이언트입니다.
         </p>
       </div>

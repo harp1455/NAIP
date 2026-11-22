@@ -1,8 +1,10 @@
-import { Capacitor, registerPlugin } from '@capacitor/core'
+import { Capacitor, registerPlugin, type Plugin } from '@capacitor/core'
 import { blobToBase64 } from './image'
 
 /** android/app/src/main/java/.../NaipNativePlugin.java 와 짝 */
-interface NaipNativePlugin {
+interface NaipNativePlugin extends Plugin {
+  httpGet(opts: { url: string; token?: string }): Promise<{ status: number; body: string }>
+  installUpdate(opts: { url: string; token?: string }): Promise<void>
   saveToGallery(opts: {
     base64: string
     fileName: string
@@ -95,4 +97,37 @@ export const job = {
 export async function readClipboard(): Promise<string> {
   if (isNative) return (await NaipNative.readClipboard()).text
   return navigator.clipboard.readText()
+}
+
+/** GitHub API GET — 네이티브에서는 CORS와 무관하게 플러그인으로 요청한다 */
+export async function githubGet(url: string, token?: string): Promise<{ status: number; body: string }> {
+  if (isNative) return NaipNative.httpGet({ url, ...(token ? { token } : {}) })
+  const res = await fetch(url, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    }
+  })
+  return { status: res.status, body: await res.text() }
+}
+
+/** APK를 내려받아 설치 화면을 띄운다. 웹에서는 다운로드 주소를 연다 */
+export async function installUpdate(
+  url: string,
+  token: string | undefined,
+  onProgress: (received: number, total: number) => void,
+  fallbackUrl: string
+): Promise<void> {
+  if (!isNative) {
+    window.open(fallbackUrl, '_blank')
+    return
+  }
+  const handle = await NaipNative.addListener('updateProgress', (p: { received: number; total: number }) =>
+    onProgress(p.received, p.total)
+  )
+  try {
+    await NaipNative.installUpdate({ url, ...(token ? { token } : {}) })
+  } finally {
+    void handle.remove()
+  }
 }
