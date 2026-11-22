@@ -25,13 +25,18 @@ interface SettingsState {
   sceneFolders: boolean
   /** 태그 자동완성 출처 */
   tagSource: TagSourceSetting
+  /** 골라서 저장할 때 쓰는 폴더 목록 (Pictures/NAIP 아래) */
+  saveFolders: string[]
+  /** 마지막으로 고른 저장 폴더 ('' = 기본) 와 메타데이터 제거 여부 */
+  saveFolder: string
+  stripMeta: boolean
   subscription: SubscriptionInfo | null
   subscriptionError: string | null
   setToken: (token: string) => void
   setDelay: (min: number, max: number) => void
   patch: (
     p: Partial<
-      Pick<SettingsState, 'autoSave' | 'keepAwake' | 'background' | 'vibrate' | 'historyLimit' | 'sceneFolders' | 'tagSource'>
+      Pick<SettingsState, 'autoSave' | 'keepAwake' | 'background' | 'vibrate' | 'historyLimit' | 'sceneFolders' | 'tagSource' | 'saveFolders' | 'saveFolder' | 'stripMeta'>
     >
   ) => void
   refreshSubscription: () => Promise<void>
@@ -50,6 +55,9 @@ export const useSettings = create<SettingsState>()(
       historyLimit: 0,
       sceneFolders: true,
       tagSource: 'both',
+      saveFolders: [],
+      saveFolder: '',
+      stripMeta: false,
       subscription: null,
       subscriptionError: null,
       setToken: (token) => set({ token: token.trim(), subscription: null, subscriptionError: null }),
@@ -85,7 +93,10 @@ export const useSettings = create<SettingsState>()(
         vibrate: s.vibrate,
         historyLimit: s.historyLimit,
         sceneFolders: s.sceneFolders,
-        tagSource: s.tagSource
+        tagSource: s.tagSource,
+        saveFolders: s.saveFolders,
+        saveFolder: s.saveFolder,
+        stripMeta: s.stripMeta
       })
     }
   )

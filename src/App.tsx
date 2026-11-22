@@ -12,6 +12,8 @@ import { anlasOf, useSettings } from './stores/settings'
 import { useSource } from './stores/source'
 import { useDirector } from './stores/director'
 import { useImporter } from './stores/importer'
+import { useSaver } from './stores/saver'
+import { SaveSheet } from './components/SaveSheet'
 import { ImportSheet } from './components/ImportSheet'
 import { CharacterSheet } from './components/CharacterSheet'
 import { DirectorSheet } from './components/DirectorSheet'
@@ -87,6 +89,7 @@ export default function App(): ReactNode {
   const running = useGeneration((s) => s.running)
   const directorOpen = useDirector((s) => s.open)
   const importing = useImporter((s) => s.data !== null)
+  const saving = useSaver((s) => s.items !== null)
   const shown: Tab = wide && tab === 'prompt' ? 'result' : tab
 
   useEffect(() => {
@@ -214,6 +217,7 @@ export default function App(): ReactNode {
           }}
         />
       )}
+      {saving && <SaveSheet />}
     </div>
   )
 }

@@ -29,6 +29,8 @@ export interface HistoryMeta {
   /** 즐겨찾기 (IndexedDB 인덱스용으로 1 또는 없음) */
   fav?: 1
   snap?: SettingsSnapshot
+  /** 갤러리에 저장했으면 Pictures/NAIP 아래의 경로 (마지막으로 저장한 것) */
+  saved?: string
 }
 
 export type HistoryFilter = { fav: true } | { sceneId: number } | null
@@ -109,6 +111,11 @@ export async function listFiltered(filter: NonNullable<HistoryFilter>): Promise<
       ? store.index('fav').getAll(IDBKeyRange.only(1))
       : store.index('scene').getAll(IDBKeyRange.only(filter.sceneId))
   return ((await done(req)) as HistoryMeta[]).sort((a, b) => b.id - a.id)
+}
+
+export async function getMeta(id: number): Promise<HistoryMeta | null> {
+  const db = await open()
+  return ((await done(db.transaction('meta').objectStore('meta').get(id))) as HistoryMeta | undefined) ?? null
 }
 
 export async function putMeta(meta: HistoryMeta): Promise<void> {

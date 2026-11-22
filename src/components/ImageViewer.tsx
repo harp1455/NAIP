@@ -17,13 +17,13 @@ import * as db from '../lib/db'
 import { fromMetadata, fromSnapshot } from '../lib/apply'
 import { useBackClose } from '../lib/back'
 import { readImageSettings } from '../lib/metadata'
-import { fileNameFor, saveToGallery, shareImage } from '../lib/native'
+import { fileNameFor, shareImage } from '../lib/native'
 import { cx } from '../lib/util'
 import { imageUrl, useHistory } from '../stores/history'
 import { useDirector } from '../stores/director'
 import { useImporter } from '../stores/importer'
 import { usePrompt } from '../stores/prompt'
-import { useSettings } from '../stores/settings'
+import { useSaver } from '../stores/saver'
 import { useSource } from '../stores/source'
 
 function Action(props: {
@@ -102,6 +102,12 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
         <span className="min-w-0 flex-1 truncate font-mono text-xs text-dim">
           {meta.width}×{meta.height} · seed {meta.seed}
         </span>
+        {meta.saved && (
+          <span className="flex h-6 shrink-0 items-center gap-1 rounded-full bg-ok px-2 text-[11px] font-semibold text-black">
+            <Download size={12} strokeWidth={3} />
+            저장됨
+          </span>
+        )}
         <button
           type="button"
           aria-label="생성 정보"
@@ -182,6 +188,7 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
             {meta.model} · {meta.kind}
             {meta.sceneName ? ` · 씬 ${meta.sceneName}` : ''} · {new Date(meta.ts).toLocaleString('ko-KR')}
           </p>
+          {meta.saved && <p className="mt-1 text-ok">저장 위치: Pictures/NAIP/{meta.saved}</p>}
           <p className="mt-2 text-dim">프롬프트</p>
           <p className="mt-0.5 whitespace-pre-wrap break-words font-mono">{meta.prompt}</p>
           <p className="mt-2 text-dim">네거티브</p>
@@ -194,17 +201,8 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
           <Action label="즐겨찾기" pressed={!!meta.fav} onClick={() => void toggleFav(meta.id)}>
             <Star size={19} className={meta.fav ? 'fill-accent text-accent' : ''} />
           </Action>
-          <Action
-            label="저장"
-            onClick={() =>
-              void withBlob(
-                (blob, name) =>
-                  saveToGallery(blob, name, useSettings.getState().sceneFolders ? meta.sceneName : undefined),
-                '갤러리에 저장했습니다'
-              )
-            }
-          >
-            <Download size={19} />
+          <Action label={meta.saved ? '다시 저장' : '저장'} onClick={() => useSaver.getState().open([meta])}>
+            <Download size={19} className={meta.saved ? 'text-ok' : ''} />
           </Action>
           <Action label="공유" onClick={() => void withBlob(shareImage)}>
             <Share2 size={19} />

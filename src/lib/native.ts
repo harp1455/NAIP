@@ -26,10 +26,18 @@ export function fileNameFor(id: number, seed: number, mime: string): string {
   return `NAIP_${stamp}_${seed}.${mime === 'image/webp' ? 'webp' : 'png'}`
 }
 
+/** 파일·폴더 이름에 쓸 수 없는 문자를 걷어 낸다 */
+export function cleanFileName(name: string): string {
+  return name
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
+    .replace(/^[.\s]+|[.\s]+$/g, '')
+    .slice(0, 80)
+}
+
 /** 갤러리(Pictures/NAIP)에 저장. 웹에서는 다운로드로 대체 */
 export async function saveToGallery(blob: Blob, fileName: string, folder?: string): Promise<void> {
   if (isNative) {
-    const sub = folder?.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim().slice(0, 60)
+    const sub = folder ? cleanFileName(folder) : ''
     await NaipNative.saveToGallery({
       base64: await blobToBase64(blob),
       fileName,

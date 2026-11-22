@@ -16,6 +16,8 @@ interface HistoryState {
   filter: HistoryFilter
   setFilter: (filter: HistoryFilter) => Promise<void>
   toggleFav: (id: number) => Promise<void>
+  /** 갤러리에 저장했음을 기록 (path는 Pictures/NAIP 아래 경로) */
+  markSaved: (id: number, path: string) => Promise<void>
   init: () => Promise<void>
   loadMore: () => Promise<void>
   add: (meta: HistoryMeta, blob: Blob) => Promise<void>
@@ -44,6 +46,14 @@ export const useHistory = create<HistoryState>()((set, get) => ({
     const next = { ...meta }
     if (meta.fav) delete next.fav
     else next.fav = 1
+    await db.putMeta(next)
+    set((s) => ({ items: s.items.map((m) => (m.id === id ? next : m)) }))
+  },
+  markSaved: async (id, path) => {
+    // 목록에 없는(필터·페이지 밖) 이미지도 기록되도록 DB에서 읽는다
+    const meta = get().items.find((m) => m.id === id) ?? (await db.getMeta(id))
+    if (!meta) return
+    const next = { ...meta, saved: path }
     await db.putMeta(next)
     set((s) => ({ items: s.items.map((m) => (m.id === id ? next : m)) }))
   },

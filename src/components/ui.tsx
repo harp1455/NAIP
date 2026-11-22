@@ -11,11 +11,16 @@ export function Sheet(props: {
   children: ReactNode
   /** 본문 패딩 제거 (캔버스 등) */
   flush?: boolean
+  /** 이미지 뷰어 위에 띄운다 */
+  top?: boolean
 }): ReactNode {
   useBackClose(props.onClose)
   return (
     <div
-      className="sheet-overlay fixed inset-0 z-40 flex items-end justify-center bg-black/60 sm:items-center"
+      className={cx(
+        'sheet-overlay fixed inset-0 flex items-end justify-center bg-black/60 sm:items-center',
+        props.top ? 'z-[55]' : 'z-40'
+      )}
       onClick={(e) => e.target === e.currentTarget && props.onClose()}
     >
       <div
@@ -83,7 +88,7 @@ export function Button(props: {
       disabled={props.disabled}
       onClick={props.onClick}
       className={cx(
-        'flex h-11 items-center justify-center gap-1.5 rounded-lg px-4 text-sm font-medium',
+        'flex h-11 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-4 text-sm font-medium',
         v === 'primary' && 'bg-accent text-accent-fg active:brightness-90',
         v === 'default' && 'bg-raised text-fg active:brightness-125',
         v === 'ghost' && 'text-dim hover:text-fg active:bg-raised',

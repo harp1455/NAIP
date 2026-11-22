@@ -12,7 +12,7 @@ import {
 } from '../lib/image'
 import type { SettingsSnapshot } from '../lib/db'
 import { processWildcards, resetSequentialCounters } from '../nai/fragments'
-import { fileNameFor, job, saveToGallery, setKeepAwake } from '../lib/native'
+import { cleanFileName, fileNameFor, job, saveToGallery, setKeepAwake } from '../lib/native'
 import { randomSeed, sleep, uid } from '../lib/util'
 import { useCharacters } from './characters'
 import { fragmentSource } from './fragments'
@@ -297,9 +297,10 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
           if (item.scene) useScenes.getState().bumpReserve([item.scene.id], -1)
           if (settings.autoSave) {
             const folder = settings.sceneFolders ? item.scene?.name : undefined
-            void saveToGallery(image, fileNameFor(id, seed, image.type), folder).catch((e: Error) =>
-              set({ error: `갤러리 저장 실패: ${e.message}` })
-            )
+            const fileName = fileNameFor(id, seed, image.type)
+            void saveToGallery(image, fileName, folder)
+              .then(() => useHistory.getState().markSaved(id, `${folder ? `${cleanFileName(folder)}/` : ''}${fileName}`))
+              .catch((e: Error) => set({ error: `갤러리 저장 실패: ${e.message}` }))
           }
           if ((i + 1) % 10 === 0) void useSettings.getState().refreshSubscription()
         }

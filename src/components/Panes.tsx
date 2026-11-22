@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Check, CheckSquare, Download, Star, Trash2, X } from 'lucide-react'
-import * as db from '../lib/db'
-import { fileNameFor, saveToGallery } from '../lib/native'
 import { cx } from '../lib/util'
 import { useGeneration } from '../stores/generation'
 import { useScenes } from '../stores/scenes'
-import { useSettings } from '../stores/settings'
+import { useSaver } from '../stores/saver'
 import { imageUrl, useHistory } from '../stores/history'
 import { Button, Empty, IconButton } from './ui'
 
@@ -81,7 +79,6 @@ export function HistoryPane(): ReactNode {
       ? (scenes.find((x) => x.id === filter.sceneId)?.name ?? items[0]?.sceneName ?? '삭제된 씬')
       : null
   const [selected, setSelected] = useState<Set<number> | null>(null)
-  const [busy, setBusy] = useState(false)
   const sentinel = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -100,25 +97,11 @@ export function HistoryPane(): ReactNode {
     else next.add(id)
     setSelected(next)
   }
-  const saveSelected = async (): Promise<void> => {
+  const saveSelected = (): void => {
     if (!selected) return
-    setBusy(true)
-    try {
-      for (const m of items.filter((x) => selected.has(x.id))) {
-        const blob = await db.getBlob(m.id, m.mime)
-        if (blob)
-          await saveToGallery(
-            blob,
-            fileNameFor(m.id, m.seed, m.mime),
-            useSettings.getState().sceneFolders ? m.sceneName : undefined
-          )
-      }
-      setSelected(null)
-    } catch (e) {
-      window.alert(`저장 실패: ${(e as Error).message}`)
-    } finally {
-      setBusy(false)
-    }
+    // 오래된 것부터 — 일괄 이름의 번호가 만든 순서를 따르게
+    const picked = items.filter((x) => selected.has(x.id)).reverse()
+    useSaver.getState().open(picked, () => setSelected(null))
   }
 
   return (
@@ -133,12 +116,12 @@ export function HistoryPane(): ReactNode {
             >
               <CheckSquare size={18} />
             </IconButton>
-            <IconButton label="선택한 이미지 저장" disabled={busy || !selected.size} onClick={() => void saveSelected()}>
+            <IconButton label="선택한 이미지 저장" disabled={!selected.size} onClick={saveSelected}>
               <Download size={18} />
             </IconButton>
             <IconButton
               label="선택한 이미지 삭제"
-              disabled={busy || !selected.size}
+              disabled={!selected.size}
               onClick={() => {
                 if (!window.confirm(`선택한 ${selected.size}장을 히스토리에서 삭제할까요?`)) return
                 void remove([...selected]).then(() => setSelected(null))
@@ -199,7 +182,7 @@ export function HistoryPane(): ReactNode {
                 <li key={m.id}>
                   <button
                     type="button"
-                    aria-label={`seed ${m.seed}`}
+                    aria-label={`seed ${m.seed}${m.saved ? ' 저장됨' : ''}`}
                     aria-pressed={selected ? on : undefined}
                     onClick={() => (selected ? toggle(m.id) : view(m.id))}
                     className={cx(
@@ -211,6 +194,15 @@ export function HistoryPane(): ReactNode {
                     {m.kind !== 't2i' && (
                       <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 text-[10px]">
                         {{ i2i: 'i2i', inpaint: '인페', director: '도구', upscale: '2x', t2i: '' }[m.kind]}
+                      </span>
+                    )}
+                    {m.saved && (
+                      <span
+                        title={`저장됨: ${m.saved}`}
+                        className="absolute bottom-1 right-1 flex h-5 items-center gap-0.5 rounded-full bg-ok px-1.5 text-[10px] font-semibold text-black"
+                      >
+                        <Download size={11} strokeWidth={3} />
+                        저장됨
                       </span>
                     )}
                     {m.fav && !on && (

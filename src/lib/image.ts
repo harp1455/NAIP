@@ -141,3 +141,32 @@ export function pickImageFiles(multiple = false, accept = 'image/*'): Promise<Fi
     input.click()
   })
 }
+
+/**
+ * NAI 메타데이터를 지운 PNG로 다시 만든다. NAI는 생성 정보를 두 군데에 넣는다:
+ * - PNG 텍스트 청크(tEXt: Comment, Description, Source …) — 캔버스로 다시 인코딩하면 사라진다
+ * - 알파 채널 최하위 비트(stealth pnginfo) — 알파 값을 정리해 지운다.
+ *   불투명 그림은 전부 255로, 투명 배경 그림은 투명도를 유지한 채 최하위 비트만 고정한다
+ */
+export async function stripMetadata(blob: Blob): Promise<Blob> {
+  const img = await loadImage(blob)
+  const [c, ctx] = canvasOf(img.naturalWidth, img.naturalHeight)
+  ctx.drawImage(img, 0, 0)
+  const data = ctx.getImageData(0, 0, c.width, c.height)
+  const d = data.data
+  let opaque = true
+  for (let i = 3; i < d.length; i += 4) {
+    if (d[i] < 254) {
+      opaque = false
+      break
+    }
+  }
+  for (let i = 3; i < d.length; i += 4) {
+    const a = d[i]
+    d[i] = opaque || a >= 254 ? 255 : a <= 1 ? 0 : a | 1
+  }
+  ctx.putImageData(data, 0, 0)
+  return new Promise((resolve, reject) =>
+    c.toBlob((b) => (b ? resolve(b) : reject(new Error('이미지를 다시 만들지 못했습니다'))), 'image/png')
+  )
+}
