@@ -24,7 +24,8 @@ export function SaveSheet(): ReactNode {
   const [names, setNames] = useState<Record<number, string>>(() =>
     Object.fromEntries((items ?? []).map((m) => [m.id, stem(fileNameFor(m.id, m.seed, m.mime))]))
   )
-  const [batch, setBatch] = useState('')
+  const [mode, setMode] = useState(settings.nameMode)
+  const [base, setBase] = useState('')
   const [progress, setProgress] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   if (!items) return null
@@ -38,16 +39,20 @@ export function SaveSheet(): ReactNode {
     if (!settings.saveFolders.includes(name)) settings.patch({ saveFolders: [...settings.saveFolders, name] })
     setFolder(name)
   }
-  const applyBatch = (): void => {
-    const base = cleanFileName(batch)
-    if (!base) return
-    const width = Math.max(2, String(items.length).length)
-    setNames(Object.fromEntries(items.map((m, i) => [m.id, `${base}_${String(i + 1).padStart(width, '0')}`])))
+  // 자동 이름: 이름을 적으면 `이름_번호`(같은 폴더·이름의 지난 번호에 이어서), 비우면 날짜·시드로 된 기본 이름
+  const cleanBase = cleanFileName(base)
+  const counterKey = `${folder}/${cleanBase.toLowerCase()}`
+  const startAt = (settings.nameCounters[counterKey] ?? 0) + 1
+  const width = Math.max(2, String(startAt + items.length - 1).length)
+  const nameOf = (m: (typeof items)[number], i: number): string => {
+    const fallback = stem(fileNameFor(m.id, m.seed, m.mime))
+    if (mode === 'manual') return cleanFileName(names[m.id] ?? '') || fallback
+    return cleanBase ? `${cleanBase}_${String(startAt + i).padStart(width, '0')}` : fallback
   }
 
   const save = async (): Promise<void> => {
     setError(null)
-    settings.patch({ saveFolder: folder, stripMeta: strip })
+    settings.patch({ saveFolder: folder, stripMeta: strip, nameMode: mode })
     // 같은 이름이 겹치면 뒤에 번호를 붙여 서로 덮어쓰지 않게 한다
     const used = new Set<string>()
     let saved = 0
@@ -58,13 +63,22 @@ export function SaveSheet(): ReactNode {
         if (!original) throw new Error('원본을 찾을 수 없는 이미지가 있습니다')
         const blob = strip ? await stripMetadata(original) : original
         const ext = blob.type === 'image/webp' ? 'webp' : 'png'
-        const base = cleanFileName(names[m.id] ?? '') || stem(fileNameFor(m.id, m.seed, m.mime))
-        let name = base
-        for (let n = 2; used.has(name.toLowerCase()); n++) name = `${base}_${n}`
+        const wanted = nameOf(m, i)
+        let name = wanted
+        for (let n = 2; used.has(name.toLowerCase()); n++) name = `${wanted}_${n}`
         used.add(name.toLowerCase())
         await saveToGallery(blob, `${name}.${ext}`, folder || undefined)
         await useHistory.getState().markSaved(m.id, `${folder ? `${folder}/` : ''}${name}.${ext}`)
         saved++
+        // `이름_번호` 꼴로 저장했으면(자동이든 직접 적었든) 다음 자동 번호가 그 뒤부터 이어지게 기록한다
+        const numbered = /^(.*)_(\d+)$/.exec(name)
+        if (numbered) {
+          const key = `${folder}/${numbered[1].toLowerCase()}`
+          const counters = useSettings.getState().nameCounters
+          if (Number(numbered[2]) > (counters[key] ?? 0)) {
+            useSettings.getState().patch({ nameCounters: { ...counters, [key]: Number(numbered[2]) } })
+          }
+        }
       }
       onDone?.()
       close()
@@ -134,30 +148,55 @@ export function SaveSheet(): ReactNode {
           : '원본 파일 그대로 저장합니다. 다른 사람이 파일에서 프롬프트를 읽을 수 있습니다.'}
       </p>
 
-      {items.length > 1 && (
+      <div className="mt-3 text-xs text-dim">파일 이름</div>
+      <div className="mt-1 flex gap-1.5" role="radiogroup" aria-label="파일 이름 정하는 방식">
+        <button type="button" role="radio" aria-checked={mode === 'auto'} className={choice(mode === 'auto')} onClick={() => setMode('auto')}>
+          자동 (번호)
+        </button>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={mode === 'manual'}
+          className={choice(mode === 'manual')}
+          onClick={() => {
+            // 자동으로 매겨진 이름에서 이어서 고칠 수 있게 넘겨준다
+            setNames(Object.fromEntries(items.map((m, i) => [m.id, nameOf(m, i)])))
+            setMode('manual')
+          }}
+        >
+          하나씩 지정
+        </button>
+      </div>
+      {mode === 'auto' && (
         <>
-          <div className="mt-3 text-xs text-dim">이름 한꺼번에 정하기 — 뒤에 번호가 붙습니다</div>
-          <div className="mt-1 flex gap-1.5">
-            <TextInput label="일괄 이름" value={batch} onChange={setBatch} placeholder="예: 해변 마요" />
-            <Button onClick={applyBatch} disabled={!cleanFileName(batch)}>
-              적용
-            </Button>
+          <div className="mt-1.5">
+            <TextInput label="이름" value={base} onChange={setBase} placeholder="이름 (비우면 날짜·시드로 자동)" />
           </div>
+          <p className="mt-1 text-xs text-dim">
+            {cleanBase
+              ? `"${cleanBase}_번호"로 저장합니다.${startAt > 1 ? ` 이 폴더에서 쓰던 번호에 이어 ${startAt}번부터 매깁니다.` : ''}`
+              : '이름을 적으면 뒤에 번호를 붙이고, 비워 두면 날짜와 시드로 된 이름을 자동으로 붙입니다.'}
+          </p>
         </>
       )}
 
-      <div className="mt-3 text-xs text-dim">파일 이름</div>
-      <ul className="mt-1 flex flex-col gap-1.5">
-        {items.map((m) => (
+      <ul className="mt-2 flex flex-col gap-1.5">
+        {items.map((m, i) => (
           <li key={m.id} className="flex items-center gap-2">
             <img src={m.thumb} alt="" className="h-12 w-12 shrink-0 rounded-md object-cover" />
             <div className="min-w-0 flex-1">
-              <TextInput
-                label={`seed ${m.seed} 파일 이름`}
-                value={names[m.id] ?? ''}
-                onChange={(v) => setNames({ ...names, [m.id]: v })}
-                className="font-mono !text-[13px]"
-              />
+              {mode === 'manual' ? (
+                <TextInput
+                  label={`seed ${m.seed} 파일 이름`}
+                  value={names[m.id] ?? ''}
+                  onChange={(v) => setNames({ ...names, [m.id]: v })}
+                  className="font-mono !text-[13px]"
+                />
+              ) : (
+                <p className="truncate font-mono text-[13px]" data-testid="auto-name">
+                  {nameOf(m, i)}
+                </p>
+              )}
               {m.saved && <p className="mt-0.5 truncate text-[11px] text-ok">이미 저장됨: {m.saved}</p>}
             </div>
           </li>

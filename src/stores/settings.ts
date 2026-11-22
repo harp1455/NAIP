@@ -30,13 +30,17 @@ interface SettingsState {
   /** 마지막으로 고른 저장 폴더 ('' = 기본) 와 메타데이터 제거 여부 */
   saveFolder: string
   stripMeta: boolean
+  /** 저장할 때 이름 정하는 방식: auto = 자동(번호), manual = 하나씩 지정 */
+  nameMode: 'auto' | 'manual'
+  /** 자동 번호를 이어 매기기 위한 마지막 번호 (`폴더/이름` → 번호) */
+  nameCounters: Record<string, number>
   subscription: SubscriptionInfo | null
   subscriptionError: string | null
   setToken: (token: string) => void
   setDelay: (min: number, max: number) => void
   patch: (
     p: Partial<
-      Pick<SettingsState, 'autoSave' | 'keepAwake' | 'background' | 'vibrate' | 'historyLimit' | 'sceneFolders' | 'tagSource' | 'saveFolders' | 'saveFolder' | 'stripMeta'>
+      Pick<SettingsState, 'autoSave' | 'keepAwake' | 'background' | 'vibrate' | 'historyLimit' | 'sceneFolders' | 'tagSource' | 'saveFolders' | 'saveFolder' | 'stripMeta' | 'nameMode' | 'nameCounters'>
     >
   ) => void
   refreshSubscription: () => Promise<void>
@@ -58,6 +62,8 @@ export const useSettings = create<SettingsState>()(
       saveFolders: [],
       saveFolder: '',
       stripMeta: false,
+      nameMode: 'auto',
+      nameCounters: {},
       subscription: null,
       subscriptionError: null,
       setToken: (token) => set({ token: token.trim(), subscription: null, subscriptionError: null }),
@@ -96,7 +102,9 @@ export const useSettings = create<SettingsState>()(
         tagSource: s.tagSource,
         saveFolders: s.saveFolders,
         saveFolder: s.saveFolder,
-        stripMeta: s.stripMeta
+        stripMeta: s.stripMeta,
+        nameMode: s.nameMode,
+        nameCounters: s.nameCounters
       })
     }
   )
