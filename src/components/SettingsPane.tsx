@@ -9,6 +9,7 @@ import { usePrompt } from '../stores/prompt'
 import { anlasOf, DELAY_MAX, DELAY_MIN, useSettings } from '../stores/settings'
 import { CURRENT_BUILD, useUpdate } from '../stores/update'
 import { useGeneration } from '../stores/generation'
+import { V5Gauge } from './V5Gauge'
 import { Button, IconButton, Row, Select, SliderRow, TextInput, Toggle } from './ui'
 
 const LIMITS = [0, 200, 500, 1000, 3000].map((value) => ({
@@ -221,6 +222,7 @@ export function SettingsPane(): ReactNode {
               <span className="text-dim">{s.token ? '토큰 미확인' : '토큰이 설정되지 않았습니다'}</span>
             )}
           </p>
+          <V5Gauge />
         </Group>
 
         <Group title="대량 생성">

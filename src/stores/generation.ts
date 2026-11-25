@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { encodeVibe, generateImage, NaiHttpError } from '../nai/client'
 import { estimateAnlas, type AnlasEstimate } from '../nai/anlas'
-import { inpaintingModelFor, modelCapabilities } from '../nai/models'
+import { inpaintingModelFor, isV5Model, modelCapabilities } from '../nai/models'
 import { clampReferenceStrength, referenceCaption, referencesForModel } from '../nai/reference'
 import type { BuildOptions, CharacterReferenceOptions, VibeOptions } from '../nai/payload'
 import type { CharacterPromptInput, GenerationRequest } from '../nai/types'
@@ -305,7 +305,8 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
               .then(() => useHistory.getState().markSaved(id, `${folder ? `${cleanFileName(folder)}/` : ''}${fileName}`))
               .catch((e: Error) => set({ error: `갤러리 저장 실패: ${e.message}` }))
           }
-          if ((i + 1) % 10 === 0) void useSettings.getState().refreshSubscription()
+          // V5는 할당량 게이지가 장마다 줄어드는 것이 보이도록 매번, 그 밖에는 10장마다 잔액을 새로 읽는다
+          if (isV5Model(base.model) || (i + 1) % 10 === 0) void useSettings.getState().refreshSubscription()
         }
 
         if (i < count - 1) {

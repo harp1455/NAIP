@@ -29,6 +29,7 @@ import { PromptPanel, type SheetName } from './components/PromptPanel'
 import { CharRefSheet, VibeSheet } from './components/RefSheets'
 import { SettingsPane } from './components/SettingsPane'
 import { SourceSheet } from './components/SourceSheet'
+import { V5Gauge } from './components/V5Gauge'
 
 type Tab = 'prompt' | 'scenes' | 'result' | 'history' | 'settings'
 
@@ -182,6 +183,7 @@ export default function App(): ReactNode {
           </nav>
         )}
       </header>
+      <V5Gauge compact />
       <UpdateBanner />
 
       <div className="flex min-h-0 flex-1">
