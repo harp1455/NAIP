@@ -74,7 +74,18 @@ export function effectiveSteps(model: string, steps: number): number {
 
 export interface NaiModelCapabilities {
   vibes: boolean
+  /** 정밀(캐릭터) 레퍼런스 — V4.5 계열과 V5 Full·Curated. V4와 V5 Medium은 지원하지 않는다 */
   characterReferences: boolean
+  /** 레퍼런스 Fidelity 지원 — 없으면(V5) secondary strength는 항상 0 */
+  referenceFidelity: boolean
+  /** 레퍼런스 Strength 상한 (V4.5 = 1, V5 = 5) */
+  referenceStrengthMax: number
+  /** 레퍼런스 종류 "의상"과 "같은 의상 선호" 지원 (V5) */
+  outfitReference: boolean
+  /** 보낼 때 레퍼런스 이미지 손질 — letterbox = 검정 여백 캔버스(V4.5), bucket = V5 크기 표에 맞춰 잘라 냄 */
+  referencePreprocess: 'letterbox' | 'bucket'
+  /** 인페인트 요청에도 레퍼런스를 실을 수 있는가 (V5는 아직 불가) */
+  referenceWithInpaint: boolean
   variety: boolean
   noiseScheduleSelection: boolean
   transparency: boolean
@@ -85,7 +96,13 @@ export function modelCapabilities(model: string): NaiModelCapabilities {
   if (isV5Model(model)) {
     return {
       vibes: false,
-      characterReferences: false,
+      // 2026-11-24: V5 Full(High)·Curated에 정밀 레퍼런스 개방. Medium은 웹도 "needs High effort"로 막는다
+      characterReferences: !isMediumEffortModel(model),
+      referenceFidelity: false,
+      referenceStrengthMax: 5,
+      outfitReference: true,
+      referencePreprocess: 'bucket',
+      referenceWithInpaint: false,
       variety: false,
       noiseScheduleSelection: false,
       transparency: true,
@@ -94,7 +111,12 @@ export function modelCapabilities(model: string): NaiModelCapabilities {
   }
   return {
     vibes: true,
-    characterReferences: true,
+    characterReferences: model.includes('nai-diffusion-4-5'),
+    referenceFidelity: true,
+    referenceStrengthMax: 1,
+    outfitReference: false,
+    referencePreprocess: 'letterbox',
+    referenceWithInpaint: true,
     variety: true,
     noiseScheduleSelection: true,
     transparency: false,

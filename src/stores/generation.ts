@@ -2,12 +2,14 @@ import { create } from 'zustand'
 import { encodeVibe, generateImage, NaiHttpError } from '../nai/client'
 import { estimateAnlas, type AnlasEstimate } from '../nai/anlas'
 import { inpaintingModelFor, modelCapabilities } from '../nai/models'
+import { clampReferenceStrength, referenceCaption, referencesForModel } from '../nai/reference'
 import type { BuildOptions, CharacterReferenceOptions, VibeOptions } from '../nai/payload'
 import type { CharacterPromptInput, GenerationRequest } from '../nai/types'
 import {
   makeThumb,
   normalizeInpaintMask,
   processCharRefImage,
+  processCharRefImageV5,
   resizeToPngBase64
 } from '../lib/image'
 import type { SettingsSnapshot } from '../lib/db'
@@ -150,10 +152,6 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
     const count = plan.length
 
     const vibeRows = caps.vibes ? useRefs.getState().vibes.filter((v) => v.enabled) : []
-    const refRows = caps.characterReferences
-      ? useRefs.getState().charRefs.filter((r) => r.enabled)
-      : []
-
     controller = new AbortController()
     const signal = controller.signal
     set({
@@ -183,16 +181,6 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
         }
         vibes.push({ strength: v.strength, encodedVibeBase64: encoded })
       }
-      const characterReferences: CharacterReferenceOptions[] = []
-      for (const r of refRows) {
-        characterReferences.push({
-          referenceType: r.type,
-          strength: r.strength,
-          fidelity: r.fidelity,
-          imageBase64: await processCharRefImage(r.image)
-        })
-      }
-
       // ── i2i / 인페인트 소스 준비
       let i2iBase: Omit<NonNullable<BuildOptions['i2i']>, 'extraNoiseSeed'> | null = null
       let model = base.model
@@ -211,6 +199,21 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
         }
       }
       const kind = i2iBase ? (i2iBase.maskBase64 ? 'inpaint' : 'i2i') : 't2i'
+
+      // ── 정밀 레퍼런스 준비 (배치당 1회). 모델이 받는 종류만, 모델에 맞는 크기·강도로 보낸다
+      const characterReferences: CharacterReferenceOptions[] = []
+      for (const r of referencesForModel(useRefs.getState().charRefs, base.model, kind === 'inpaint')) {
+        characterReferences.push({
+          referenceType: referenceCaption(r.type, r.sameOutfit, caps)!,
+          strength: clampReferenceStrength(r.strength, caps),
+          // Fidelity가 없는 모델(V5)은 secondary strength가 0이 되도록 1로 보낸다
+          fidelity: caps.referenceFidelity ? r.fidelity : 1,
+          imageBase64:
+            caps.referencePreprocess === 'bucket'
+              ? await processCharRefImageV5(r.image)
+              : await processCharRefImage(r.image)
+        })
+      }
 
       // ── 1장씩 count번 요청 (요청당 n_samples: 1)
       for (let i = 0; i < count; i++) {
@@ -345,7 +348,7 @@ export function estimateCurrent(
     height: override?.height ?? p.params.height,
     steps: p.params.steps,
     strength: source.image ? source.strength : 1,
-    charRefCount: caps.characterReferences ? refs.charRefs.filter((r) => r.enabled).length : 0,
+    charRefCount: referencesForModel(refs.charRefs, p.params.model, !!(source.image && source.mask)).length,
     isOpus: sub?.tier === 'opus',
     batchCount: override?.batchCount ?? Math.max(1, p.count),
     unencodedVibes: vibes.filter((v) => !v.encodings[vibeKey(p.params.model, v.infoExtracted)]).length,

@@ -1,7 +1,9 @@
 import { useState, type ReactNode } from 'react'
 import { ImagePlus, Paintbrush, Trash2 } from 'lucide-react'
 import { pickImageFiles, pngDataUrl } from '../lib/image'
+import { modelCapabilities } from '../nai/models'
 import { usePrompt } from '../stores/prompt'
+import { useRefs } from '../stores/refs'
 import { useSource } from '../stores/source'
 import { MaskEditor } from './MaskEditor'
 import { Button, Sheet, SliderRow } from './ui'
@@ -10,6 +12,12 @@ export function SourceSheet(props: { onClose: () => void }): ReactNode {
   const s = useSource()
   const { width, height } = usePrompt((p) => p.params)
   const [editing, setEditing] = useState(false)
+  const model = usePrompt((p) => p.params.model)
+  // V5는 인페인트에 레퍼런스를 함께 보낼 수 없다 — 켜 둔 레퍼런스가 있으면 미리 알린다
+  const refNote =
+    !modelCapabilities(model).referenceWithInpaint && useRefs.getState().charRefs.some((r) => r.enabled)
+      ? ' V5 인페인트에는 켜 둔 레퍼런스가 적용되지 않습니다.'
+      : ''
   const [error, setError] = useState<string | null>(null)
 
   const pick = (): void => {
@@ -99,7 +107,7 @@ export function SourceSheet(props: { onClose: () => void }): ReactNode {
             />
             <p className="text-xs text-dim">
               {s.mask
-                ? '인페인트는 모델의 인페인팅 버전으로 자동 전환되어 요청됩니다.'
+                ? `인페인트는 모델의 인페인팅 버전으로 자동 전환되어 요청됩니다.${refNote}`
                 : '강도가 낮을수록 원본에 가깝고, 높을수록 많이 바뀝니다.'}
             </p>
           </div>

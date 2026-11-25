@@ -140,3 +140,80 @@ describe('update', () => {
     expect(parseRelease({ tag_name: 'build-3', assets: [] })).toBeNull()
   })
 })
+
+import { modelCapabilities } from '../src/nai/models'
+import {
+  planReferenceBucket,
+  referenceBlockReason,
+  referenceCaption,
+  referencesForModel,
+  V5_REFERENCE_BUCKETS
+} from '../src/nai/reference'
+
+describe('precise reference', () => {
+  const V5 = modelCapabilities('nai-diffusion-5-full')
+  const V45 = modelCapabilities('nai-diffusion-4-5-full')
+
+  it('is available on V4.5 and V5 Full/Curated only', () => {
+    const on = (m: string): boolean => modelCapabilities(m).characterReferences
+    expect(on('nai-diffusion-4-5-full')).toBe(true)
+    expect(on('nai-diffusion-4-5-curated')).toBe(true)
+    expect(on('nai-diffusion-5-full')).toBe(true)
+    expect(on('nai-diffusion-5-curated')).toBe(true)
+    expect(on('nai-diffusion-5-full-medium')).toBe(false)
+    expect(on('nai-diffusion-4-full')).toBe(false)
+    expect(modelCapabilities('nai-diffusion-5-curated').vibes).toBe(false)
+    expect(referenceBlockReason('nai-diffusion-5-full', true)).toMatch(/인페인트/)
+    expect(referenceBlockReason('nai-diffusion-4-5-full', true)).toBeNull()
+  })
+
+  it('maps types and the same-outfit toggle to captions', () => {
+    expect(referenceCaption('character', undefined, V5)).toBe('character')
+    expect(referenceCaption('character', true, V5)).toBe('character_mainoutfit')
+    expect(referenceCaption('character&style', undefined, V5)).toBe('character&style')
+    expect(referenceCaption('character&style', false, V5)).toBe('character&style_anyoutfit')
+    expect(referenceCaption('costume', undefined, V5)).toBe('costume')
+    expect(referenceCaption('character', true, V45)).toBe('character')
+    expect(referenceCaption('costume', undefined, V45)).toBeNull()
+  })
+
+  it('picks only the references a model accepts', () => {
+    const refs = [
+      { id: 1, enabled: true, type: 'character' as const },
+      { id: 2, enabled: true, type: 'costume' as const },
+      { id: 3, enabled: false, type: 'style' as const }
+    ]
+    const ids = (m: string, inpaint = false): number[] => referencesForModel(refs, m, inpaint).map((r) => r.id)
+    expect(ids('nai-diffusion-5-full')).toEqual([1, 2])
+    expect(ids('nai-diffusion-4-5-full')).toEqual([1])
+    expect(ids('nai-diffusion-5-full-medium')).toEqual([])
+    expect(ids('nai-diffusion-5-full', true)).toEqual([])
+    expect(ids('nai-diffusion-4-5-full', true)).toEqual([1])
+  })
+
+  it('fits reference images to the V5 bucket table', () => {
+    expect(V5_REFERENCE_BUCKETS).toHaveLength(97)
+    expect(planReferenceBucket(1472, 1472)).toEqual({ width: 1024, height: 1024, resizeWidth: 1024, resizeHeight: 1024, left: 0, top: 0 })
+    expect(planReferenceBucket(1000, 700)).toEqual({ width: 1216, height: 832, resizeWidth: 1216, resizeHeight: 851, left: 0, top: 9 })
+    expect(planReferenceBucket(700, 1000)).toEqual({ width: 832, height: 1216, resizeWidth: 851, resizeHeight: 1216, left: 9, top: 0 })
+  })
+
+  it('sends V5 references without fidelity', () => {
+    const p = buildGenerateImagePayload(
+      { ...req, model: 'nai-diffusion-5-full' },
+      { characterReferences: [{ referenceType: 'costume', strength: 2.5, fidelity: 1, imageBase64: 'r' }] }
+    )
+    expect(p.parameters.director_reference_images).toEqual(['r'])
+    expect(p.parameters.director_reference_strength_values).toEqual([2.5])
+    expect(p.parameters.director_reference_secondary_strength_values).toEqual([0])
+    expect(p.parameters.director_reference_descriptions).toEqual([
+      { caption: { base_caption: 'costume', char_captions: [] }, legacy_uc: false }
+    ])
+    expect(p.parameters).not.toHaveProperty('reference_image_multiple')
+    const medium = buildGenerateImagePayload(
+      { ...req, model: 'nai-diffusion-5-full-medium' },
+      { characterReferences: [{ referenceType: 'character', strength: 1, fidelity: 1, imageBase64: 'r' }] }
+    )
+    expect(medium.parameters).not.toHaveProperty('director_reference_images')
+  })
+})

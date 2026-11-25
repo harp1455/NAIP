@@ -3,6 +3,7 @@ import { createJSONStorage, persist } from 'zustand/middleware'
 import { idbStorage } from '../lib/db'
 import { makeThumb, pngDataUrl, toPngBase64 } from '../lib/image'
 import { uid } from '../lib/util'
+import type { ReferenceType } from '../nai/reference'
 
 export interface Vibe {
   id: number
@@ -17,7 +18,8 @@ export interface Vibe {
   encodings: Record<string, string>
 }
 
-export type RefType = 'character' | 'style' | 'character&style'
+/** costume(의상)은 V5 전용 */
+export type RefType = ReferenceType
 
 export interface CharRef {
   id: number
@@ -25,6 +27,8 @@ export interface CharRef {
   image: string
   thumb: string
   type: RefType
+  /** "같은 의상 선호" (V5, 캐릭터 계열만). 없으면 종류별 기본값 */
+  sameOutfit?: boolean
   strength: number
   fidelity: number
   enabled: boolean
@@ -43,6 +47,11 @@ interface RefsState {
   setVibeEncoding: (id: number, key: string, data: string) => void
   removeVibe: (id: number) => void
   addCharRefs: (files: File[]) => Promise<void>
+  /** 이미 가진 이미지(히스토리 등)를 레퍼런스·바이브로 추가 */
+  addCharRefFrom: (src: Blob, name: string, type: RefType) => Promise<void>
+  addVibeFrom: (src: Blob, name: string) => Promise<void>
+  duplicateCharRef: (id: number) => void
+  setAllCharRefs: (enabled: boolean) => void
   patchCharRef: (id: number, p: Partial<Omit<CharRef, 'id'>>) => void
   removeCharRef: (id: number) => void
 }
@@ -99,6 +108,42 @@ export const useRefs = create<RefsState>()(
           set((s) => ({ charRefs: [...s.charRefs, ref] }))
         }
       },
+      addCharRefFrom: async (src, name, type) => {
+        const { base64 } = await toPngBase64(src, 2048)
+        const ref: CharRef = {
+          id: uid(),
+          name,
+          image: base64,
+          thumb: await makeThumb(pngDataUrl(base64), 256),
+          type,
+          strength: 1,
+          fidelity: 1,
+          enabled: true
+        }
+        set((s) => ({ charRefs: [...s.charRefs, ref] }))
+      },
+      addVibeFrom: async (src, name) => {
+        const { base64 } = await toPngBase64(src, 1536)
+        const vibe: Vibe = {
+          id: uid(),
+          name,
+          image: base64,
+          thumb: await makeThumb(pngDataUrl(base64), 256),
+          strength: 0.6,
+          infoExtracted: 1,
+          enabled: true,
+          encodings: {}
+        }
+        set((s) => ({ vibes: [...s.vibes, vibe] }))
+      },
+      duplicateCharRef: (id) =>
+        set((s) => {
+          const i = s.charRefs.findIndex((r) => r.id === id)
+          if (i < 0) return s
+          const copy = { ...s.charRefs[i], id: uid() }
+          return { charRefs: [...s.charRefs.slice(0, i + 1), copy, ...s.charRefs.slice(i + 1)] }
+        }),
+      setAllCharRefs: (enabled) => set((s) => ({ charRefs: s.charRefs.map((r) => ({ ...r, enabled })) })),
       patchCharRef: (id, p) =>
         set((s) => ({ charRefs: s.charRefs.map((r) => (r.id === id ? { ...r, ...p } : r)) })),
       removeCharRef: (id) => set((s) => ({ charRefs: s.charRefs.filter((r) => r.id !== id) }))

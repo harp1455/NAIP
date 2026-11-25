@@ -1,3 +1,5 @@
+import { planReferenceBucket } from '../nai/reference'
+
 /** 캔버스 기반 이미지 유틸 (NAIS3가 sharp로 하던 전처리를 WebView에서 수행) */
 
 export function loadImage(src: string | Blob): Promise<HTMLImageElement> {
@@ -96,6 +98,21 @@ export async function processCharRefImage(src: string): Promise<string> {
 }
 
 /**
+ * V5 레퍼런스 전처리 — 종횡비가 가장 가까운 V5 크기 칸을 덮도록 그리고 가운데를 잘라 낸다
+ * (검정 여백 없이). 공식 웹과 같은 표·식이며 JPEG로 보낸다 (SDStudio에서 검증된 방식).
+ */
+export async function processCharRefImageV5(src: string): Promise<string> {
+  const img = await loadImage(pngDataUrl(src))
+  const plan = planReferenceBucket(img.naturalWidth, img.naturalHeight)
+  const [c, ctx] = canvasOf(plan.width, plan.height)
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, plan.width, plan.height)
+  ctx.imageSmoothingQuality = 'high'
+  ctx.drawImage(img, -plan.left, -plan.top, plan.resizeWidth, plan.resizeHeight)
+  return stripDataUrl(c.toDataURL('image/jpeg', 0.95))
+}
+
+/**
  * 인페인트 마스크 정규화 (NAIS3 normalizeInpaintMask):
  * 1/8로 평균 축소 → 블록 평균 > 25면 흰색 → 8배 확대(nearest). 8×8 잠재 블록에 정렬된
  * 순수 흑백 RGB PNG. 칠한 영역이 없으면 null.
@@ -148,12 +165,20 @@ export function pickImageFiles(multiple = false, accept = 'image/*'): Promise<Fi
  * - 알파 채널 최하위 비트(stealth pnginfo) — 알파 값을 정리해 지운다.
  *   불투명 그림은 전부 255로, 투명 배경 그림은 투명도를 유지한 채 최하위 비트만 고정한다
  */
-export async function stripMetadata(blob: Blob): Promise<Blob> {
+export async function stripMetadataOnMainThread(blob: Blob): Promise<Blob> {
   const img = await loadImage(blob)
   const [c, ctx] = canvasOf(img.naturalWidth, img.naturalHeight)
   ctx.drawImage(img, 0, 0)
   const data = ctx.getImageData(0, 0, c.width, c.height)
-  const d = data.data
+  scrubAlpha(data.data)
+  ctx.putImageData(data, 0, 0)
+  return new Promise((resolve, reject) =>
+    c.toBlob((b) => (b ? resolve(b) : reject(new Error('이미지를 다시 만들지 못했습니다'))), 'image/png')
+  )
+}
+
+/** RGBA 배열의 알파에서 숨은 비트를 지운다 (불투명 그림은 전부 255, 투명 배경 그림은 최하위 비트만 고정) */
+export function scrubAlpha(d: Uint8ClampedArray): void {
   let opaque = true
   for (let i = 3; i < d.length; i += 4) {
     if (d[i] < 254) {
@@ -161,12 +186,12 @@ export async function stripMetadata(blob: Blob): Promise<Blob> {
       break
     }
   }
+  if (opaque) {
+    for (let i = 3; i < d.length; i += 4) d[i] = 255
+    return
+  }
   for (let i = 3; i < d.length; i += 4) {
     const a = d[i]
-    d[i] = opaque || a >= 254 ? 255 : a <= 1 ? 0 : a | 1
+    d[i] = a >= 254 ? 255 : a <= 1 ? 0 : a | 1
   }
-  ctx.putImageData(data, 0, 0)
-  return new Promise((resolve, reject) =>
-    c.toBlob((b) => (b ? resolve(b) : reject(new Error('이미지를 다시 만들지 못했습니다'))), 'image/png')
-  )
 }

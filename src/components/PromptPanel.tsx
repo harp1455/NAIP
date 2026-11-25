@@ -6,6 +6,7 @@ import { fromMetadata } from '../lib/apply'
 import { pickImageFiles } from '../lib/image'
 import { readImageSettings } from '../lib/metadata'
 import { useTokenCount } from '../lib/tokens'
+import { referencesForModel } from '../nai/reference'
 import { cx } from '../lib/util'
 import { useCharacters } from '../stores/characters'
 import { useDirector } from '../stores/director'
@@ -174,7 +175,7 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
         <ToolButton
           icon={<ScanFace size={16} />}
           label="레퍼런스"
-          badge={caps.characterReferences ? refs.charRefs.filter((r) => r.enabled).length : 0}
+          badge={referencesForModel(refs.charRefs, p.params.model, !!(source.image && source.mask)).length}
           disabled={!caps.characterReferences}
           onClick={() => props.open('refs')}
         />

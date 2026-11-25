@@ -51,5 +51,6 @@ export const UC_PRESET_OPTIONS: { value: UcPresetIndex; label: string }[] = [
 export const REF_TYPES = [
   { value: 'character&style', label: '캐릭터+스타일' },
   { value: 'character', label: '캐릭터' },
-  { value: 'style', label: '스타일' }
+  { value: 'style', label: '스타일' },
+  { value: 'costume', label: '의상 (V5)' }
 ] as const

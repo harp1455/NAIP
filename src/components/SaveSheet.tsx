@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { FolderPlus } from 'lucide-react'
 import * as db from '../lib/db'
-import { stripMetadata } from '../lib/image'
+import { STRIP_CONCURRENCY, stripMetadata } from '../lib/strip'
 import { cleanFileName, fileNameFor, saveToGallery } from '../lib/native'
 import { cx } from '../lib/util'
 import { useHistory } from '../stores/history'
@@ -53,40 +53,56 @@ export function SaveSheet(): ReactNode {
   const save = async (): Promise<void> => {
     setError(null)
     settings.patch({ saveFolder: folder, stripMeta: strip, nameMode: mode })
-    // 같은 이름이 겹치면 뒤에 번호를 붙여 서로 덮어쓰지 않게 한다
+    // 이름은 시작 전에 모두 확정한다 — 같은 이름이 겹치면 뒤에 번호를 붙여 서로 덮어쓰지 않게
     const used = new Set<string>()
+    const finalNames = items.map((m, i) => {
+      const wanted = nameOf(m, i)
+      let name = wanted
+      for (let n = 2; used.has(name.toLowerCase()); n++) name = `${wanted}_${n}`
+      used.add(name.toLowerCase())
+      return name
+    })
     let saved = 0
-    try {
-      for (const [i, m] of items.entries()) {
-        setProgress(i)
-        const original = await db.getBlob(m.id, m.mime)
-        if (!original) throw new Error('원본을 찾을 수 없는 이미지가 있습니다')
-        const blob = strip ? await stripMetadata(original) : original
-        const ext = blob.type === 'image/webp' ? 'webp' : 'png'
-        const wanted = nameOf(m, i)
-        let name = wanted
-        for (let n = 2; used.has(name.toLowerCase()); n++) name = `${wanted}_${n}`
-        used.add(name.toLowerCase())
-        await saveToGallery(blob, `${name}.${ext}`, folder || undefined)
-        await useHistory.getState().markSaved(m.id, `${folder ? `${folder}/` : ''}${name}.${ext}`)
-        saved++
-        // `이름_번호` 꼴로 저장했으면(자동이든 직접 적었든) 다음 자동 번호가 그 뒤부터 이어지게 기록한다
-        const numbered = /^(.*)_(\d+)$/.exec(name)
-        if (numbered) {
-          const key = `${folder}/${numbered[1].toLowerCase()}`
-          const counters = useSettings.getState().nameCounters
-          if (Number(numbered[2]) > (counters[key] ?? 0)) {
-            useSettings.getState().patch({ nameCounters: { ...counters, [key]: Number(numbered[2]) } })
+    let next = 0
+    let failure: Error | null = null
+    setProgress(0)
+    // 여러 장을 동시에 처리한다 (메타데이터 제거는 워커 수만큼, 그대로 저장은 2장씩)
+    const lane = async (): Promise<void> => {
+      while (!failure && next < items.length) {
+        const i = next++
+        const m = items[i]
+        try {
+          const original = await db.getBlob(m.id, m.mime)
+          if (!original) throw new Error('원본을 찾을 수 없는 이미지가 있습니다')
+          const blob = strip ? await stripMetadata(original) : original
+          const ext = blob.type === 'image/webp' ? 'webp' : 'png'
+          const name = finalNames[i]
+          await saveToGallery(blob, `${name}.${ext}`, folder || undefined)
+          await useHistory.getState().markSaved(m.id, `${folder ? `${folder}/` : ''}${name}.${ext}`)
+          saved++
+          setProgress(saved)
+          // `이름_번호` 꼴로 저장했으면(자동이든 직접 적었든) 다음 자동 번호가 그 뒤부터 이어지게 기록한다
+          const numbered = /^(.*)_(\d+)$/.exec(name)
+          if (numbered) {
+            const key = `${folder}/${numbered[1].toLowerCase()}`
+            const counters = useSettings.getState().nameCounters
+            if (Number(numbered[2]) > (counters[key] ?? 0)) {
+              useSettings.getState().patch({ nameCounters: { ...counters, [key]: Number(numbered[2]) } })
+            }
           }
+        } catch (e) {
+          failure = e as Error
         }
       }
-      onDone?.()
-      close()
-    } catch (e) {
-      setError(`${saved}장 저장 후 실패: ${(e as Error).message}`)
-    } finally {
-      setProgress(null)
     }
+    await Promise.all(Array.from({ length: strip ? STRIP_CONCURRENCY : 2 }, lane))
+    setProgress(null)
+    if (failure) {
+      setError(`${saved}장 저장 후 실패: ${(failure as Error).message}`)
+      return
+    }
+    onDone?.()
+    close()
   }
 
   const choice = (active: boolean): string =>
@@ -106,7 +122,7 @@ export function SaveSheet(): ReactNode {
             취소
           </Button>
           <Button variant="primary" className="flex-1" disabled={busy} onClick={() => void save()}>
-            {busy ? `저장 중 ${progress + 1}/${items.length}` : `${items.length}장 저장`}
+            {busy ? `저장 중 ${progress}/${items.length}` : `${items.length}장 저장`}
           </Button>
         </>
       }

@@ -4,6 +4,7 @@ import {
   ChevronRight,
   Download,
   ImageUp,
+  ScanFace,
   Info,
   Pin,
   Share2,
@@ -22,6 +23,8 @@ import { cx } from '../lib/util'
 import { imageUrl, useHistory } from '../stores/history'
 import { useDirector } from '../stores/director'
 import { useImporter } from '../stores/importer'
+import { useRefs, type RefType } from '../stores/refs'
+import { Sheet } from './ui'
 import { usePrompt } from '../stores/prompt'
 import { useSaver } from '../stores/saver'
 import { useSource } from '../stores/source'
@@ -58,6 +61,7 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
   const [zoomed, setZoomed] = useState(false)
   const [info, setInfo] = useState(false)
   const [note, setNote] = useState<string | null>(null)
+  const [refPicker, setRefPicker] = useState(false)
   useBackClose(() => view(null))
 
   useEffect(() => {
@@ -219,6 +223,9 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
           >
             <ImageUp size={19} />
           </Action>
+          <Action label="레퍼런스로" onClick={() => setRefPicker(true)}>
+            <ScanFace size={19} />
+          </Action>
           <Action
             label="도구"
             onClick={() =>
@@ -270,6 +277,44 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
           </Action>
         </div>
       </footer>
+      {refPicker && (
+        <Sheet top title="이 이미지를 레퍼런스로" onClose={() => setRefPicker(false)}>
+          <p className="mb-2 text-xs text-dim">
+            이 그림에서 무엇을 가져올지 고르세요. 레퍼런스 목록에 추가되고 바로 켜집니다.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            {(
+              [
+                ['character', '캐릭터', '생김새를 가져옵니다'],
+                ['style', '스타일', '그림체를 가져옵니다'],
+                ['costume', '의상', '옷차림을 가져옵니다 (V5 전용)'],
+                ['character&style', '캐릭터 + 스타일', '생김새와 그림체를 함께'],
+                ['vibe', '바이브 트랜스퍼', '분위기를 가져옵니다 (V4.5 전용, 인코딩 2 Anlas)']
+              ] as const
+            ).map(([kind, label, hint]) => (
+              <button
+                key={kind}
+                type="button"
+                className="rounded-lg border border-line bg-field px-3 py-2.5 text-left active:bg-raised"
+                onClick={() => {
+                  setRefPicker(false)
+                  const name = meta.sceneName ?? `seed ${meta.seed}`
+                  void withBlob(
+                    (blob) =>
+                      kind === 'vibe'
+                        ? useRefs.getState().addVibeFrom(blob, name)
+                        : useRefs.getState().addCharRefFrom(blob, name, kind as RefType),
+                    `${label} 레퍼런스로 추가했습니다`
+                  )
+                }}
+              >
+                <span className="block text-sm">{label}</span>
+                <span className="block text-xs text-dim">{hint}</span>
+              </button>
+            ))}
+          </div>
+        </Sheet>
+      )}
     </div>
   )
 }
