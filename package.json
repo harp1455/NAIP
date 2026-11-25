@@ -1,7 +1,7 @@
 {
   "name": "naip",
   "private": true,
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "NAIP - NovelAI bulk image generation client for Android (based on NAIS3)",
   "license": "GPL-3.0",
   "type": "module",

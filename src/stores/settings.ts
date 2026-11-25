@@ -38,6 +38,8 @@ interface SettingsState {
   updateRepo: string
   githubToken: string
   subscription: SubscriptionInfo | null
+  /** subscription을 서버에서 읽은 시각 (V5 할당량이 언제 다 차는지 계산하는 기준) */
+  subscriptionAt: number
   subscriptionError: string | null
   setToken: (token: string) => void
   setDelay: (min: number, max: number) => void
@@ -70,6 +72,7 @@ export const useSettings = create<SettingsState>()(
       updateRepo: 'harp1455/NAIP',
       githubToken: '',
       subscription: null,
+      subscriptionAt: 0,
       subscriptionError: null,
       setToken: (token) => set({ token: token.trim(), subscription: null, subscriptionError: null }),
       setDelay: (min, max) => {
@@ -86,7 +89,7 @@ export const useSettings = create<SettingsState>()(
         }
         try {
           const subscription = await fetchSubscription(token)
-          if (get().token === token) set({ subscription, subscriptionError: null })
+          if (get().token === token) set({ subscription, subscriptionAt: Date.now(), subscriptionError: null })
         } catch (e) {
           if (get().token === token) set({ subscriptionError: (e as Error).message })
         }

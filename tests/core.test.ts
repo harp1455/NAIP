@@ -217,3 +217,22 @@ describe('precise reference', () => {
     expect(medium.parameters).not.toHaveProperty('director_reference_images')
   })
 })
+
+import { formatDuration, fullAt } from '../src/components/V5Gauge'
+
+describe('V5 quota', () => {
+  it('estimates when the allowance is full again', () => {
+    const usage = { percent: 62.5, isNegative: false, timeUntilNextPercent: 6048 }
+    expect(fullAt(usage, 1_000_000)).toBe(1_000_000 + 37.5 * 6048 * 1000)
+    expect(fullAt({ ...usage, percent: 100 }, 1_000_000)).toBeNull()
+    expect(fullAt({ ...usage, timeUntilNextPercent: 0 }, 1_000_000)).toBeNull()
+    // 소진 상태(isNegative)는 0%에서부터 센다
+    expect(fullAt({ ...usage, isNegative: true }, 0 + 1)).toBe(1 + 100 * 6048 * 1000)
+  })
+
+  it('formats remaining time', () => {
+    expect(formatDuration(37.5 * 6048 * 1000)).toBe('2일 15시간')
+    expect(formatDuration(90 * 60000)).toBe('1시간 30분')
+    expect(formatDuration(5 * 60000)).toBe('5분')
+  })
+})
