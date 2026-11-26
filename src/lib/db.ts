@@ -29,6 +29,12 @@ export interface HistoryMeta {
   /** 즐겨찾기 (IndexedDB 인덱스용으로 1 또는 없음) */
   fav?: 1
   snap?: SettingsSnapshot
+  /** 실제로 보낸 내용(조각 치환 후, 퀄리티 태그·UC 프리셋 병합 전) — "다시 생성"이 똑같이 되풀이하는 데 쓴다 */
+  sent?: {
+    prompt: string
+    negative: string
+    chars: { name: string; prompt: string; negative: string; center?: { x: number; y: number } }[]
+  }
   /** 갤러리에 저장했으면 Pictures/NAIP 아래의 경로 (마지막으로 저장한 것) */
   saved?: string
 }

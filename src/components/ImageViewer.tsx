@@ -7,6 +7,7 @@ import {
   ScanFace,
   Info,
   Pin,
+  RefreshCw,
   Share2,
   SlidersHorizontal,
   Star,
@@ -22,6 +23,7 @@ import { fileNameFor, shareImage } from '../lib/native'
 import { cx } from '../lib/util'
 import { imageUrl, useHistory } from '../stores/history'
 import { useDirector } from '../stores/director'
+import { useGeneration } from '../stores/generation'
 import { useImporter } from '../stores/importer'
 import { useRefs, type RefType } from '../stores/refs'
 import { Sheet } from './ui'
@@ -255,6 +257,18 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
           >
             <SlidersHorizontal size={19} />
           </Action>
+          {meta.kind === 't2i' && meta.snap && (
+            <Action
+              label="다시 생성"
+              onClick={() => {
+                if (useGeneration.getState().running) return setNote('생성이 끝난 뒤에 다시 눌러 주세요')
+                void useGeneration.getState().start({ regenerate: meta })
+                setNote('같은 설정, 새 시드로 한 장 더 생성합니다')
+              }}
+            >
+              <RefreshCw size={19} />
+            </Action>
+          )}
           <Action
             label="시드 고정"
             onClick={() => {

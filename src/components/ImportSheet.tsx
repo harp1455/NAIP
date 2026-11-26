@@ -4,7 +4,7 @@ import { MODELS, SAMPLERS, UC_PRESET_OPTIONS } from '../nai/constants'
 import { applyImport, availableParts, type ImportPart } from '../lib/apply'
 import { cx } from '../lib/util'
 import { useImporter } from '../stores/importer'
-import { Button, Row, Sheet, TextInput, Toggle } from './ui'
+import { Button, Row, Select, Sheet, TextInput, Toggle } from './ui'
 
 const PART_LABEL: Record<ImportPart, string> = {
   prompt: '프롬프트',
@@ -14,7 +14,8 @@ const PART_LABEL: Record<ImportPart, string> = {
   size: '해상도',
   sampling: '샘플링 설정',
   quality: '퀄리티 태그 · UC 프리셋',
-  seed: '시드'
+  seed: '시드',
+  vibes: '바이브 트랜스퍼'
 }
 
 /** 불러온 설정을 항목별로 골라 적용하고, 원하면 새 프리셋으로 저장한다 */
@@ -22,10 +23,12 @@ export function ImportSheet(): ReactNode {
   const { data, origin, close } = useImporter()
   const [checked, setChecked] = useState<Set<ImportPart>>(
     // 시드는 같은 그림을 다시 뽑게 되므로 기본으로는 빼 둔다
-    () => new Set(data ? availableParts(data).filter((p) => p !== 'seed') : [])
+    // 바이브도 기본은 꺼 둔다 — 프롬프트만 가져올 때 지금 켜 둔 바이브가 바뀌지 않게
+    () => new Set(data ? availableParts(data).filter((p) => p !== 'seed' && p !== 'vibes') : [])
   )
   const [asPreset, setAsPreset] = useState(true)
   const [name, setName] = useState(origin)
+  const [vibeModel, setVibeModel] = useState('nai-diffusion-4-5-full')
   if (!data) return null
 
   const parts = availableParts(data)
@@ -55,7 +58,8 @@ export function ImportSheet(): ReactNode {
     ]
       .filter(Boolean)
       .join(' · '),
-    seed: String(data.seed ?? '')
+    seed: String(data.seed ?? ''),
+    vibes: `${data.vibes?.length ?? 0}개 (강도 ${(data.vibes ?? []).map((v) => v.strength.toFixed(2)).join(', ')}) — 원본 그림 없이 그대로 다시 켭니다`
   }
   const toggle = (part: ImportPart): void => {
     const next = new Set(checked)
@@ -85,7 +89,7 @@ export function ImportSheet(): ReactNode {
             className="flex-1"
             disabled={checked.size === 0}
             onClick={() => {
-              applyImport(data, checked, asPreset ? name : null)
+              applyImport(data, checked, asPreset ? name : null, vibeModel)
               close()
             }}
           >
@@ -132,6 +136,29 @@ export function ImportSheet(): ReactNode {
           )
         })}
       </ul>
+      {checked.has('vibes') && (
+        <div className="mt-2 rounded-lg border border-line bg-field p-3 text-xs text-dim">
+          {data.vibeModel ? (
+            <p>
+              이 바이브는 {MODELS.find((m) => m.value === data.vibeModel)?.label ?? data.vibeModel} 전용 인코딩입니다. 다른
+              모델에서는 쓸 수 없고, 지금 켜 둔 바이브는 꺼집니다.
+            </p>
+          ) : (
+            <label className="flex flex-col gap-1.5">
+              어느 모델로 만든 그림인지 이미지에서 알 수 없습니다. 만든 모델을 골라 주세요 (틀리면 결과가 이상해집니다).
+              <Select
+                label="바이브 모델"
+                value={vibeModel}
+                options={[
+                  { value: 'nai-diffusion-4-5-full', label: 'V4.5 Full' },
+                  { value: 'nai-diffusion-4-5-curated', label: 'V4.5 Curated' }
+                ]}
+                onChange={setVibeModel}
+              />
+            </label>
+          )}
+        </div>
+      )}
       <div className="mt-3 rounded-lg border border-line bg-field px-3">
         <Row label="새 프리셋으로 저장" hint="끄면 지금 프리셋은 그대로 두고 화면의 설정만 바꿉니다">
           <Toggle label="새 프리셋으로 저장" checked={asPreset} onChange={setAsPreset} />

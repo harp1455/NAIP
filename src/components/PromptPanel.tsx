@@ -20,14 +20,17 @@ import { Section, Stepper, TextArea } from './ui'
 
 export type SheetName = 'characters' | 'source' | 'vibes' | 'refs' | 'params' | 'presets' | 'fragments'
 
-function TokenBadge(props: { count: number | null; chars: number; limit: number }): ReactNode {
-  if (props.count === null) return <span className="font-mono text-dim">{props.chars}자</span>
+/** 쓴 토큰 수 / 모델의 토큰 한도 (V4·V4.5는 T5 512, V5 Full은 Qwen 1471, V5 Curated는 703) */
+function TokenBadge(props: { count: number | null; limit: number }): ReactNode {
   return (
     <span
-      className={cx('font-mono tabular-nums', props.count > props.limit ? 'text-danger' : 'text-dim')}
-      title="토큰 수 / 한도"
+      className={cx(
+        'font-mono tabular-nums',
+        props.count !== null && props.count > props.limit ? 'text-danger' : 'text-dim'
+      )}
+      title="쓴 토큰 수 / 토큰 한도"
     >
-      {props.count}/{props.limit}
+      {props.count ?? '…'}/{props.limit}
     </span>
   )
 }
@@ -106,7 +109,7 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
 
       <Section
         title="프롬프트"
-        right={<TokenBadge count={posCount} chars={merged.length} limit={limit} />}
+        right={<TokenBadge count={posCount} limit={limit} />}
       >
         <div className="flex flex-col gap-1 pl-0.5">
           <Section title="고정">
@@ -141,7 +144,7 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
 
       <Section
         title="네거티브"
-        right={<TokenBadge count={negCount} chars={mergedUc.length} limit={limit} />}
+        right={<TokenBadge count={negCount} limit={limit} />}
       >
         <TextArea
           label="네거티브 프롬프트"

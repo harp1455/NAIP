@@ -1,9 +1,10 @@
 import type { SettingsSnapshot } from './db'
-import type { ImportedSettings } from './metadata'
+import type { ImportedSettings, MetadataVibe } from './metadata'
 import { MODELS, NOISE_SCHEDULES, SAMPLERS } from '../nai/constants'
 import { fitNaiGenerationResolution } from '../nai/resolution'
 import { useCharacters } from '../stores/characters'
 import { usePrompt, type Params } from '../stores/prompt'
+import { useRefs } from '../stores/refs'
 
 const IMPORT_FOLDER = '가져온 캐릭터'
 
@@ -16,9 +17,12 @@ export interface Importable {
   params: Partial<Params>
   seed?: number
   chars: { name?: string; prompt: string; negative: string; center?: { x: number; y: number } }[]
+  /** 이미지에 들어 있던 인코딩된 바이브와, 확인된 경우 그 인코딩 모델 */
+  vibes?: MetadataVibe[]
+  vibeModel?: string
 }
 
-export type ImportPart = 'prompt' | 'negative' | 'chars' | 'model' | 'size' | 'sampling' | 'quality' | 'seed'
+export type ImportPart = 'prompt' | 'negative' | 'chars' | 'model' | 'size' | 'sampling' | 'quality' | 'seed' | 'vibes'
 
 const PARAM_GROUPS: Record<'model' | 'size' | 'sampling' | 'quality', (keyof Params)[]> = {
   model: ['model'],
@@ -63,7 +67,9 @@ export function fromMetadata(m: ImportedSettings): Importable {
       ...(size ?? {})
     },
     ...(m.seed !== undefined ? { seed: m.seed } : {}),
-    chars: m.characters
+    chars: m.characters,
+    ...(m.vibes.length ? { vibes: m.vibes } : {}),
+    ...(m.vibeModel ? { vibeModel: m.vibeModel } : {})
   }
 }
 
@@ -76,6 +82,7 @@ export function availableParts(data: Importable): ImportPart[] {
   if (data.chars.some((c) => c.prompt.trim())) parts.push('chars')
   for (const g of ['model', 'size', 'sampling', 'quality'] as const) if (has(g)) parts.push(g)
   if (data.seed !== undefined) parts.push('seed')
+  if (data.vibes?.length) parts.push('vibes')
   return parts
 }
 
@@ -106,7 +113,13 @@ function applyCast(chars: Importable['chars']): void {
  * 고른 항목만 현재 설정에 적용한다 (고르지 않은 항목은 지금 값 유지).
  * presetName을 주면 적용한 결과를 새 프롬프트 프리셋으로 저장하고 그 프리셋을 선택한다.
  */
-export function applyImport(data: Importable, parts: Set<ImportPart>, presetName: string | null): void {
+export function applyImport(
+  data: Importable,
+  parts: Set<ImportPart>,
+  presetName: string | null,
+  /** 바이브의 인코딩 모델을 이미지에서 알 수 없을 때 사용자가 고른 모델 */
+  chosenVibeModel?: string
+): void {
   const p = usePrompt.getState()
   if (parts.has('prompt')) p.set({ base: data.base, additional: data.additional, detail: data.detail })
   if (parts.has('negative')) p.set({ negative: data.negative })
@@ -121,5 +134,9 @@ export function applyImport(data: Importable, parts: Set<ImportPart>, presetName
   // 모델은 setModel 대신 그대로 넣는다 — 함께 고른 스텝·CFG를 기본값으로 덮어쓰지 않게
   p.patchParams(patch)
   if (parts.has('chars')) applyCast(data.chars)
+  const vibeModel = data.vibeModel ?? chosenVibeModel
+  if (parts.has('vibes') && data.vibes?.length && vibeModel) {
+    useRefs.getState().restoreVibes(data.vibes, vibeModel)
+  }
   if (presetName !== null) usePrompt.getState().savePreset(presetName)
 }

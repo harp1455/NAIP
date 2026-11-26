@@ -83,7 +83,7 @@ export function GenerateBar(props: {
           <button
             type="button"
             disabled={scene.count === 0}
-            onClick={() => void g.start(scene.ids)}
+            onClick={() => void g.start({ scenes: scene.ids })}
             className="h-11 min-w-0 flex-1 rounded-lg bg-accent text-sm font-semibold text-accent-fg active:brightness-90"
           >
             {scene.count === 0

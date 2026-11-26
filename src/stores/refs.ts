@@ -50,6 +50,8 @@ interface RefsState {
   /** 이미 가진 이미지(히스토리 등)를 레퍼런스·바이브로 추가 */
   addCharRefFrom: (src: Blob, name: string, type: RefType) => Promise<void>
   addVibeFrom: (src: Blob, name: string) => Promise<void>
+  /** 메타데이터의 인코딩된 바이브를 그대로 되살린다 — 지금 켜 둔 바이브는 끄고 이것들만 켠다 */
+  restoreVibes: (vibes: { encoded: string; strength: number; infoExtracted: number }[], model: string) => void
   duplicateCharRef: (id: number) => void
   setAllCharRefs: (enabled: boolean) => void
   patchCharRef: (id: number, p: Partial<Omit<CharRef, 'id'>>) => void
@@ -136,6 +138,25 @@ export const useRefs = create<RefsState>()(
         }
         set((s) => ({ vibes: [...s.vibes, vibe] }))
       },
+      restoreVibes: (vibes, model) =>
+        set((s) => ({
+          vibes: [
+            ...s.vibes.map((v) => ({ ...v, enabled: false })),
+            ...vibes.map(
+              (v, i): Vibe => ({
+                id: uid(),
+                name: `복원한 바이브 ${i + 1}`,
+                // 원본 그림이 없다 — 이 모델·정보 추출값의 인코딩으로만 쓸 수 있다
+                image: '',
+                thumb: '',
+                strength: v.strength,
+                infoExtracted: v.infoExtracted,
+                enabled: true,
+                encodings: { [vibeKey(model, v.infoExtracted)]: v.encoded }
+              })
+            )
+          ]
+        })),
       duplicateCharRef: (id) =>
         set((s) => {
           const i = s.charRefs.findIndex((r) => r.id === id)

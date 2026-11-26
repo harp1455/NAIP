@@ -12,7 +12,7 @@ import {
   processCharRefImageV5,
   resizeToPngBase64
 } from '../lib/image'
-import type { SettingsSnapshot } from '../lib/db'
+import type { HistoryMeta, SettingsSnapshot } from '../lib/db'
 import { processWildcards, resetSequentialCounters } from '../nai/fragments'
 import { cleanFileName, fileNameFor, job, saveToGallery, setKeepAwake } from '../lib/native'
 import { randomSeed, sleep, uid } from '../lib/util'
@@ -38,8 +38,11 @@ interface GenerationState {
   latestId: number | null
   /** 배치 시작 시각 (남은 시간 추정용) */
   startedAt: number
-  /** scenes를 주면 그 씬들의 예약분을, 없으면 메인 프롬프트를 장수만큼 생성 */
-  start: (scenes?: number[]) => Promise<void>
+  /**
+   * scenes를 주면 그 씬들의 예약분을, regenerate를 주면 그 이미지를 같은 설정·새 시드로 한 장 더,
+   * 아무것도 없으면 메인 프롬프트를 장수만큼 생성
+   */
+  start: (opts?: { scenes?: number[]; regenerate?: HistoryMeta }) => Promise<void>
   stop: () => void
   setLatest: (id: number | null) => void
 }
@@ -94,20 +97,21 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
   startedAt: 0,
   setLatest: (id) => set({ latestId: id }),
   stop: () => controller?.abort(),
-  start: async (sceneIds) => {
+  start: async (opts) => {
     if (get().running) return
     const settings = useSettings.getState()
     const token = settings.token
     if (!token) return set({ error: 'API 토큰을 먼저 설정해 주세요 (설정 탭)' })
+    const sceneIds = opts?.scenes
+    const regen = opts?.regenerate
 
     // ── 시작 시점의 설정을 스냅샷 — 진행 중 편집은 다음 배치부터 반영
     const prompt = usePrompt.getState()
-    const fixedSeed = prompt.seed.trim() === '' ? null : Number(prompt.seed)
-    const base = buildRequest(0)
-    const caps = modelCapabilities(base.model)
-    const source = useSource.getState()
-    const fragments = fragmentSource()
-    const snap: SettingsSnapshot = {
+    let fixedSeed = prompt.seed.trim() === '' ? null : Number(prompt.seed)
+    let base = buildRequest(0)
+    let source: Pick<ReturnType<typeof useSource.getState>, 'image' | 'mask' | 'strength' | 'noise'> =
+      useSource.getState()
+    let snap: SettingsSnapshot = {
       base: prompt.base,
       additional: prompt.additional,
       detail: prompt.detail,
@@ -122,22 +126,55 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
           ...(c.center ? { center: c.center } : {})
         }))
     }
+    if (regen) {
+      // 다시 생성: 화면의 프롬프트·설정·i2i 소스·레퍼런스는 쓰지 않고, 그 이미지를 만들 때의 내용만 쓴다
+      if (!regen.snap) return set({ error: '이 이미지에는 다시 생성에 필요한 정보가 없습니다' })
+      snap = regen.snap
+      const chars = regen.sent?.chars ?? regen.snap.chars
+      base = {
+        ...base,
+        ...(regen.snap.params as Partial<GenerationRequest>),
+        prompt: regen.sent?.prompt ?? mergePromptParts(regen.snap),
+        negativePrompt: regen.sent?.negative ?? regen.snap.negative,
+        characterPrompts: chars.map((c) => ({
+          prompt: c.prompt,
+          negativePrompt: c.negative,
+          enabled: true,
+          name: c.name,
+          ...(c.center ? { center: c.center } : {})
+        })),
+        useCoords: chars.some((c) => c.center)
+      }
+      fixedSeed = null
+      source = { image: null, mask: null, strength: 0.7, noise: 0 }
+    }
+    const caps = modelCapabilities(base.model)
+    const fragments = fragmentSource()
 
     // ── 생성 계획: 한 항목 = 서버 요청 1번 = 이미지 1장
     interface PlanItem {
-      scene?: { id: number; name: string; prompt: string; negative: string }
+      /** reserved: 씬 예약분이라 뽑히면 예약을 하나 줄인다 (다시 생성은 씬 표시만 물려받는다) */
+      scene?: { id: number; name: string; prompt: string; negative: string; reserved: boolean }
       size?: { width: number; height: number }
       /** 고정 시드일 때 더할 오프셋 (씬마다 0부터) */
       offset: number
     }
     const plan: PlanItem[] = []
-    if (sceneIds) {
+    if (regen) {
+      plan.push({
+        offset: 0,
+        size: { width: regen.width, height: regen.height },
+        ...(regen.sceneId !== undefined
+          ? { scene: { id: regen.sceneId, name: regen.sceneName ?? '', prompt: '', negative: '', reserved: false } }
+          : {})
+      })
+    } else if (sceneIds) {
       const want = new Set(sceneIds)
       for (const sc of useScenes.getState().scenes) {
         if (!want.has(sc.id)) continue
         for (let i = 0; i < sc.reserve; i++) {
           plan.push({
-            scene: { id: sc.id, name: sc.name, prompt: sc.prompt, negative: sc.negative },
+            scene: { id: sc.id, name: sc.name, prompt: sc.prompt, negative: sc.negative, reserved: true },
             // i2i 소스가 있으면 소스에 맞춘 메인 해상도를 유지한다
             ...(sc.size && !source.image ? { size: sc.size } : {}),
             offset: i
@@ -151,7 +188,8 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
     }
     const count = plan.length
 
-    const vibeRows = caps.vibes ? useRefs.getState().vibes.filter((v) => v.enabled) : []
+    // 다시 생성은 지금 켜 둔 바이브·레퍼런스를 섞지 않는다 (원래 요청에 없던 것이 들어가면 다른 그림이 된다)
+    const vibeRows = caps.vibes && !regen ? useRefs.getState().vibes.filter((v) => v.enabled) : []
     controller = new AbortController()
     const signal = controller.signal
     set({
@@ -202,7 +240,8 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
 
       // ── 정밀 레퍼런스 준비 (배치당 1회). 모델이 받는 종류만, 모델에 맞는 크기·강도로 보낸다
       const characterReferences: CharacterReferenceOptions[] = []
-      for (const r of referencesForModel(useRefs.getState().charRefs, base.model, kind === 'inpaint')) {
+      const refRows = regen ? [] : referencesForModel(useRefs.getState().charRefs, base.model, kind === 'inpaint')
+      for (const r of refRows) {
         characterReferences.push({
           referenceType: referenceCaption(r.type, r.sameOutfit, caps)!,
           strength: clampReferenceStrength(r.strength, caps),
@@ -223,7 +262,8 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
             ? randomSeed()
             : (fixedSeed + item.offset) % 4294967296
         // 조각(와일드카드)은 장마다 새로 뽑는다
-        const wild = (text: string): string => processWildcards(text, fragments)
+        // 다시 생성은 이미 치환이 끝난 문장을 그대로 보낸다
+        const wild = (text: string): string => (regen?.sent ? text : processWildcards(text, fragments))
         const request: GenerationRequest = {
           ...base,
           ...(item.size ?? {}),
@@ -291,15 +331,27 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
               negative: String(payload.parameters.negative_prompt ?? ''),
               mime: image.type,
               snap,
+              sent: {
+                prompt: request.prompt,
+                negative: request.negativePrompt,
+                chars: request.characterPrompts
+                  .filter((c) => c.enabled)
+                  .map((c) => ({
+                    name: c.name ?? '',
+                    prompt: c.prompt,
+                    negative: c.negativePrompt,
+                    ...(c.center ? { center: c.center } : {})
+                  }))
+              },
               ...(item.scene ? { sceneId: item.scene.id, sceneName: item.scene.name } : {})
             },
             image
           )
           set((s) => ({ done: s.done + 1, latestId: id, error: null }))
           // 씬 예약은 실제로 뽑힌 만큼만 줄인다 (중지·실패분은 예약에 남는다)
-          if (item.scene) useScenes.getState().bumpReserve([item.scene.id], -1)
+          if (item.scene?.reserved) useScenes.getState().bumpReserve([item.scene.id], -1)
           if (settings.autoSave) {
-            const folder = settings.sceneFolders ? item.scene?.name : undefined
+            const folder = settings.sceneFolders ? item.scene?.name || undefined : undefined
             const fileName = fileNameFor(id, seed, image.type)
             void saveToGallery(image, fileName, folder)
               .then(() => useHistory.getState().markSaved(id, `${folder ? `${cleanFileName(folder)}/` : ''}${fileName}`))

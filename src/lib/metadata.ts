@@ -1,4 +1,5 @@
-import { QUALITY_TAGS_SUFFIX, UC_PRESETS_V45_FULL } from '../nai/presets'
+import { stripAutoText } from '../nai/auto-text'
+import { QUALITY_TAGS_SUFFIX, UC_PRESETS_V45_FULL, UC_PRESETS_V5 } from '../nai/presets'
 import type { UcPresetIndex } from '../nai/types'
 
 /** NAI가 PNG tEXt "Comment"에 넣는 생성 파라미터에서 뽑은, 설정으로 되돌릴 수 있는 값들 */
@@ -18,6 +19,43 @@ export interface ImportedSettings {
   height?: number
   variety?: boolean
   characters: { prompt: string; negative: string; center?: { x: number; y: number } }[]
+  /** 이미지에 들어 있던 바이브 트랜스퍼 (인코딩된 형태 — 원본 그림 없이 그대로 다시 쓸 수 있다) */
+  vibes: MetadataVibe[]
+  /** 바이브가 인코딩된 모델. 확인된 Source 값일 때만 — 모르면 사용자가 고른다 */
+  vibeModel?: string
+}
+
+export interface MetadataVibe {
+  encoded: string
+  strength: number
+  infoExtracted: number
+}
+
+/** 외부 PNG는 믿을 수 없으므로 배열이 아무리 길어도 이만큼만 읽는다 */
+const MAX_METADATA_VIBES = 16
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
+
+/** 바이브 인코딩은 모델별이라 정확히 확인된 Source 문자열만 모델로 인정한다 (NAIS3 metadata-vibes.ts) */
+const VIBE_SOURCE_MODELS: Record<string, string> = {
+  'NovelAI Diffusion V4.5 1229B44F': 'nai-diffusion-4-5-full',
+  'NovelAI Diffusion V4.5 C02D4F98': 'nai-diffusion-4-5-curated'
+}
+
+function parseVibes(c: Record<string, unknown>): MetadataVibe[] {
+  const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : [])
+  const unit = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : undefined
+  const images = list(c.reference_image_multiple).slice(0, MAX_METADATA_VIBES)
+  const strengths = list(c.reference_strength_multiple)
+  const infos = list(c.reference_information_extracted_multiple)
+  const out: MetadataVibe[] = []
+  images.forEach((raw, i) => {
+    const encoded = typeof raw === 'string' ? raw.trim() : ''
+    // 길이가 어긋난 base64는 잘린 값이라 버린다
+    if (!encoded || !BASE64.test(encoded)) return
+    out.push({ encoded, strength: unit(strengths[i]) ?? 0.6, infoExtracted: unit(infos[i]) ?? 1 })
+  })
+  return out
 }
 
 const SOURCE_TO_MODEL: [RegExp, string][] = [
@@ -57,14 +95,21 @@ function pngTextChunks(buf: Uint8Array): Record<string, string> {
   return out
 }
 
+/**
+ * 병합된 네거티브에서 UC 프리셋을 찾아 벗긴다 (가장 긴 접두가 이긴다).
+ * V4.5와 V5는 프리셋 문구가 다르고, V5 Full은 그 앞에 "nsfw, "를 더 붙인다.
+ */
 function inferUcPreset(uc: string): { preset: UcPresetIndex; rest: string } {
   let best: UcPresetIndex = 4
   let bestLen = -1
-  for (const [k, preset] of Object.entries(UC_PRESETS_V45_FULL)) {
-    if (!preset || k === '2') continue
-    if ((uc === preset || uc.startsWith(preset + ', ')) && preset.length > bestLen) {
-      best = Number(k) as UcPresetIndex
-      bestLen = preset.length
+  for (const k of [0, 1, 3] as const) {
+    const v5 = UC_PRESETS_V5[k]
+    for (const preset of [UC_PRESETS_V45_FULL[k], v5, v5 && `nsfw, ${v5}`]) {
+      if (!preset) continue
+      if ((uc === preset || uc.startsWith(preset + ', ')) && preset.length > bestLen) {
+        best = k
+        bestLen = preset.length
+      }
     }
   }
   return { preset: best, rest: bestLen < 0 ? uc : uc.slice(bestLen).replace(/^,\s*/, '') }
@@ -86,7 +131,13 @@ export async function readImageSettings(blob: Blob): Promise<ImportedSettings | 
   const v4 = c.v4_prompt as Caption | undefined
   const v4n = c.v4_negative_prompt as Caption | undefined
 
-  const rawPrompt = v4?.caption?.base_caption ?? str('prompt') ?? text.Description ?? ''
+  const sentPrompt = v4?.caption?.base_caption ?? str('prompt') ?? text.Description ?? ''
+  // V5 Auto Text가 자동으로 붙인 `teXt:` 블록은 퀄리티 태그 뒤에 오므로 먼저 떼어야 접미사가 보인다
+  const rawPrompt = stripAutoText(
+    sentPrompt,
+    (v4?.caption?.char_captions ?? []).map((ch) => ({ prompt: ch.char_caption ?? '', center: ch.centers?.[0] })),
+    v4?.use_coords === true
+  )
   const qualityToggle = rawPrompt.endsWith(QUALITY_TAGS_SUFFIX)
   const uc = inferUcPreset(v4n?.caption?.base_caption ?? str('uc') ?? '')
   const useCoords = v4?.use_coords === true
@@ -107,6 +158,8 @@ export async function readImageSettings(blob: Blob): Promise<ImportedSettings | 
     width: num('width'),
     height: num('height'),
     variety: c.skip_cfg_above_sigma != null,
+    vibes: parseVibes(c),
+    ...(VIBE_SOURCE_MODELS[source.trim()] ? { vibeModel: VIBE_SOURCE_MODELS[source.trim()] } : {}),
     characters: (v4?.caption?.char_captions ?? []).map((ch, i) => ({
       prompt: ch.char_caption ?? '',
       negative: negChars[i]?.char_caption ?? '',
