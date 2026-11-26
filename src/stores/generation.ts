@@ -155,6 +155,8 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
     interface PlanItem {
       /** reserved: 씬 예약분이라 뽑히면 예약을 하나 줄인다 (다시 생성은 씬 표시만 물려받는다) */
       scene?: { id: number; name: string; prompt: string; negative: string; reserved: boolean }
+      /** 씬에 따로 정한 출연 캐릭터 — 있으면 화면에서 켜 둔 출연 대신 쓴다 */
+      chars?: CharacterPromptInput[]
       size?: { width: number; height: number }
       /** 고정 시드일 때 더할 오프셋 (씬마다 0부터) */
       offset: number
@@ -170,11 +172,25 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
       })
     } else if (sceneIds) {
       const want = new Set(sceneIds)
+      // 씬별 출연: 라이브러리에서 지워진 캐릭터는 건너뛴다
+      const library = useCharacters.getState().characters
+      const sceneCast = new Map<number, CharacterPromptInput[]>()
+      for (const sc of useScenes.getState().scenes) {
+        if (!want.has(sc.id) || !sc.cast) continue
+        sceneCast.set(
+          sc.id,
+          sc.cast.flatMap((id) => {
+            const c = library.find((x) => x.id === id)
+            return c ? [{ prompt: c.prompt, negativePrompt: c.negative, enabled: true, name: c.name }] : []
+          })
+        )
+      }
       for (const sc of useScenes.getState().scenes) {
         if (!want.has(sc.id)) continue
         for (let i = 0; i < sc.reserve; i++) {
           plan.push({
             scene: { id: sc.id, name: sc.name, prompt: sc.prompt, negative: sc.negative, reserved: true },
+            ...(sceneCast.get(sc.id) ? { chars: sceneCast.get(sc.id) } : {}),
             // i2i 소스가 있으면 소스에 맞춘 메인 해상도를 유지한다
             ...(sc.size && !source.image ? { size: sc.size } : {}),
             offset: i
@@ -271,11 +287,13 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
           seed,
           prompt: wild(appendPrompt(base.prompt, item.scene?.prompt ?? '')),
           negativePrompt: wild(appendPrompt(base.negativePrompt, item.scene?.negative ?? '')),
-          characterPrompts: base.characterPrompts.map((c) => ({
+          characterPrompts: (item.chars ?? base.characterPrompts).map((c) => ({
             ...c,
             prompt: wild(c.prompt),
             negativePrompt: wild(c.negativePrompt)
-          }))
+          })),
+          // 씬 출연은 위치를 따로 정하지 않는다 (AI 선택)
+          ...(item.chars ? { useCoords: false } : {})
         }
         const buildOpts: BuildOptions = {
           ...(vibes.length ? { vibes } : {}),
@@ -330,7 +348,10 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
               prompt: payload.input,
               negative: String(payload.parameters.negative_prompt ?? ''),
               mime: image.type,
-              snap,
+              // 씬에 따로 정한 출연이 있으면 그 캐릭터들로 기록해야 "설정 적용"이 같은 출연을 되살린다
+              snap: item.chars
+                ? { ...snap, chars: item.chars.map((c) => ({ name: c.name ?? '', prompt: c.prompt, negative: c.negativePrompt })) }
+                : snap,
               sent: {
                 prompt: request.prompt,
                 negative: request.negativePrompt,

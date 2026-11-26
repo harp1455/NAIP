@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   ChevronLeft,
   ChevronRight,
@@ -27,6 +27,7 @@ import { useGeneration } from '../stores/generation'
 import { useImporter } from '../stores/importer'
 import { useRefs, type RefType } from '../stores/refs'
 import { Sheet } from './ui'
+import { ZoomImage } from './ZoomImage'
 import { usePrompt } from '../stores/prompt'
 import { useSaver } from '../stores/saver'
 import { useSource } from '../stores/source'
@@ -56,7 +57,6 @@ function Action(props: {
 
 export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
   const { items, viewing, view, remove, toggleFav } = useHistory()
-  const swipe = useRef<{ x: number; y: number } | null>(null)
   const index = items.findIndex((m) => m.id === viewing)
   const meta = items[index]
   const [url, setUrl] = useState<string | null>(null)
@@ -125,32 +125,15 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
         </button>
       </header>
 
-      <div
-        className={cx('relative min-h-0 flex-1', zoomed ? 'overflow-auto' : 'overflow-hidden')}
-        onClick={() => setZoomed(!zoomed)}
-        onTouchStart={(e) => {
-          const t = e.touches[0]
-          swipe.current = e.touches.length === 1 ? { x: t.clientX, y: t.clientY } : null
-        }}
-        onTouchEnd={(e) => {
-          const from = swipe.current
-          swipe.current = null
-          if (!from || zoomed) return
-          const t = e.changedTouches[0]
-          const dx = t.clientX - from.x
-          // 가로로 충분히 밀었을 때만 넘긴다 (세로 스크롤·탭과 구분)
-          if (Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(t.clientY - from.y) * 1.5) {
-            e.preventDefault()
-            go(dx < 0 ? 1 : -1)
-          }
-        }}
-      >
+      <div className="relative min-h-0 flex-1 overflow-hidden">
         {url ? (
-          <img
+          // key로 이미지가 바뀔 때마다 확대 상태를 처음으로 되돌린다
+          <ZoomImage
+            key={meta.id}
             src={url}
             alt={`생성 이미지 seed ${meta.seed}`}
-            draggable={false}
-            className={zoomed ? 'block w-[250%] max-w-none' : 'h-full w-full object-contain'}
+            onSwipe={go}
+            onZoomChange={setZoomed}
           />
         ) : (
           <img src={meta.thumb} alt="" className="h-full w-full object-contain opacity-60 blur-sm" />
@@ -160,10 +143,7 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
             type="button"
             aria-label="더 최근 이미지"
             className="absolute left-0 top-1/2 flex h-16 w-11 -translate-y-1/2 items-center justify-center rounded-r-lg bg-black/40"
-            onClick={(e) => {
-              e.stopPropagation()
-              go(-1)
-            }}
+            onClick={() => go(-1)}
           >
             <ChevronLeft size={24} />
           </button>
@@ -173,10 +153,7 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
             type="button"
             aria-label="이전 이미지"
             className="absolute right-0 top-1/2 flex h-16 w-11 -translate-y-1/2 items-center justify-center rounded-l-lg bg-black/40"
-            onClick={(e) => {
-              e.stopPropagation()
-              go(1)
-            }}
+            onClick={() => go(1)}
           >
             <ChevronRight size={24} />
           </button>

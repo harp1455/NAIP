@@ -38,6 +38,11 @@ export const useHistory = create<HistoryState>()((set, get) => ({
       set({ filter: null })
       return get().init()
     }
+    if ('unsaved' in filter) {
+      const items = await db.listUnsaved(PAGE)
+      set({ filter, items, hasMore: items.length === PAGE })
+      return
+    }
     set({ filter, items: await db.listFiltered(filter), hasMore: false })
   },
   toggleFav: async (id) => {
@@ -54,7 +59,20 @@ export const useHistory = create<HistoryState>()((set, get) => ({
     const meta = get().items.find((m) => m.id === id) ?? (await db.getMeta(id))
     if (!meta) return
     const next = { ...meta, saved: path }
+    delete next.unsaved
     await db.putMeta(next)
+    if (get().filter && 'unsaved' in get().filter!) {
+      // 미저장만 보는 중이면 저장한 그림은 목록에서 빠진다. 크게 보고 있었다면 다음 그림으로 넘어간다
+      set((s) => {
+        const i = s.items.findIndex((m) => m.id === id)
+        const rest = s.items.filter((m) => m.id !== id)
+        return {
+          items: rest,
+          viewing: s.viewing === id ? (rest[Math.min(i, rest.length - 1)]?.id ?? null) : s.viewing
+        }
+      })
+      return
+    }
     set((s) => ({ items: s.items.map((m) => (m.id === id ? next : m)) }))
   },
   init: async () => {
@@ -63,6 +81,13 @@ export const useHistory = create<HistoryState>()((set, get) => ({
   },
   loadMore: async () => {
     const { items, total, filter } = get()
+    if (filter && 'unsaved' in filter) {
+      const oldest = items[items.length - 1]
+      if (!oldest) return
+      const more = await db.listUnsaved(PAGE, oldest.id)
+      set({ items: [...get().items, ...more], hasMore: more.length === PAGE })
+      return
+    }
     if (filter) return
     const last = items[items.length - 1]
     if (!last) return
@@ -71,9 +96,10 @@ export const useHistory = create<HistoryState>()((set, get) => ({
     set({ items: next, hasMore: more.length > 0 && next.length < total })
   },
   add: async (meta, blob) => {
+    meta = { ...meta, unsaved: 1 }
     await db.addImage(meta, blob)
     const f = get().filter
-    const matches = !f || ('sceneId' in f && f.sceneId === meta.sceneId)
+    const matches = !f || 'unsaved' in f || ('sceneId' in f && f.sceneId === meta.sceneId)
     set((s) => ({ items: matches ? [meta, ...s.items] : s.items, total: s.total + 1 }))
     // 보관 한도를 넘으면 즐겨찾기를 뺀 오래된 것부터 정리
     const limit = useSettings.getState().historyLimit

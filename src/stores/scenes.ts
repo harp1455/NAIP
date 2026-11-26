@@ -16,6 +16,11 @@ export interface Scene {
   negative: string
   /** null = 메인 설정의 해상도 사용 */
   size: { width: number; height: number } | null
+  /**
+   * 이 씬에 출연할 캐릭터(라이브러리 id). 없으면 프롬프트 화면에서 켜 둔 출연을 그대로 쓴다.
+   * 빈 배열이면 캐릭터 없이 생성한다
+   */
+  cast?: number[]
   /** 예약 장수 — 생성될 때마다 1씩 줄어든다 */
   reserve: number
 }

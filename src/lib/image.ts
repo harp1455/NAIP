@@ -99,7 +99,7 @@ export async function processCharRefImage(src: string): Promise<string> {
 
 /**
  * V5 레퍼런스 전처리 — 종횡비가 가장 가까운 V5 크기 칸을 덮도록 그리고 가운데를 잘라 낸다
- * (검정 여백 없이). 공식 웹과 같은 표·식이며 JPEG로 보낸다 (SDStudio에서 검증된 방식).
+ * (검정 여백 없이). 공식 웹과 같은 표·식이며 NAIS3처럼 무손실 PNG로 보낸다.
  */
 export async function processCharRefImageV5(src: string): Promise<string> {
   const img = await loadImage(pngDataUrl(src))
@@ -109,7 +109,7 @@ export async function processCharRefImageV5(src: string): Promise<string> {
   ctx.fillRect(0, 0, plan.width, plan.height)
   ctx.imageSmoothingQuality = 'high'
   ctx.drawImage(img, -plan.left, -plan.top, plan.resizeWidth, plan.resizeHeight)
-  return stripDataUrl(c.toDataURL('image/jpeg', 0.95))
+  return stripDataUrl(c.toDataURL('image/png'))
 }
 
 /**

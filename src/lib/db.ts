@@ -37,16 +37,18 @@ export interface HistoryMeta {
   }
   /** 갤러리에 저장했으면 Pictures/NAIP 아래의 경로 (마지막으로 저장한 것) */
   saved?: string
+  /** 아직 갤러리에 저장하지 않았으면 1 ("미저장만 보기" 인덱스용 — 저장하면 지운다) */
+  unsaved?: 1
 }
 
-export type HistoryFilter = { fav: true } | { sceneId: number } | null
+export type HistoryFilter = { fav: true } | { sceneId: number } | { unsaved: true } | null
 
 const DB_NAME = 'naip'
 let dbp: Promise<IDBDatabase> | null = null
 
 function open(): Promise<IDBDatabase> {
   dbp ??= new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 2)
+    const req = indexedDB.open(DB_NAME, 3)
     req.onupgradeneeded = () => {
       const db = req.result
       if (!db.objectStoreNames.contains('meta')) {
@@ -58,6 +60,19 @@ function open(): Promise<IDBDatabase> {
       const meta = req.transaction!.objectStore('meta')
       if (!meta.indexNames.contains('fav')) meta.createIndex('fav', 'fav')
       if (!meta.indexNames.contains('scene')) meta.createIndex('scene', 'sceneId')
+      // v3: 미저장 필터용 인덱스. [unsaved, id] 복합 키라 최신순으로 끊어 읽을 수 있다.
+      // 이전 버전에서 만든 이미지에는 표시가 없으므로 저장 기록이 없는 것에 한 번 채워 넣는다
+      if (!meta.indexNames.contains('unsaved')) {
+        meta.createIndex('unsaved', ['unsaved', 'id'])
+        const cursor = meta.openCursor()
+        cursor.onsuccess = () => {
+          const cur = cursor.result
+          if (!cur) return
+          const value = cur.value as HistoryMeta
+          if (!value.saved && !value.unsaved) cur.update({ ...value, unsaved: 1 })
+          cur.continue()
+        }
+      }
     }
     req.onsuccess = () => resolve(req.result)
     req.onerror = () => reject(req.error)
@@ -109,7 +124,9 @@ export async function listMeta(limit: number, beforeId?: number): Promise<Histor
 }
 
 /** 필터에 맞는 전체 목록 (최신순). 즐겨찾기·씬 단위라 한 번에 읽는다 */
-export async function listFiltered(filter: NonNullable<HistoryFilter>): Promise<HistoryMeta[]> {
+export async function listFiltered(
+  filter: { fav: true } | { sceneId: number }
+): Promise<HistoryMeta[]> {
   const db = await open()
   const store = db.transaction('meta').objectStore('meta')
   const req =
@@ -122,6 +139,24 @@ export async function listFiltered(filter: NonNullable<HistoryFilter>): Promise<
 export async function getMeta(id: number): Promise<HistoryMeta | null> {
   const db = await open()
   return ((await done(db.transaction('meta').objectStore('meta').get(id))) as HistoryMeta | undefined) ?? null
+}
+
+/** 아직 저장하지 않은 이미지 (최신순, limit장씩). beforeId를 주면 그보다 오래된 것부터 */
+export async function listUnsaved(limit: number, beforeId?: number): Promise<HistoryMeta[]> {
+  const db = await open()
+  const index = db.transaction('meta').objectStore('meta').index('unsaved')
+  const range = IDBKeyRange.bound([1, 0], [1, beforeId ?? Number.MAX_SAFE_INTEGER], false, beforeId !== undefined)
+  return new Promise((resolve, reject) => {
+    const out: HistoryMeta[] = []
+    const req = index.openCursor(range, 'prev')
+    req.onsuccess = () => {
+      const cur = req.result
+      if (!cur || out.length >= limit) return resolve(out)
+      out.push(cur.value as HistoryMeta)
+      cur.continue()
+    }
+    req.onerror = () => reject(req.error)
+  })
 }
 
 export async function putMeta(meta: HistoryMeta): Promise<void> {

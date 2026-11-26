@@ -138,7 +138,7 @@ export function HistoryPane(): ReactNode {
             <span className="shrink-0 text-sm font-semibold">
               히스토리{' '}
               <span className="ml-1 font-mono text-xs font-normal text-dim">
-                {filter ? `${items.length}/${total}` : total}
+                {filter ? `${items.length}${hasMore ? '+' : ''}/${total}` : total}
               </span>
             </span>
             <div className="scroll-thin flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto px-2">
@@ -153,6 +153,18 @@ export function HistoryPane(): ReactNode {
               >
                 <Star size={13} />
                 즐겨찾기
+              </button>
+              <button
+                type="button"
+                aria-pressed={!!filter && 'unsaved' in filter}
+                onClick={() => void setFilter(filter && 'unsaved' in filter ? null : { unsaved: true })}
+                className={cx(
+                  'flex h-8 shrink-0 items-center gap-1 rounded-full border px-2.5 text-xs',
+                  filter && 'unsaved' in filter ? 'border-accent bg-accent/15 text-accent' : 'border-line text-dim'
+                )}
+              >
+                <Download size={13} />
+                미저장
               </button>
               {sceneName !== null && (
                 <button

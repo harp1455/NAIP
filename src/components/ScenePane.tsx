@@ -1,14 +1,17 @@
 import { useState, type ReactNode } from 'react'
 import { Copy, FolderPlus, Images, Minus, Pencil, Plus, Trash2 } from 'lucide-react'
 import { RESOLUTIONS } from '../nai/constants'
+import { modelCapabilities } from '../nai/models'
 import { cx } from '../lib/util'
+import { useCharacters } from '../stores/characters'
 import { estimateScenes } from '../stores/generation'
 import { useHistory } from '../stores/history'
 import { usePrompt } from '../stores/prompt'
 import { useRefs } from '../stores/refs'
 import { MAX_RESERVE, useScenes, type Scene } from '../stores/scenes'
 import { useSource } from '../stores/source'
-import { Button, Empty, IconButton, Select, Sheet, TextArea, TextInput } from './ui'
+import { Check } from 'lucide-react'
+import { Button, Empty, IconButton, Row, Select, Sheet, TextArea, TextInput, Toggle } from './ui'
 
 function SceneEditor(props: { initial: Partial<Scene>; onClose: () => void }): ReactNode {
   const { folders, saveScene, deleteScene } = useScenes()
@@ -17,6 +20,11 @@ function SceneEditor(props: { initial: Partial<Scene>; onClose: () => void }): R
   const [prompt, setPrompt] = useState(props.initial.prompt ?? '')
   const [negative, setNegative] = useState(props.initial.negative ?? '')
   const [size, setSize] = useState(props.initial.size ?? null)
+  const [cast, setCast] = useState<number[] | undefined>(props.initial.cast)
+  const { characters, folders: charFolders } = useCharacters()
+  const maxChars = modelCapabilities(usePrompt((p) => p.params.model)).maxCharacters
+  // 라이브러리에서 지워진 캐릭터는 세지 않는다
+  const picked = (cast ?? []).filter((cid) => characters.some((c) => c.id === cid))
   const id = props.initial.id
   const resIndex = size ? RESOLUTIONS.findIndex((r) => r.width === size.width && r.height === size.height) : -1
   return (
@@ -43,7 +51,7 @@ function SceneEditor(props: { initial: Partial<Scene>; onClose: () => void }): R
             variant="primary"
             className="flex-1"
             onClick={() => {
-              saveScene({ id, name, folderId, prompt, negative, size })
+              saveScene({ id, name, folderId, prompt, negative, size, ...(cast ? { cast: picked } : {}) })
               props.onClose()
             }}
           >
@@ -74,6 +82,62 @@ function SceneEditor(props: { initial: Partial<Scene>; onClose: () => void }): R
           씬 네거티브 (선택)
           <TextArea label="씬 네거티브" rows={2} value={negative} onChange={setNegative} />
         </label>
+        <div className="rounded-lg border border-line bg-field px-3">
+          <Row
+            label="이 씬의 출연 캐릭터를 따로 정하기"
+            hint={cast ? '아래에서 고른 캐릭터만 출연합니다 (위치는 AI 선택)' : '프롬프트 화면에서 켜 둔 출연을 그대로 씁니다'}
+          >
+            <Toggle
+              label="이 씬의 출연 캐릭터를 따로 정하기"
+              checked={cast !== undefined}
+              onChange={(on) => setCast(on ? picked : undefined)}
+            />
+          </Row>
+          {cast !== undefined && (
+            <div className="pb-3">
+              <p className={cx('pb-1.5 text-xs', picked.length > maxChars ? 'text-danger' : 'text-dim')}>
+                {picked.length === 0 ? '아무도 고르지 않으면 캐릭터 없이 생성합니다' : `${picked.length}명 선택`}
+                {picked.length > maxChars ? ` — 이 모델은 ${maxChars}명까지만 보냅니다` : ''}
+              </p>
+              {characters.length === 0 ? (
+                <p className="py-2 text-xs text-dim">캐릭터 라이브러리가 비어 있습니다. 프롬프트 화면의 "캐릭터"에서 추가하세요.</p>
+              ) : (
+                <ul className="scroll-thin flex max-h-56 flex-col gap-1 overflow-y-auto">
+                  {characters.map((c) => {
+                    const on = picked.includes(c.id)
+                    const folderName = charFolders.find((f) => f.id === c.folderId)?.name
+                    return (
+                      <li key={c.id}>
+                        <button
+                          type="button"
+                          role="checkbox"
+                          aria-checked={on}
+                          aria-label={`${c.name} 출연`}
+                          onClick={() => setCast(on ? picked.filter((x) => x !== c.id) : [...picked, c.id])}
+                          className={cx(
+                            'flex w-full items-center gap-2.5 rounded-md border px-2.5 py-2 text-left',
+                            on ? 'border-accent' : 'border-line'
+                          )}
+                        >
+                          <span
+                            className={cx(
+                              'flex h-5 w-5 shrink-0 items-center justify-center rounded border',
+                              on ? 'border-accent bg-accent text-accent-fg' : 'border-dim'
+                            )}
+                          >
+                            {on && <Check size={14} strokeWidth={3} />}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate text-sm text-fg">{c.name}</span>
+                          {folderName && <span className="shrink-0 text-[11px] text-dim">{folderName}</span>}
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
         <label className="flex flex-col gap-1 text-xs text-dim">
           해상도
           <Select
@@ -105,6 +169,7 @@ export function ScenePane(props: { bar: (sceneIds: number[], count: number, cost
   useSource()
   const [filter, setFilter] = useState<'all' | null | number>('all')
   const [editing, setEditing] = useState<Partial<Scene> | null>(null)
+  const allCharacters = useCharacters((c) => c.characters)
 
   const shown = s.scenes.filter((x) => filter === 'all' || x.folderId === filter)
   const ids = shown.map((x) => x.id)
@@ -205,6 +270,15 @@ export function ScenePane(props: { bar: (sceneIds: number[], count: number, cost
                   <span className="mt-0.5 line-clamp-2 min-h-8 break-all font-mono text-xs text-dim">
                     {sc.prompt || '(빈 프롬프트)'}
                   </span>
+                  {sc.cast && (
+                    <span className="mt-1 block truncate text-[11px] text-accent">
+                      출연:{' '}
+                      {sc.cast
+                        .map((cid) => allCharacters.find((c) => c.id === cid)?.name)
+                        .filter(Boolean)
+                        .join(', ') || '없음'}
+                    </span>
+                  )}
                 </button>
                 <div className="flex items-center px-1 pb-1">
                   <IconButton label={`${sc.name} 편집`} onClick={() => setEditing(sc)}>
