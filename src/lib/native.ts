@@ -1,5 +1,6 @@
 import { Capacitor, registerPlugin, type Plugin } from '@capacitor/core'
 import { blobToBase64 } from './image'
+import { sleep } from './util'
 
 /** android/app/src/main/java/.../NaipNativePlugin.java 와 짝 */
 interface NaipNativePlugin extends Plugin {
@@ -13,6 +14,7 @@ interface NaipNativePlugin extends Plugin {
   }): Promise<{ uri: string }>
   setKeepAwake(opts: { on: boolean }): Promise<void>
   readClipboard(): Promise<{ text: string }>
+  delay(opts: { ms: number }): Promise<void>
   startJob(opts: { text: string }): Promise<void>
   updateJob(opts: { text: string; done: number; total: number }): Promise<void>
   stopJob(opts: { text?: string; vibrate: boolean }): Promise<void>
@@ -130,4 +132,28 @@ export async function installUpdate(
   } finally {
     void handle.remove()
   }
+}
+
+/**
+ * ms 만큼 기다린다. 앱이 화면에 없을 때 웹뷰는 JS 타이머를 크게 늦추기 때문에(몇 초~1분 단위),
+ * 휴대폰에서는 네이티브 타이머로 기다려 백그라운드 생성의 장 사이 간격이 늘어지지 않게 한다.
+ */
+export function wait(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!isNative) return sleep(ms, signal)
+  return new Promise((resolve, reject) => {
+    const aborted = (): void => reject(new DOMException('Aborted', 'AbortError'))
+    if (signal?.aborted) return aborted()
+    signal?.addEventListener('abort', aborted, { once: true })
+    NaipNative.delay({ ms }).then(
+      () => {
+        signal?.removeEventListener('abort', aborted)
+        resolve()
+      },
+      // 플러그인 호출이 실패하면 JS 타이머로 기다린다
+      () => {
+        signal?.removeEventListener('abort', aborted)
+        sleep(ms, signal).then(resolve, reject)
+      }
+    )
+  })
 }

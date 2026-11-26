@@ -28,6 +28,40 @@ function Group(props: { title: string; children: ReactNode }): ReactNode {
   )
 }
 
+/** 지난 배치에서 장당 어디에 시간이 들었는지 — 느릴 때 원인을 가려내기 위한 표시 */
+function SpeedReport(): ReactNode {
+  const t = useGeneration((g) => g.lastBatch)
+  const delayMax = useSettings((x) => x.delayMax)
+  if (!t) return null
+  const sec = (ms: number): string => `${(ms / 1000).toFixed(1)}초`
+  const mb = (bytes: number): string => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)}MB` : `${Math.round(bytes / 1024)}KB`)
+  // 설정한 간격보다 1초 넘게 더 쉬었다면 앱이 뒤에서 느려졌다는 뜻
+  const slowGap = t.gapMs > (delayMax + 1) * 1000
+  const rows: [string, string, string][] = [
+    ['보내기 + 서버가 그리는 시간', sec(t.waitMs), `요청 크기 ${mb(t.sentBytes)}`],
+    ['결과 내려받기', sec(t.downloadMs), `받은 크기 ${mb(t.receivedBytes)}`],
+    ['기기에 저장', sec(t.processMs), '간격과 겹쳐서 진행'],
+    ['다음 장까지 쉰 시간', t.gapMs ? sec(t.gapMs) : '-', slowGap ? '설정보다 김 — 앱이 뒤에서 느려짐' : '']
+  ]
+  return (
+    <div className="my-2 rounded-lg border border-line bg-field p-2.5 text-xs">
+      <div className="flex items-baseline justify-between">
+        <span className="text-dim">지난 배치 속도 ({t.count}장)</span>
+        <span className="font-mono text-sm text-fg">장당 {sec(t.perImageMs)}</span>
+      </div>
+      <ul className="mt-1.5 flex flex-col gap-1">
+        {rows.map(([label, value, note]) => (
+          <li key={label} className="flex items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate text-dim">{label}</span>
+            {note && <span className={note.startsWith('설정보다') ? 'text-danger' : 'text-dim'}>{note}</span>}
+            <span className="w-12 shrink-0 text-right font-mono tabular-nums text-fg">{value}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 function UpdateGroup(): ReactNode {
   const s = useSettings()
   const u = useUpdate()
@@ -248,6 +282,7 @@ export function SettingsPane(): ReactNode {
             format={(v) => `${v.toFixed(1)}초`}
             onChange={(v) => s.setDelay(Math.min(v, s.delayMin), v)}
           />
+          <SpeedReport />
           <Row label="생성 중 화면 켜 두기" hint="화면이 꺼지면 안드로이드가 생성을 멈출 수 있습니다">
             <Toggle label="생성 중 화면 켜 두기" checked={s.keepAwake} onChange={(keepAwake) => s.patch({ keepAwake })} />
           </Row>

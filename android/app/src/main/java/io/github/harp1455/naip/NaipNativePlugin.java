@@ -17,6 +17,8 @@ import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 import android.net.Uri;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.WindowManager;
@@ -39,6 +41,7 @@ import java.nio.charset.StandardCharsets;
  * - saveToGallery: MediaStore로 Pictures/NAIP[/하위폴더] 에 저장 (Android 10+ 는 권한 불필요)
  * - setKeepAwake: 대량 생성 중 화면 꺼짐 방지
  * - httpGet / installUpdate: GitHub 릴리스에서 새 APK를 확인·다운로드하고 설치 화면을 띄운다
+ * - delay: 백그라운드에서도 늦어지지 않는 타이머 (장 사이 간격)
  * - readClipboard: 프롬프트 칸의 붙여넣기 버튼 (웹뷰는 클립보드 읽기 권한이 없음)
  * - startJob / updateJob / stopJob: 백그라운드 생성용 포그라운드 서비스와 진행·완료 알림
  */
@@ -173,6 +176,13 @@ public class NaipNativePlugin extends Plugin {
         JSObject result = new JSObject();
         result.put("text", text != null ? text.toString() : "");
         call.resolve(result);
+    }
+
+    /** 웹뷰가 화면에 없으면 JS 타이머가 크게 늦어지므로, 장 사이 대기는 여기서 센다 */
+    @PluginMethod
+    public void delay(PluginCall call) {
+        int ms = Math.max(0, call.getInt("ms", 0));
+        new Handler(Looper.getMainLooper()).postDelayed(() -> call.resolve(), ms);
     }
 
     @PluginMethod

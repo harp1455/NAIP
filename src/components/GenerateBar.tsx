@@ -108,6 +108,7 @@ export function GenerateBar(props: {
             : ''}
         장 사이 간격 {delayMin.toFixed(1)}~{delayMax.toFixed(1)}초
         {g.failed > 0 && !g.running ? ` · 실패 ${g.failed}장` : ''}
+        {!g.running && g.lastBatch ? ` · 지난 배치 장당 ${(g.lastBatch.perImageMs / 1000).toFixed(1)}초` : ''}
       </p>
     </div>
   )

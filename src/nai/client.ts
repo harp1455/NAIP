@@ -61,21 +61,37 @@ export async function generateImage(
   request: GenerationRequest,
   buildOpts: Omit<BuildOptions, 'stream'> = {},
   signal?: AbortSignal
-): Promise<{ image: Blob; payload: ReturnType<typeof buildGenerateImagePayload> }> {
+): Promise<{
+  image: Blob
+  payload: ReturnType<typeof buildGenerateImagePayload>
+  /** 어디서 시간이 걸렸는지 보기 위한 측정값 */
+  stats: { sentBytes: number; receivedBytes: number; waitMs: number; downloadMs: number }
+}> {
   const payload = buildGenerateImagePayload(request, buildOpts)
+  const body = JSON.stringify(payload)
+  const t0 = performance.now()
   const res = await fetch(ENDPOINTS.generateImage, {
     method: 'POST',
     headers: headers(token),
-    body: JSON.stringify(payload),
+    body,
     signal
   })
   if (!res.ok) await fail('생성 실패', res)
-  const zip = await JSZip.loadAsync(await res.arrayBuffer())
+  // 여기까지가 "올려 보내기 + 서버가 그리는 시간", 이후가 결과 내려받기
+  const t1 = performance.now()
+  const buffer = await res.arrayBuffer()
+  const t2 = performance.now()
+  const zip = await JSZip.loadAsync(buffer)
   const entryName = Object.keys(zip.files)[0]
   if (!entryName) throw new Error('응답 zip에 이미지가 없습니다')
   const bytes = await zip.file(entryName)!.async('uint8array')
   const type = (buildOpts.imageFormat ?? 'png') === 'webp' ? 'image/webp' : 'image/png'
-  return { image: new Blob([bytes as BlobPart], { type }), payload }
+  return {
+    image: new Blob([bytes as BlobPart], { type }),
+    payload,
+    // base64·영문 JSON이라 글자 수가 곧 바이트 수에 가깝다
+    stats: { sentBytes: body.length, receivedBytes: buffer.byteLength, waitMs: t1 - t0, downloadMs: t2 - t1 }
+  }
 }
 
 /** 바이브 인코딩 (1회 2 Anlas). 인코딩된 바이브를 base64로 돌려준다. */

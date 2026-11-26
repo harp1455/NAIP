@@ -14,8 +14,8 @@ import {
 } from '../lib/image'
 import type { HistoryMeta, SettingsSnapshot } from '../lib/db'
 import { processWildcards, resetSequentialCounters } from '../nai/fragments'
-import { cleanFileName, fileNameFor, job, saveToGallery, setKeepAwake } from '../lib/native'
-import { randomSeed, sleep, uid } from '../lib/util'
+import { cleanFileName, fileNameFor, job, saveToGallery, setKeepAwake, wait } from '../lib/native'
+import { randomSeed, uid } from '../lib/util'
 import { useCharacters } from './characters'
 import { fragmentSource } from './fragments'
 import { appendPrompt, useScenes } from './scenes'
@@ -26,6 +26,22 @@ import { useSettings } from './settings'
 import { useSource } from './source'
 
 type Phase = 'idle' | 'preparing' | 'generating' | 'waiting' | 'retrying'
+
+export interface BatchTiming {
+  count: number
+  /** 장당 전체 평균(ms) — 한 장을 요청하기 시작해서 다음 장을 요청하기 직전까지 */
+  perImageMs: number
+  /** 올려 보내기 + 서버가 그리는 시간 */
+  waitMs: number
+  /** 결과 내려받기 */
+  downloadMs: number
+  /** 썸네일 만들기·기기에 저장 */
+  processMs: number
+  /** 응답을 받은 뒤 다음 요청까지 실제로 쉰 시간 (설정한 간격보다 훨씬 길면 앱이 느려진 것) */
+  gapMs: number
+  sentBytes: number
+  receivedBytes: number
+}
 
 interface GenerationState {
   running: boolean
@@ -38,6 +54,8 @@ interface GenerationState {
   latestId: number | null
   /** 배치 시작 시각 (남은 시간 추정용) */
   startedAt: number
+  /** 지난 배치에서 장당 평균 어디에 시간이 들었는지 (느릴 때 원인을 보기 위한 측정) */
+  lastBatch: BatchTiming | null
   /**
    * scenes를 주면 그 씬들의 예약분을, regenerate를 주면 그 이미지를 같은 설정·새 시드로 한 장 더,
    * 아무것도 없으면 메인 프롬프트를 장수만큼 생성
@@ -95,6 +113,7 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
   error: null,
   latestId: null,
   startedAt: 0,
+  lastBatch: null,
   setLatest: (id) => set({ latestId: id }),
   stop: () => controller?.abort(),
   start: async (opts) => {
@@ -221,6 +240,8 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
     if (settings.background) job.start(`0/${count}장 준비 중`)
     resetSequentialCounters()
     let stoppedByUser = false
+    const timing = { count: 0, gaps: 0, waitMs: 0, downloadMs: 0, processMs: 0, gapMs: 0, sentBytes: 0, receivedBytes: 0 }
+    let loopStarted = 0
 
     try {
       // ── 레퍼런스 준비 (배치당 1회)
@@ -271,6 +292,7 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
       }
 
       // ── 1장씩 count번 요청 (요청당 n_samples: 1)
+      loopStarted = performance.now()
       for (let i = 0; i < count; i++) {
         const item = plan[i]
         const seed =
@@ -316,13 +338,13 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
             // 429·5xx·네트워크 오류는 전이성 → 백오프 후 재시도. 그 외 4xx는 영구 오류
             const transient = status === 0 || status === 429 || status >= 500
             if (transient && attempt < MAX_RETRIES) {
-              const wait =
+              const backoff =
                 (e instanceof NaiHttpError ? e.retryAfterMs : undefined) ?? 3000 * 2 ** attempt
               set({
                 phase: 'retrying',
                 error: `${(e as Error).message} — 재시도 ${attempt + 1}/${MAX_RETRIES}`
               })
-              await sleep(Math.min(wait, 60000), signal)
+              await wait(Math.min(backoff, 60000), signal)
               continue
             }
             set((s) => ({ failed: s.failed + 1, error: (e as Error).message }))
@@ -332,9 +354,18 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
           }
         }
 
+        // 결과 저장은 다음 장을 기다리는 간격과 겹쳐서 한다 — 저장이 끝난 뒤에야 간격을 세면 그만큼 느려진다
+        const received = performance.now()
+        let post: Promise<void> = Promise.resolve()
         if (result) {
           const { image, payload } = result
+          timing.count++
+          timing.waitMs += result.stats.waitMs
+          timing.downloadMs += result.stats.downloadMs
+          timing.sentBytes += result.stats.sentBytes
+          timing.receivedBytes += result.stats.receivedBytes
           const id = uid()
+          post = (async () => {
           await useHistory.getState().add(
             {
               id,
@@ -380,13 +411,26 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
           }
           // V5는 할당량 게이지가 장마다 줄어드는 것이 보이도록 매번, 그 밖에는 10장마다 잔액을 새로 읽는다
           if (isV5Model(base.model) || (i + 1) % 10 === 0) void useSettings.getState().refreshSubscription()
+          timing.processMs += performance.now() - received
+          })()
+          // 중지로 기다림이 먼저 끝난 뒤 저장이 실패해도 처리되지 않은 오류로 남지 않게 한다
+          post.catch(() => {})
         }
 
         if (i < count - 1) {
-          // 장 사이 간격: [delayMin, delayMax]초에서 매번 무작위
+          // 장 사이 간격: 응답을 받은 시점부터 [delayMin, delayMax]초에서 매번 무작위
           const { delayMin, delayMax } = useSettings.getState()
           set({ phase: 'waiting' })
-          await sleep(Math.round((delayMin + Math.random() * (delayMax - delayMin)) * 1000), signal)
+          await Promise.all([
+            post,
+            wait(Math.round((delayMin + Math.random() * (delayMax - delayMin)) * 1000), signal)
+          ])
+          if (result) {
+            timing.gapMs += performance.now() - received
+            timing.gaps++
+          }
+        } else {
+          await post
         }
       }
     } catch (e) {
@@ -396,6 +440,21 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
       controller = null
       const { done, failed, error } = get()
       set({ running: false, phase: 'idle' })
+      if (timing.count > 0 && loopStarted) {
+        const n = timing.count
+        set({
+          lastBatch: {
+            count: n,
+            perImageMs: (performance.now() - loopStarted) / n,
+            waitMs: timing.waitMs / n,
+            downloadMs: timing.downloadMs / n,
+            processMs: timing.processMs / n,
+            gapMs: timing.gaps ? timing.gapMs / timing.gaps : 0,
+            sentBytes: timing.sentBytes / n,
+            receivedBytes: timing.receivedBytes / n
+          }
+        })
+      }
       setKeepAwake(false)
       const summary = error
         ? `오류로 중단 — ${done}/${count}장 완료`
