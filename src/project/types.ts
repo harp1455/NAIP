@@ -207,6 +207,11 @@ export interface AssetItem {
    * 채택을 풀었다 다시 채택해도 같은 칸이면 같은 코드다 (채팅 프롬프트의 코드가 깨지지 않게)
    */
   codes?: Record<string, string>
+  /**
+   * 채택 칸 번호 → 그 칸에서 마지막으로 내보낸 경로. 채택을 풀고 다른 그림을 채택해 같은 칸(같은 코드)을
+   * 받으면 그 그림이 같은 파일을 새로 쓴다 (export.previousExportPath)
+   */
+  slotPaths?: Record<string, string>
   note?: string
 }
 

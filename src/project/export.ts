@@ -35,11 +35,37 @@ export function exportCandidates(project: Project, opts: CandidateOptions = {}):
   return out
 }
 
-/** 캐릭터의 코드 접두 (지정하지 않았으면 프로젝트 안 순서대로 A, B, C …) */
-export function characterCode(project: Project, character: ProjectCharacter | null): string {
+/**
+ * 캐릭터마다 코드 접두 — 지정한 코드는 그대로, 비어 있으면 프로젝트 안 순서대로 A, B, C … 를 주되
+ * 다른 캐릭터가 쓰는 글자는 건너뛴다 (지정한 B와 순서상 B인 캐릭터가 같은 접두를 나눠 쓰지 않게).
+ * 내보내기에서 순서 글자로 코드를 처음 매기면 save.ts가 그 글자를 캐릭터에 적어 둔다 — 나중에 캐릭터를
+ * 빼거나 순서를 바꿔도 같은 캐릭터의 새 코드가 다른 글자로 시작하지 않게
+ */
+export function characterCodes(project: Pick<Project, 'characters'>): Map<string, string> {
+  const out = new Map<string, string>()
+  const taken = new Set<string>()
+  for (const c of project.characters) {
+    const code = c.code?.trim()
+    if (!code) continue
+    out.set(c.id, code)
+    taken.add(code.toLowerCase())
+  }
+  project.characters.forEach((c, i) => {
+    if (out.has(c.id)) return
+    let n = i
+    while (taken.has(letterCode(n).toLowerCase())) n++
+    const code = letterCode(n)
+    out.set(c.id, code)
+    taken.add(code.toLowerCase())
+  })
+  return out
+}
+
+/** 캐릭터의 코드 접두 (characterCodes 참고) */
+export function characterCode(project: Pick<Project, 'characters'>, character: ProjectCharacter | null): string {
   if (!character) return ''
   if (character.code?.trim()) return character.code.trim()
-  return letterCode(Math.max(0, project.characters.findIndex((c) => c.id === character.id)))
+  return characterCodes(project).get(character.id) ?? letterCode(Math.max(0, project.characters.findIndex((c) => c.id === character.id)))
 }
 
 export function slotRef(key: string, slot: number): string {
@@ -51,10 +77,11 @@ export function slotRef(key: string, slot: number): string {
  * 돌려준 새 코드는 store.setCodes로 저장해 두어야 다음에도 같다
  */
 export function projectCodes(project: Project, candidates: readonly ExportCandidate[]): Map<string, string> {
+  const letters = characterCodes(project)
   const items = candidates.map((c) => ({
     id: slotRef(c.key, c.slot),
     group: c.character?.id ?? '',
-    groupCode: characterCode(project, c.character),
+    groupCode: c.character ? (letters.get(c.character.id) ?? characterCode(project, c.character)) : '',
     existing: project.items[c.key]?.codes?.[String(c.slot)],
     vars: { project: project.slug || project.name }
   }))
@@ -145,17 +172,20 @@ export interface ExportPlanOptions extends CandidateOptions {
 }
 
 /**
- * 지난번 내보낸 경로 — 그림 자신의 기록, 없으면 이 그림이 교체한 이전 버전들의 기록.
- * 교체한 새 그림이 같은 파일을 새로 쓰게 해서 이름·코드가 바뀌지 않는다
+ * 지난번 내보낸 경로 — 그림 자신의 기록, 없으면 이 그림이 교체한 이전 버전들의 기록, 그것도 없으면
+ * 이 그림이 받은 채택 칸에 마지막으로 내보낸 경로(item.slotPaths). 교체한 새 그림이나 채택을 풀었다가
+ * 다른 그림을 채택해 같은 칸(= 같은 코드)을 받은 그림이 같은 파일을 새로 쓰게 해서, 코드의 파일에
+ * 탈락한 그림이 남지 않고 이름·코드가 바뀌지 않는다
  */
 export function previousExportPath(project: Project, key: string, image: AssetImage): string | undefined {
-  const byId = new Map((project.items[key]?.images ?? []).map((i) => [i.id, i]))
+  const item = project.items[key]
+  const byId = new Map((item?.images ?? []).map((i) => [i.id, i]))
   const seen = new Set<number>()
   for (let cur: AssetImage | undefined = image; cur && !seen.has(cur.id); cur = cur.replaces !== undefined ? byId.get(cur.replaces) : undefined) {
     seen.add(cur.id)
     if (cur.exported) return cur.exported.path
   }
-  return undefined
+  return image.slot !== undefined ? item?.slotPaths?.[String(image.slot)] : undefined
 }
 
 function extOf(mime: string | undefined): string {
@@ -222,8 +252,9 @@ export function manifestRows(project: Project, plan: ExportPlan, extras: RowExtr
       const c = e.candidate
       const labels = assetVars(project, c, e.code, 'label')
       const out = extras.outputs?.get(c.image.id)
-      const w = out?.width ?? c.image.width
-      const h = out?.height ?? c.image.height
+      // 변환 결과를 알려 줬으면 그대로 (모르는 크기는 비워 둔다), 아니면 원본 크기
+      const w = out ? out.width : c.image.width
+      const h = out ? out.height : c.image.height
       const description =
         c.image.description?.trim() ||
         renderTemplate(project.manifest.descriptionTemplate, labels, { collapse: true, separators: ' ' }).text

@@ -219,13 +219,16 @@ export function removeImages(item: AssetItem, ids: readonly number[]): AssetItem
   return next
 }
 
-/** 내보낸 경로 기록 */
+/** 내보낸 경로 기록 (채택 칸이 있으면 그 칸의 경로도 — 다음에 그 칸을 받는 그림이 같은 파일을 쓴다) */
 export function markExported(item: AssetItem, id: number, path: string, at: number, bytes?: number): AssetItem {
-  if (!item.images.some((i) => i.id === id)) return item
-  return {
+  const image = item.images.find((i) => i.id === id)
+  if (!image) return item
+  const next: AssetItem = {
     ...item,
     images: item.images.map((i) => (i.id === id ? { ...i, exported: { path, at, ...(bytes !== undefined ? { bytes } : {}) } } : i))
   }
+  if (image.mark === 'adopted' && image.slot !== undefined) next.slotPaths = { ...(item.slotPaths ?? {}), [String(image.slot)]: path }
+  return next
 }
 
 /** 생성 대기·생성 중·실패 장수 조정 (음수가 되지 않게) */

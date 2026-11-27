@@ -138,7 +138,13 @@ describe('path preview', () => {
     ])
     expect(suffix.collisions).toBe(2)
     expect(suffix.ok).toBe(true)
-    expect(previewPaths(dup, s('overwrite')).entries.map((e) => e.status)).toEqual(['ok', 'overwrite', 'overwrite'])
+    // 덮어쓰기는 기기에 이미 있는 파일만 — 같은 묶음의 두 그림은 서로 덮어쓰지 않고 번호를 붙인다
+    // (갤러리는 한 장이 사라지고 ZIP은 같은 항목을 두 번 써서 통째로 실패하던 문제)
+    expect(previewPaths(dup, s('overwrite'), { existing: ['MIA.png'] }).entries.map((e) => [e.fileName, e.status, e.conflictWith])).toEqual([
+      ['Mia.png', 'overwrite', 'existing'],
+      ['mia_2.png', 'renamed', 1],
+      ['MIA_3.png', 'renamed', 1]
+    ])
     expect(previewPaths(dup, s('skip')).entries.map((e) => e.status)).toEqual(['ok', 'skip', 'skip'])
     const err = previewPaths(dup, s('error'))
     expect(err.ok).toBe(false)
