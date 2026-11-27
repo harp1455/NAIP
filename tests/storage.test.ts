@@ -4,7 +4,7 @@ import type { HistoryMeta } from '../src/lib/db'
 import { openIdb } from '../src/lib/db'
 import { memoryFileStore } from '../src/storage/files'
 import { createHistoryRepo, originalPath } from '../src/storage/history-repo'
-import { useStorageForTests, type Storage } from '../src/storage'
+import { setStorageForTests, type Storage } from '../src/storage'
 import { idbLegacySource, migrateLegacy, MIGRATION_KEY } from '../src/storage/legacy'
 import { createSqlJsDriver } from '../src/storage/sqljs'
 import { checkStorage } from '../src/storage/check'
@@ -37,7 +37,7 @@ function png(n: number): Blob {
 async function fresh(): Promise<Storage & { files: ReturnType<typeof memoryFileStore> }> {
   const driver = await createSqlJsDriver()
   const files = memoryFileStore()
-  return (await useStorageForTests(driver, files)) as Storage & { files: ReturnType<typeof memoryFileStore> }
+  return (await setStorageForTests(driver, files)) as Storage & { files: ReturnType<typeof memoryFileStore> }
 }
 
 describe('schema', () => {

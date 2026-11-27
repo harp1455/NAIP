@@ -284,7 +284,8 @@ public class NaipStoragePlugin extends Plugin {
                 if (dir != null && !dir.exists() && !dir.mkdirs()) throw new IOException("cannot create " + dir);
                 byte[] bytes = Base64.decode(base64, Base64.DEFAULT);
                 // 임시 파일에 다 쓰고 디스크에 내린 뒤 이름을 바꾼다 — 중간에 죽어도 반쯤 쓴 파일이 원본 이름으로 남지 않는다
-                File tmp = new File(dir, target.getName() + ".tmp");
+                // 같은 파일을 동시에 쓰더라도 임시 파일이 겹치지 않게 이름을 따로 짓는다 (남은 .tmp는 저장 공간 점검이 찾는다)
+                File tmp = new File(dir, target.getName() + "." + System.nanoTime() + ".tmp");
                 try (FileOutputStream out = new FileOutputStream(tmp)) {
                     out.write(bytes);
                     out.getFD().sync();

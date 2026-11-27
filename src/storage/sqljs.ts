@@ -36,16 +36,25 @@ export async function createSqlJsDriver(opts: {
       // 지금까지의 변경을 한 번에 — 내보내는 사이에 새로 바뀐 것은 다음 차례에 남긴다
       while (dirty) {
         dirty = false
-        await opts.persistence!.save(db.export())
+        try {
+          await opts.persistence!.save(db.export())
+        } catch (e) {
+          // 다음 쓰기 때 다시 보관한다
+          dirty = true
+          throw e
+        }
       }
     })().finally(() => {
       saving = null
     })
     return saving
   }
+  const persistQuietly = (): void => {
+    persist().catch((e: unknown) => console.warn('DB 보관 실패', e))
+  }
   if (opts.persistence && typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden' && dirty) void persist()
+      if (document.visibilityState === 'hidden' && dirty) persistQuietly()
     })
   }
 
@@ -59,7 +68,7 @@ export async function createSqlJsDriver(opts: {
     db,
     async exec(sql, params): Promise<ExecResult> {
       const changes = run(sql, params)
-      void persist()
+      persistQuietly()
       return { changes }
     },
     async query<T>(sql: string, params?: SqlValue[]): Promise<T[]> {
@@ -83,7 +92,7 @@ export async function createSqlJsDriver(opts: {
         db.run('ROLLBACK')
         throw e
       }
-      void persist()
+      persistQuietly()
     },
     flush: () => (dirty || saving ? persist() : Promise.resolve())
   }

@@ -35,7 +35,7 @@ vi.mock('../src/lib/image', () => ({
   loadImage: async () => ({ naturalWidth: 1, naturalHeight: 1 })
 }))
 
-import { useStorageForTests } from '../src/storage'
+import { setStorageForTests } from '../src/storage'
 import { createSqlJsDriver } from '../src/storage/sqljs'
 import { memoryFileStore } from '../src/storage/files'
 import type { QueueBatchRow, QueueItemRow } from '../src/storage/queue-repo'
@@ -150,7 +150,7 @@ describe('resume rules', () => {
 describe('persisted queue + generation store', () => {
   beforeEach(async () => {
     calls.length = 0
-    await useStorageForTests(await createSqlJsDriver(), memoryFileStore())
+    await setStorageForTests(await createSqlJsDriver(), memoryFileStore())
     useSettings.setState({ token: 'pst-test', autoSave: false, background: false, keepAwake: false, vibrate: false, streaming: false, historyLimit: 0 })
     useScenes.setState({ scenes: [], folders: [] })
     await useHistory.getState().init()
@@ -215,6 +215,14 @@ describe('persisted queue + generation store', () => {
     expect(await s.driver.query('SELECT * FROM queue_batches')).toEqual([])
     expect(await s.driver.query('SELECT * FROM queue_items')).toEqual([])
   }, 20000)
+
+  it('forgets progress rows whose batch was never written', async () => {
+    const { getStorage } = await import('../src/storage')
+    const s = await getStorage()
+    await s.queue.mark(99, 0, 'sending', 'orphan')
+    expect(await loadResume()).toEqual([])
+    expect(await s.driver.query('SELECT * FROM queue_items')).toEqual([])
+  })
 
   it('discarding returns unsent scene items to the reserve but not in-flight ones', async () => {
     useScenes.setState({

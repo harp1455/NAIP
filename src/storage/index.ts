@@ -54,7 +54,7 @@ export function getStorage(): Promise<Storage> {
 }
 
 /** 테스트: 미리 만든 저장소를 쓴다 */
-export async function useStorageForTests(driver: SqlDriver, files: FileStore): Promise<Storage> {
+export async function setStorageForTests(driver: SqlDriver, files: FileStore): Promise<Storage> {
   await migrate(driver)
   const s = { driver, files, history: createHistoryRepo(driver, files), queue: createQueueRepo(driver, files) }
   current = Promise.resolve(s)

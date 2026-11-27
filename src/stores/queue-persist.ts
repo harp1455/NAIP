@@ -34,16 +34,25 @@ export function deserializeBatch(data: string): Batch {
 }
 
 const warn = (e: unknown): void => console.warn('대기열 기록 실패', e)
+/** 배치 내용을 쓰는 중인 것 — 그 배치의 첫 "보냄" 기록은 이것이 끝난 뒤에 쓴다 */
+const saving = new Map<number, Promise<void>>()
 
 /** 대기열 기록 — 기록이 실패해도 생성은 멈추지 않는다 (sending만 기다린다) */
 export const queueStore = {
   save(batch: Batch): Promise<void> {
-    return getStorage()
+    const p = getStorage()
       .then((s) => s.queue.saveBatch(batch.id, batch.label, serializeBatch(batch)))
       .catch(warn)
+      .finally(() => saving.delete(batch.id))
+    saving.set(batch.id, p)
+    return p
   },
-  /** 요청을 보내기 직전 — 이 기록이 디스크에 닿은 뒤에 보낸다 */
-  sending(batchId: number, key: number, reqId: string, seed: number): Promise<void> {
+  /**
+   * 요청을 보내기 직전 — 이 기록이 디스크에 닿은 뒤에 보낸다.
+   * 배치 내용(수 MB일 수 있다)을 다 쓰기 전이면 기다린다: 진행 기록만 있고 배치가 없으면 이어서 할 수 없다
+   */
+  async sending(batchId: number, key: number, reqId: string, seed: number): Promise<void> {
+    await saving.get(batchId)
     return getStorage()
       .then((s) => s.queue.mark(batchId, key, 'sending', reqId, { seed }))
       .catch(warn)
@@ -144,6 +153,9 @@ export function planResume(
 export async function loadResume(): Promise<ResumeEntry[]> {
   const { queue } = await getStorage()
   const { batches, items } = await queue.load()
+  // 배치 없이 남은 진행 기록(배치를 쓰기 전에 꺼진 경우)은 이어서 할 수 없다
+  const known = new Set(batches.map((b) => b.id))
+  for (const id of new Set(items.filter((i) => !known.has(i.batch_id)).map((i) => i.batch_id))) await queue.dropBatch(id)
   if (!batches.length) return []
   const found = await queue.imagesByRequest(items.filter((i) => i.state === 'sending').map((i) => i.req_id))
   const { entries, resolved, dropped } = planResume(batches, items, found)
