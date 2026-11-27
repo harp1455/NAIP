@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import { createJSONStorage, persist } from 'zustand/middleware'
-import { idbStorage } from '../lib/db'
+import { persist } from 'zustand/middleware'
+import { debouncedIdbStorage } from '../lib/db'
 import { makeThumb, pngDataUrl, toPngBase64 } from '../lib/image'
 import { uid } from '../lib/util'
 import type { ReferenceType } from '../nai/reference'
@@ -171,7 +171,8 @@ export const useRefs = create<RefsState>()(
     }),
     {
       name: 'naip-refs',
-      storage: createJSONStorage(() => idbStorage),
+      // 강도 슬라이더를 끄는 동안 그림까지 매번 다시 쓰지 않도록 모아서 저장한다
+      storage: debouncedIdbStorage<Pick<RefsState, 'vibes' | 'charRefs'>>(),
       partialize: (s) => ({ vibes: s.vibes, charRefs: s.charRefs }),
       onRehydrateStorage: () => () => useRefs.setState({ hydrated: true })
     }

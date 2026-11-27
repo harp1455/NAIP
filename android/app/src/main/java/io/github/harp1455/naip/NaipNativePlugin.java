@@ -21,6 +21,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.Base64;
+import android.view.HapticFeedbackConstants;
 import android.view.WindowManager;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -42,6 +43,8 @@ import java.nio.charset.StandardCharsets;
  * - setKeepAwake: 대량 생성 중 화면 꺼짐 방지
  * - httpGet / installUpdate: GitHub 릴리스에서 새 APK를 확인·다운로드하고 설치 화면을 띄운다
  * - delay: 백그라운드에서도 늦어지지 않는 타이머 (장 사이 간격)
+ * - copyImage: 이미지를 캐시에 쓰고 그 content:// 주소를 클립보드에 올린다 (메신저에 바로 붙여 넣기)
+ * - haptic: 꾹 눌렀을 때의 짧은 진동
  * - readClipboard: 프롬프트 칸의 붙여넣기 버튼 (웹뷰는 클립보드 읽기 권한이 없음)
  * - startJob / updateJob / stopJob: 백그라운드 생성용 포그라운드 서비스와 진행·완료 알림
  */
@@ -166,6 +169,49 @@ public class NaipNativePlugin extends Plugin {
         JSObject result = new JSObject();
         result.put("uri", uri.toString());
         call.resolve(result);
+    }
+
+    @PluginMethod
+    public void copyImage(PluginCall call) {
+        String base64 = call.getString("base64");
+        String mimeType = call.getString("mimeType", "image/png");
+        if (base64 == null) {
+            call.reject("base64 is required");
+            return;
+        }
+        try {
+            File dir = new File(getContext().getCacheDir(), "clipboard");
+            if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("cannot create cache dir");
+            // 이전에 복사한 파일은 지운다 (붙여 넣는 앱이 읽는 중일 수 있어 가장 최근 것은 남긴다)
+            File[] old = dir.listFiles();
+            if (old != null && old.length > 1) {
+                java.util.Arrays.sort(old, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+                for (int i = 1; i < old.length; i++) old[i].delete();
+            }
+            String ext = "image/webp".equals(mimeType) ? ".webp" : ".png";
+            File file = new File(dir, "NAIP_" + System.currentTimeMillis() + ext);
+            try (OutputStream out = new FileOutputStream(file)) {
+                out.write(Base64.decode(base64, Base64.DEFAULT));
+            }
+            Uri uri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".fileprovider", file);
+            ClipData clip = ClipData.newUri(getContext().getContentResolver(), "NAIP image", uri);
+            ClipboardManager clipboard = getContext().getSystemService(ClipboardManager.class);
+            if (clipboard == null) throw new IllegalStateException("clipboard unavailable");
+            // 시스템이 붙여 넣는 앱에 이 주소를 읽을 권한을 넘겨준다 (FileProvider grantUriPermissions)
+            clipboard.setPrimaryClip(clip);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("copy failed: " + e.getMessage(), e);
+        }
+    }
+
+    @PluginMethod
+    public void haptic(PluginCall call) {
+        getActivity()
+            .runOnUiThread(() -> {
+                getBridge().getWebView().performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                call.resolve();
+            });
     }
 
     @PluginMethod

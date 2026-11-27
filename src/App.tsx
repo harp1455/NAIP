@@ -30,6 +30,7 @@ import { CharRefSheet, VibeSheet } from './components/RefSheets'
 import { SettingsPane } from './components/SettingsPane'
 import { SourceSheet } from './components/SourceSheet'
 import { V5Gauge } from './components/V5Gauge'
+import { Toast } from './components/Toast'
 
 type Tab = 'prompt' | 'scenes' | 'result' | 'history' | 'settings'
 
@@ -257,6 +258,7 @@ export default function App(): ReactNode {
         />
       )}
       {saving && <SaveSheet />}
+      <Toast />
     </div>
   )
 }

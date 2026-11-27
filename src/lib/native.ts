@@ -15,6 +15,8 @@ interface NaipNativePlugin extends Plugin {
   setKeepAwake(opts: { on: boolean }): Promise<void>
   readClipboard(): Promise<{ text: string }>
   delay(opts: { ms: number }): Promise<void>
+  copyImage(opts: { base64: string; mimeType: string }): Promise<void>
+  haptic(): Promise<void>
   startJob(opts: { text: string }): Promise<void>
   updateJob(opts: { text: string; done: number; total: number }): Promise<void>
   stopJob(opts: { text?: string; vibrate: boolean }): Promise<void>
@@ -156,4 +158,59 @@ export function wait(ms: number, signal?: AbortSignal): Promise<void> {
       }
     )
   })
+}
+
+/**
+ * 이미지를 클립보드에 복사한다. 휴대폰에서는 앱 캐시에 파일을 만들고 그 주소(content://)를
+ * 클립보드에 올린다 — 메신저 입력창이나 키보드의 클립보드에서 붙여 넣을 수 있다.
+ */
+export async function copyImageToClipboard(blob: Blob): Promise<void> {
+  if (isNative) {
+    await NaipNative.copyImage({ base64: await blobToBase64(blob), mimeType: blob.type || 'image/png' })
+    return
+  }
+  // 브라우저 클립보드는 PNG만 받는다
+  const png = blob.type === 'image/png' ? blob : await toPng(blob)
+  await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
+}
+
+async function toPng(blob: Blob): Promise<Blob> {
+  const bitmap = await createImageBitmap(blob)
+  const canvas = document.createElement('canvas')
+  canvas.width = bitmap.width
+  canvas.height = bitmap.height
+  canvas.getContext('2d')!.drawImage(bitmap, 0, 0)
+  return new Promise((resolve, reject) =>
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG 변환 실패'))), 'image/png')
+  )
+}
+
+/** 꾹 눌렀을 때의 짧은 진동 */
+export function haptic(): void {
+  if (isNative) void NaipNative.haptic().catch(() => {})
+  else navigator.vibrate?.(15)
+}
+
+/** 여러 장을 한 번에 공유 (공유 창에서 앱을 고른다) */
+export async function shareImages(files: { blob: Blob; fileName: string }[]): Promise<void> {
+  if (files.length === 1) return shareImage(files[0].blob, files[0].fileName)
+  if (isNative) {
+    const { Filesystem, Directory } = await import('@capacitor/filesystem')
+    const { Share } = await import('@capacitor/share')
+    const uris: string[] = []
+    for (const f of files) {
+      const res = await Filesystem.writeFile({
+        path: `share/${f.fileName}`,
+        data: await blobToBase64(f.blob),
+        directory: Directory.Cache,
+        recursive: true
+      })
+      uris.push(res.uri)
+    }
+    await Share.share({ files: uris })
+    return
+  }
+  const list = files.map((f) => new File([f.blob], f.fileName, { type: f.blob.type }))
+  if (navigator.canShare?.({ files: list })) await navigator.share({ files: list })
+  else throw new Error('이 브라우저는 여러 장 공유를 지원하지 않습니다')
 }

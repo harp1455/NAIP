@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import {
   ChevronLeft,
   ChevronRight,
+  Copy,
   Download,
   ImageUp,
   ScanFace,
@@ -19,7 +20,8 @@ import * as db from '../lib/db'
 import { fromMetadata, fromSnapshot } from '../lib/apply'
 import { useBackClose } from '../lib/back'
 import { readImageSettings } from '../lib/metadata'
-import { fileNameFor, shareImage } from '../lib/native'
+import { fileNameFor } from '../lib/native'
+import { copyImage, shareHistoryImages } from '../lib/share'
 import { cx } from '../lib/util'
 import { imageUrl, useHistory } from '../stores/history'
 import { useDirector } from '../stores/director'
@@ -134,6 +136,7 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
             alt={`생성 이미지 seed ${meta.seed}`}
             onSwipe={go}
             onZoomChange={setZoomed}
+            onLongPress={() => void copyImage(meta, { haptic: true })}
           />
         ) : (
           <img src={meta.thumb} alt="" className="h-full w-full object-contain opacity-60 blur-sm" />
@@ -187,7 +190,10 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
           <Action label={meta.saved ? '다시 저장' : '저장'} onClick={() => useSaver.getState().open([meta])}>
             <Download size={19} className={meta.saved ? 'text-ok' : ''} />
           </Action>
-          <Action label="공유" onClick={() => void withBlob(shareImage)}>
+          <Action label="복사" onClick={() => void copyImage(meta)}>
+            <Copy size={19} />
+          </Action>
+          <Action label="공유" onClick={() => void shareHistoryImages([meta])}>
             <Share2 size={19} />
           </Action>
           <Action

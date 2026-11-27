@@ -124,3 +124,10 @@ body.suggesting #root {
 body.suggesting .sheet-overlay {
   bottom: 48px;
 }
+
+/* 꾹 누르기를 앱이 쓰는 곳 — 브라우저 기본 메뉴(이미지 저장·복사 말풍선)를 띄우지 않는다 */
+.no-callout,
+.no-callout img {
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+}

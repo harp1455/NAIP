@@ -9,6 +9,7 @@ const DOUBLE_TAP_SCALE = 2.5
  * - 한 손가락: 확대 중이면 이동, 아니면 좌우로 밀어 앞뒤 이미지 (onSwipe)
  * - 두 번 탭: 그 자리를 확대하거나 원래 크기로
  * - 마우스 휠: 커서 자리 기준 확대
+ * - 꾹 누르기: onLongPress (복사 등)
  * 움직이는 동안에는 React를 거치지 않고 transform만 바꿔 끊김을 줄인다.
  */
 export function ZoomImage(props: {
@@ -17,6 +18,8 @@ export function ZoomImage(props: {
   /** 확대하지 않은 상태에서 가로로 밀었을 때: 1 = 다음(왼쪽으로 밂), -1 = 이전 */
   onSwipe: (dir: 1 | -1) => void
   onZoomChange: (zoomed: boolean) => void
+  /** 한 손가락으로 움직이지 않고 꾹 눌렀을 때 */
+  onLongPress?: () => void
 }): ReactNode {
   const box = useRef<HTMLDivElement>(null)
   const img = useRef<HTMLImageElement>(null)
@@ -25,6 +28,8 @@ export function ZoomImage(props: {
   const pinch = useRef<{ dist: number; qx: number; qy: number; s: number } | null>(null)
   const single = useRef<{ startX: number; startY: number; lastX: number; lastY: number; moved: boolean } | null>(null)
   const lastTap = useRef(0)
+  const hold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const held = useRef(false)
   const handlers = useRef(props)
   handlers.current = props
 
@@ -96,14 +101,24 @@ export function ZoomImage(props: {
   return (
     <div
       ref={box}
-      className="absolute inset-0 touch-none overflow-hidden"
+      className="no-callout absolute inset-0 touch-none overflow-hidden"
+      onContextMenu={(e) => e.preventDefault()}
       onPointerDown={(e) => {
         e.currentTarget.setPointerCapture(e.pointerId)
         pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
         if (pointers.current.size === 2) startPinch()
         else if (pointers.current.size === 1) {
           single.current = { startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY, moved: false }
+          held.current = false
+          clearTimeout(hold.current)
+          hold.current = setTimeout(() => {
+            if (single.current && !single.current.moved && pointers.current.size === 1) {
+              held.current = true
+              handlers.current.onLongPress?.()
+            }
+          }, 480)
         }
+        if (pointers.current.size > 1) clearTimeout(hold.current)
       }}
       onPointerMove={(e) => {
         if (!pointers.current.has(e.pointerId)) return
@@ -123,7 +138,10 @@ export function ZoomImage(props: {
         }
         const one = single.current
         if (!one) return
-        if (Math.hypot(e.clientX - one.startX, e.clientY - one.startY) > 8) one.moved = true
+        if (Math.hypot(e.clientX - one.startX, e.clientY - one.startY) > 8) {
+          one.moved = true
+          clearTimeout(hold.current)
+        }
         if (view.current.s > 1) {
           view.current.x += e.clientX - one.lastX
           view.current.y += e.clientY - one.lastY
@@ -134,6 +152,13 @@ export function ZoomImage(props: {
       }}
       onPointerUp={(e) => {
         pointers.current.delete(e.pointerId)
+        clearTimeout(hold.current)
+        // 꾹 누른 뒤 손을 떼는 것은 탭으로 치지 않는다
+        if (held.current) {
+          held.current = false
+          single.current = null
+          return
+        }
         if (pinch.current) {
           // 한 손가락이 남으면 그 손가락으로 이어서 이동할 수 있게 한다
           pinch.current = null
@@ -166,6 +191,7 @@ export function ZoomImage(props: {
       }}
       onPointerCancel={(e) => {
         pointers.current.delete(e.pointerId)
+        clearTimeout(hold.current)
         pinch.current = null
         single.current = null
       }}

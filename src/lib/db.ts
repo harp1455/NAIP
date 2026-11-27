@@ -233,3 +233,44 @@ export const idbStorage = {
     await txDone(tx)
   }
 }
+
+/**
+ * zustand persist용 저장소 — 레퍼런스처럼 큰 그림(base64)을 품은 상태를 위해 쓰기를 모아서 한다.
+ * 슬라이더를 끄는 동안 바뀔 때마다 수 MB를 직렬화·저장하면 화면이 끊기므로, 마지막 변경 후
+ * 잠깐 조용해지면 한 번만 쓴다. 앱이 뒤로 가면 바로 쓴다.
+ */
+export function debouncedIdbStorage<S>(delayMs = 400): {
+  getItem: (name: string) => Promise<{ state: S; version?: number } | null>
+  setItem: (name: string, value: { state: S; version?: number }) => void
+  removeItem: (name: string) => Promise<void>
+} {
+  const pending = new Map<string, { state: S; version?: number }>()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const flush = (): void => {
+    clearTimeout(timer)
+    for (const [name, value] of pending) void idbStorage.setItem(name, JSON.stringify(value))
+    pending.clear()
+  }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flush()
+    })
+  }
+  return {
+    getItem: async (name) => {
+      const pendingValue = pending.get(name)
+      if (pendingValue) return pendingValue
+      const raw = await idbStorage.getItem(name)
+      return raw ? (JSON.parse(raw) as { state: S; version?: number }) : null
+    },
+    setItem: (name, value) => {
+      pending.set(name, value)
+      clearTimeout(timer)
+      timer = setTimeout(flush, delayMs)
+    },
+    removeItem: async (name) => {
+      pending.delete(name)
+      await idbStorage.removeItem(name)
+    }
+  }
+}

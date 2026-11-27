@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Check, CheckSquare, Download, Star, Trash2, X } from 'lucide-react'
+import { Check, CheckSquare, Copy, Download, Share2, Star, Trash2, X } from 'lucide-react'
+import type { HistoryMeta } from '../lib/db'
+import { useLongPress } from '../lib/longpress'
+import { copyImage, shareHistoryImages } from '../lib/share'
 import { cx } from '../lib/util'
 import { useGeneration } from '../stores/generation'
 import { useScenes } from '../stores/scenes'
@@ -13,6 +16,7 @@ export function PreviewPane(): ReactNode {
   const { latestId, setLatest, running, phase } = useGeneration()
   const meta = items.find((m) => m.id === latestId) ?? items[0]
   const [url, setUrl] = useState<string | null>(null)
+  const press = useLongPress(() => meta && void copyImage(meta, { haptic: true }))
 
   useEffect(() => {
     if (!meta) return setUrl(null)
@@ -33,41 +37,120 @@ export function PreviewPane(): ReactNode {
   }
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <button
-        type="button"
-        aria-label="이미지 크게 보기"
-        className="relative min-h-0 flex-1 bg-black/40"
-        onClick={() => view(meta.id)}
-      >
-        <img
-          src={url ?? meta.thumb}
-          alt={`생성 이미지 seed ${meta.seed}`}
-          className={cx('absolute inset-0 h-full w-full object-contain', !url && 'blur-sm')}
-        />
+      <div className="relative min-h-0 flex-1 bg-black/40">
+        <button
+          type="button"
+          aria-label="이미지 크게 보기 (꾹 누르면 복사)"
+          className="no-callout absolute inset-0"
+          onClick={() => view(meta.id)}
+          {...press}
+        >
+          <img
+            src={url ?? meta.thumb}
+            alt={`생성 이미지 seed ${meta.seed}`}
+            draggable={false}
+            className={cx('absolute inset-0 h-full w-full object-contain', !url && 'blur-sm')}
+          />
+        </button>
         {running && phase === 'generating' && (
-          <span className="absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[11px] text-accent">
+          <span className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[11px] text-accent">
             다음 장 생성 중…
           </span>
         )}
-      </button>
+        <div className="absolute right-2 top-2 flex gap-1.5">
+          <button
+            type="button"
+            aria-label="클립보드에 복사"
+            title="클립보드에 복사"
+            onClick={() => void copyImage(meta)}
+            className="flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-white active:bg-black/80"
+          >
+            <Copy size={18} />
+          </button>
+          <button
+            type="button"
+            aria-label="공유"
+            title="공유"
+            onClick={() => void shareHistoryImages([meta])}
+            className="flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-white active:bg-black/80"
+          >
+            <Share2 size={18} />
+          </button>
+        </div>
+      </div>
       <ul className="scroll-thin flex shrink-0 gap-1.5 overflow-x-auto border-t border-line p-2">
         {items.slice(0, 30).map((m) => (
           <li key={m.id} className="shrink-0">
-            <button
-              type="button"
-              aria-label={`seed ${m.seed} 미리보기`}
-              onClick={() => setLatest(m.id)}
-              className={cx(
-                'block h-16 w-16 overflow-hidden rounded-md border-2',
-                m.id === meta.id ? 'border-accent' : 'border-transparent'
-              )}
-            >
-              <img src={m.thumb} alt="" loading="lazy" className="h-full w-full object-cover" />
-            </button>
+            <StripThumb meta={m} active={m.id === meta.id} onPick={() => setLatest(m.id)} />
           </li>
         ))}
       </ul>
     </div>
+  )
+}
+
+function StripThumb(props: { meta: HistoryMeta; active: boolean; onPick: () => void }): ReactNode {
+  const press = useLongPress(() => void copyImage(props.meta, { haptic: true }))
+  return (
+    <button
+      type="button"
+      aria-label={`seed ${props.meta.seed} 미리보기 (꾹 누르면 복사)`}
+      onClick={props.onPick}
+      {...press}
+      className={cx(
+        'no-callout block h-16 w-16 overflow-hidden rounded-md border-2',
+        props.active ? 'border-accent' : 'border-transparent'
+      )}
+    >
+      <img src={props.meta.thumb} alt="" loading="lazy" draggable={false} className="h-full w-full object-cover" />
+    </button>
+  )
+}
+
+/** 히스토리 칸 하나 — 누르면 크게 보기(선택 중이면 선택), 꾹 누르면 클립보드에 복사 */
+function HistoryThumb(props: {
+  meta: HistoryMeta
+  selecting: boolean
+  selected: boolean
+  onPress: () => void
+}): ReactNode {
+  const m = props.meta
+  const on = props.selected
+  const press = useLongPress(() => void copyImage(m, { haptic: true }))
+  return (
+    <button
+      type="button"
+      aria-label={`seed ${m.seed}${m.saved ? ' 저장됨' : ''}`}
+      aria-pressed={props.selecting ? on : undefined}
+      onClick={props.onPress}
+      {...press}
+      className={cx(
+        'no-callout relative block aspect-square w-full overflow-hidden rounded-md border-2',
+        on ? 'border-accent' : 'border-transparent'
+      )}
+    >
+      <img src={m.thumb} alt="" loading="lazy" draggable={false} className="h-full w-full object-cover" />
+      {m.kind !== 't2i' && (
+        <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 text-[10px]">
+          {{ i2i: 'i2i', inpaint: '인페', director: '도구', upscale: '2x', t2i: '' }[m.kind]}
+        </span>
+      )}
+      {m.saved && (
+        <span
+          title={`저장됨: ${m.saved}`}
+          className="absolute bottom-1 right-1 flex h-5 items-center gap-0.5 rounded-full bg-ok px-1.5 text-[10px] font-semibold text-black"
+        >
+          <Download size={11} strokeWidth={3} />
+          저장됨
+        </span>
+      )}
+      {m.fav && !on && <Star size={14} className="absolute right-1 top-1 fill-accent text-accent drop-shadow" />}
+      {on && (
+        <span className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-accent-fg">
+          <Check size={13} strokeWidth={3} />
+        </span>
+      )}
+    </button>
   )
 }
 
@@ -115,6 +198,13 @@ export function HistoryPane(): ReactNode {
               onClick={() => setSelected(new Set(items.map((m) => m.id)))}
             >
               <CheckSquare size={18} />
+            </IconButton>
+            <IconButton
+              label="선택한 이미지 공유"
+              disabled={!selected.size}
+              onClick={() => void shareHistoryImages(items.filter((x) => selected.has(x.id)).reverse())}
+            >
+              <Share2 size={18} />
             </IconButton>
             <IconButton label="선택한 이미지 저장" disabled={!selected.size} onClick={saveSelected}>
               <Download size={18} />
@@ -188,47 +278,16 @@ export function HistoryPane(): ReactNode {
           <Empty>{filter ? '조건에 맞는 이미지가 없습니다' : '생성한 이미지가 여기에 쌓입니다'}</Empty>
         ) : (
           <ul className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-1.5">
-            {items.map((m) => {
-              const on = selected?.has(m.id) ?? false
-              return (
-                <li key={m.id}>
-                  <button
-                    type="button"
-                    aria-label={`seed ${m.seed}${m.saved ? ' 저장됨' : ''}`}
-                    aria-pressed={selected ? on : undefined}
-                    onClick={() => (selected ? toggle(m.id) : view(m.id))}
-                    className={cx(
-                      'relative block aspect-square w-full overflow-hidden rounded-md border-2',
-                      on ? 'border-accent' : 'border-transparent'
-                    )}
-                  >
-                    <img src={m.thumb} alt="" loading="lazy" className="h-full w-full object-cover" />
-                    {m.kind !== 't2i' && (
-                      <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 text-[10px]">
-                        {{ i2i: 'i2i', inpaint: '인페', director: '도구', upscale: '2x', t2i: '' }[m.kind]}
-                      </span>
-                    )}
-                    {m.saved && (
-                      <span
-                        title={`저장됨: ${m.saved}`}
-                        className="absolute bottom-1 right-1 flex h-5 items-center gap-0.5 rounded-full bg-ok px-1.5 text-[10px] font-semibold text-black"
-                      >
-                        <Download size={11} strokeWidth={3} />
-                        저장됨
-                      </span>
-                    )}
-                    {m.fav && !on && (
-                      <Star size={14} className="absolute right-1 top-1 fill-accent text-accent drop-shadow" />
-                    )}
-                    {on && (
-                      <span className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-accent text-accent-fg">
-                        <Check size={13} strokeWidth={3} />
-                      </span>
-                    )}
-                  </button>
-                </li>
-              )
-            })}
+            {items.map((m) => (
+              <li key={m.id}>
+                <HistoryThumb
+                  meta={m}
+                  selecting={!!selected}
+                  selected={selected?.has(m.id) ?? false}
+                  onPress={() => (selected ? toggle(m.id) : view(m.id))}
+                />
+              </li>
+            ))}
           </ul>
         )}
         <div ref={sentinel} className="h-4" />

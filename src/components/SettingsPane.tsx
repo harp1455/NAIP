@@ -324,6 +324,16 @@ export function SettingsPane(): ReactNode {
           <Row label="씬별 폴더로 나눠 저장" hint="씬으로 만든 이미지는 Pictures/NAIP/씬 이름 에 저장">
             <Toggle label="씬별 폴더로 나눠 저장" checked={s.sceneFolders} onChange={(sceneFolders) => s.patch({ sceneFolders })} />
           </Row>
+          <Row
+            label="복사·공유할 때 메타데이터 지우기"
+            hint="클립보드 복사와 공유로 내보내는 그림에서 프롬프트·시드 등 생성 정보를 지웁니다 (앱 안의 기록은 그대로)"
+          >
+            <Toggle
+              label="복사·공유할 때 메타데이터 지우기"
+              checked={s.shareStripMeta}
+              onChange={(shareStripMeta) => s.patch({ shareStripMeta })}
+            />
+          </Row>
           <Row label="히스토리 보관 한도" hint="넘으면 즐겨찾기를 뺀 오래된 이미지부터 앱에서 지웁니다">
             <Select
               label="히스토리 보관 한도"

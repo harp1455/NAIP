@@ -37,6 +37,8 @@ interface SettingsState {
   /** 업데이트를 확인할 GitHub 저장소 (owner/repo) 와, 비공개 저장소일 때 쓰는 읽기 전용 토큰 */
   updateRepo: string
   githubToken: string
+  /** 클립보드 복사·공유로 내보낼 때 NAI 메타데이터를 지울지 */
+  shareStripMeta: boolean
   subscription: SubscriptionInfo | null
   /** subscription을 서버에서 읽은 시각 (V5 할당량이 언제 다 차는지 계산하는 기준) */
   subscriptionAt: number
@@ -45,7 +47,7 @@ interface SettingsState {
   setDelay: (min: number, max: number) => void
   patch: (
     p: Partial<
-      Pick<SettingsState, 'autoSave' | 'keepAwake' | 'background' | 'vibrate' | 'historyLimit' | 'sceneFolders' | 'tagSource' | 'saveFolders' | 'saveFolder' | 'stripMeta' | 'nameMode' | 'nameCounters' | 'updateRepo' | 'githubToken'>
+      Pick<SettingsState, 'autoSave' | 'keepAwake' | 'background' | 'vibrate' | 'historyLimit' | 'sceneFolders' | 'tagSource' | 'saveFolders' | 'saveFolder' | 'stripMeta' | 'nameMode' | 'nameCounters' | 'updateRepo' | 'githubToken' | 'shareStripMeta'>
     >
   ) => void
   refreshSubscription: () => Promise<void>
@@ -71,6 +73,7 @@ export const useSettings = create<SettingsState>()(
       nameCounters: {},
       updateRepo: 'harp1455/NAIP',
       githubToken: '',
+      shareStripMeta: false,
       subscription: null,
       subscriptionAt: 0,
       subscriptionError: null,
@@ -114,7 +117,8 @@ export const useSettings = create<SettingsState>()(
         nameMode: s.nameMode,
         nameCounters: s.nameCounters,
         updateRepo: s.updateRepo,
-        githubToken: s.githubToken
+        githubToken: s.githubToken,
+        shareStripMeta: s.shareStripMeta
       })
     }
   )
