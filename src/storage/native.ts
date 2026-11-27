@@ -36,12 +36,18 @@ export const NaipStorage = registerPlugin<NaipStoragePlugin>('NaipStorage')
 let filesDirPromise: Promise<string> | null = null
 let filesDir = ''
 
-/** 앱 전용 폴더를 연다 (DB 파일도 이때 열린다) */
+/** 앱 전용 폴더를 연다 (DB 파일도 이때 열린다). 실패는 기억하지 않는다 — "다시 시도"가 정말 다시 연다 */
 export function openNative(): Promise<string> {
-  filesDirPromise ??= NaipStorage.open().then((r) => {
-    filesDir = r.filesDir.replace(/\/+$/, '')
-    return filesDir
-  })
+  filesDirPromise ??= NaipStorage.open().then(
+    (r) => {
+      filesDir = r.filesDir.replace(/\/+$/, '')
+      return filesDir
+    },
+    (e: unknown) => {
+      filesDirPromise = null
+      throw e
+    }
+  )
   return filesDirPromise
 }
 
