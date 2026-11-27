@@ -336,3 +336,44 @@ describe('repository without the singleton', () => {
     expect(await repo.count()).toBe(1)
   })
 })
+
+describe('history store on the repository', () => {
+  it('pages, filters, searches and keeps counts in step with changes', async () => {
+    const s = await fresh()
+    const { useHistory } = await import('../src/stores/history')
+    for (let i = 1; i <= 200; i++) {
+      await s.history.add(meta(i, { prompt: i % 2 ? 'cat ears' : 'dog', ...(i % 50 === 0 ? { fav: 1 as const } : {}) }), png(2))
+    }
+    await useHistory.getState().init()
+    expect(useHistory.getState().items).toHaveLength(90)
+    expect(useHistory.getState().total).toBe(200)
+    expect(useHistory.getState().hasMore).toBe(true)
+    // 스크롤이 빨라 두 번 불려도 한 페이지만 읽는다
+    await Promise.all([useHistory.getState().loadMore(), useHistory.getState().loadMore()])
+    expect(useHistory.getState().items).toHaveLength(180)
+    await useHistory.getState().loadMore()
+    expect(useHistory.getState().items.map((m) => m.id).slice(-2)).toEqual([2, 1])
+    expect(useHistory.getState().hasMore).toBe(false)
+
+    await useHistory.getState().setFilter({ search: 'cat' })
+    expect(useHistory.getState().matchCount).toBe(100)
+    expect(useHistory.getState().items[0].id).toBe(199)
+    await useHistory.getState().setFilter({ fav: true })
+    expect(useHistory.getState().items.map((m) => m.id)).toEqual([200, 150, 100, 50])
+
+    // 미저장만 보는 중에 저장하면 목록에서 빠지고 장수가 줄어든다
+    await useHistory.getState().setFilter({ unsaved: true })
+    expect(useHistory.getState().matchCount).toBe(200)
+    useHistory.getState().view(200)
+    await useHistory.getState().markSaved(200, 'NAIP/x.png')
+    expect(useHistory.getState().items[0].id).toBe(199)
+    expect(useHistory.getState().viewing).toBe(199)
+    expect(useHistory.getState().matchCount).toBe(199)
+    expect((await s.history.get(200))!.saved).toBe('NAIP/x.png')
+
+    // 지우면 파일도 사라진다
+    await useHistory.getState().remove([199])
+    expect(useHistory.getState().total).toBe(199)
+    expect(s.files.files.has('images/199.png')).toBe(false)
+  })
+})

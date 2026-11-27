@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Check, CheckSquare, Copy, Download, Search, Share2, Star, Trash2, X } from 'lucide-react'
 import type { HistoryMeta } from '../lib/db'
 import { useLongPress } from '../lib/longpress'
@@ -156,12 +156,15 @@ function StripThumb(props: { meta: HistoryMeta; active: boolean; onPick: () => v
   )
 }
 
-/** 히스토리 칸 하나 — 누르면 크게 보기(선택 중이면 선택), 꾹 누르면 클립보드에 복사 */
-function HistoryThumb(props: {
+/**
+ * 히스토리 칸 하나 — 누르면 크게 보기(선택 중이면 선택), 꾹 누르면 클립보드에 복사.
+ * 스크롤할 때 목록이 프레임마다 다시 그려지므로, 바뀐 것이 없는 칸은 다시 그리지 않는다
+ */
+const HistoryThumb = memo(function HistoryThumb(props: {
   meta: HistoryMeta
   selecting: boolean
   selected: boolean
-  onPress: () => void
+  onPress: (id: number) => void
 }): ReactNode {
   const m = props.meta
   const on = props.selected
@@ -175,7 +178,7 @@ function HistoryThumb(props: {
       type="button"
       aria-label={`seed ${m.seed}${m.saved ? ' 저장됨' : ''}`}
       aria-pressed={props.selecting ? on : undefined}
-      onClick={props.onPress}
+      onClick={() => props.onPress(m.id)}
       {...press}
       className={cx(
         'no-callout relative block aspect-square w-full overflow-hidden rounded-md border-2',
@@ -217,7 +220,7 @@ function HistoryThumb(props: {
       )}
     </button>
   )
-}
+})
 
 export function HistoryPane(): ReactNode {
   const { items, total, hasMore, loadMore, view, remove, filter, setFilter, matchCount } = useHistory()
@@ -249,12 +252,16 @@ export function HistoryPane(): ReactNode {
     if (grid.nearEnd && hasMore) void loadMore()
   }, [grid.nearEnd, hasMore, loadMore, items.length])
 
+  // 칸에 넘기는 누르기 함수는 늘 같은 것 — 그래야 칸이 다시 그려지지 않는다
+  const pressRef = useRef<(id: number) => void>(() => {})
+  const onPress = useCallback((id: number) => pressRef.current(id), [])
   const toggle = (id: number): void => {
     const next = new Set(selected)
     if (next.has(id)) next.delete(id)
     else next.add(id)
     setSelected(next)
   }
+  pressRef.current = (id) => (selected ? toggle(id) : view(id))
   const saveSelected = (): void => {
     if (!selected) return
     // 오래된 것부터 — 일괄 이름의 번호가 만든 순서를 따르게
@@ -405,7 +412,7 @@ export function HistoryPane(): ReactNode {
                     meta={m}
                     selecting={!!selected}
                     selected={selected?.has(m.id) ?? false}
-                    onPress={() => (selected ? toggle(m.id) : view(m.id))}
+                    onPress={onPress}
                   />
                 </li>
               )
