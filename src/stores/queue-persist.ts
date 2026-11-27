@@ -37,10 +37,16 @@ export function deserializeBatch(data: string): Batch {
 const warn = (e: unknown): void => console.warn('대기열 기록 실패', e)
 /** 배치 내용을 쓰는 중인 것 — 그 배치의 첫 "보냄" 기록은 이것이 끝난 뒤에 쓴다 */
 const saving = new Map<number, Promise<void>>()
+/**
+ * 이번 실행에서 기록한 배치 — 지금 돌거나 대기 중이라 "지난 실행에서 끝나지 않은 생성"이 아니다.
+ * 저장소 부팅이 대기열을 읽기 전에 "생성"을 누를 수 있다: 그 배치를 이어서 하자고 물으면 같은 장을 두 번 뽑는다
+ */
+const thisRun = new Set<number>()
 
 /** 대기열 기록 — 기록이 실패해도 생성은 멈추지 않는다 (sending만 기다린다) */
 export const queueStore = {
   save(batch: Batch): Promise<void> {
+    thisRun.add(batch.id)
     const p = getStorage()
       .then((s) => s.queue.saveBatch(batch.id, batch.label, serializeBatch(batch)))
       .catch(warn)
@@ -153,7 +159,10 @@ export function planResume(
 /** 지난 실행에서 끝나지 않은 대기열 */
 export async function loadResume(): Promise<ResumeEntry[]> {
   const { queue } = await getStorage()
-  const { batches, items } = await queue.load()
+  const stored = await queue.load()
+  // 이번 실행에서 시작한 배치(부팅보다 먼저 누른 "생성")는 빼고 본다 — 그 배치는 지금 생성기가 맡고 있다
+  const batches = stored.batches.filter((b) => !thisRun.has(b.id))
+  const items = stored.items.filter((i) => !thisRun.has(i.batch_id))
   // 배치 없이 남은 진행 기록(배치를 쓰기 전에 꺼진 경우)은 이어서 할 수 없다
   const known = new Set(batches.map((b) => b.id))
   for (const id of new Set(items.filter((i) => !known.has(i.batch_id)).map((i) => i.batch_id))) await queue.dropBatch(id)
