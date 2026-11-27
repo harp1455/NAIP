@@ -62,6 +62,8 @@ export function ClassifySheet(props: { project: Project; onClose: () => void }):
     setBusy(true)
     try {
       const metas = await db.listMeta(limit)
+      // 지운 프로젝트의 분류 표시는 없는 것으로 본다 (다른 프로젝트에 다시 배정할 수 있게)
+      const liveProjects = new Set(useProjects.getState().projects.map((x) => x.id))
       let tagged = 0
       let inProject = 0
       const out: Found[] = []
@@ -70,7 +72,7 @@ export function ClassifySheet(props: { project: Project; onClose: () => void }):
           inProject++
           continue
         }
-        if (m.project) {
+        if (m.project && liveProjects.has(m.project.projectId)) {
           tagged++
           continue
         }

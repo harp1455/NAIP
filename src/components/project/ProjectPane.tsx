@@ -97,7 +97,14 @@ function ProjectCard(props: { project: Project; onRename: () => void }): ReactNo
         <IconButton
           label={`${p.name} 삭제`}
           onClick={() => {
-            if (window.confirm(`"${p.name}" 프로젝트를 삭제할까요?\n설정·선별 기록만 지워지고, 만든 그림은 히스토리에 그대로 남습니다.`)) s.remove(p.id)
+            // 대기·생성 중인 장이 있으면 함께 취소할지 묻는다 — 그대로 두면 지운 프로젝트의 그림이 계속 생성(과금)된다
+            const busy = Object.values(p.items).reduce((n, i) => n + i.queued + i.generating, 0)
+            const note = busy ? `\n이 프로젝트의 그림 ${busy}장이 아직 대기·생성 중입니다.` : ''
+            if (!window.confirm(`"${p.name}" 프로젝트를 삭제할까요?\n설정·선별 기록만 지워지고, 만든 그림은 히스토리에 그대로 남습니다.${note}`)) return
+            if (busy && window.confirm(`대기·생성 중인 ${busy}장도 취소할까요?\n취소하지 않으면 계속 생성(과금)되어 히스토리에만 남습니다.`)) {
+              useGeneration.getState().cancelProject(p.id)
+            }
+            s.remove(p.id)
           }}
         >
           <Trash2 size={16} className="text-danger" />
