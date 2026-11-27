@@ -93,7 +93,7 @@ function InfoBlock(props: { label: string; text: string; what: string; copyText?
 }
 
 export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
-  const { items, viewing, view, remove, toggleFav } = useHistory()
+  const { items, viewing, view, remove, toggleFav, hasMore, loadMore } = useHistory()
   const index = items.findIndex((m) => m.id === viewing)
   const meta = items[index]
   const [url, setUrl] = useState<string | null>(null)
@@ -113,6 +113,11 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
       live = false
     }
   }, [meta?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 목록 끝 근처까지 넘겨 보면 다음 페이지를 읽어 둔다 (히스토리는 최신순으로 조금씩 읽는다)
+  useEffect(() => {
+    if (index >= 0 && index >= items.length - 3 && hasMore) void loadMore()
+  }, [index, items.length, hasMore, loadMore])
 
   useEffect(() => {
     if (!note) return
@@ -179,7 +184,7 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
             onLongPress={() => void copyImage(meta, { haptic: true })}
           />
         ) : (
-          <img src={meta.thumb} alt="" className="h-full w-full object-contain opacity-60 blur-sm" />
+          meta.thumb && <img src={meta.thumb} alt="" className="h-full w-full object-contain opacity-60 blur-sm" />
         )}
         {!zoomed && index > 0 && (
           <button

@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Check, CheckSquare, Copy, Download, Search, Share2, Star, Trash2, X } from 'lucide-react'
 import type { HistoryMeta } from '../lib/db'
 import { useLongPress } from '../lib/longpress'
 import { copyImage, shareHistoryImages } from '../lib/share'
 import { cx } from '../lib/util'
+import { useScrollReset, useVirtualGrid } from '../lib/virtual'
 import { useGeneration } from '../stores/generation'
 import { useScenes } from '../stores/scenes'
 import { useSaver } from '../stores/saver'
@@ -146,34 +147,57 @@ function StripThumb(props: { meta: HistoryMeta; active: boolean; onPick: () => v
         props.active ? 'border-accent' : 'border-transparent'
       )}
     >
-      <img src={props.meta.thumb} alt="" loading="lazy" draggable={false} className="h-full w-full object-cover" />
+      {props.meta.thumb ? (
+        <img src={props.meta.thumb} alt="" loading="lazy" draggable={false} className="h-full w-full object-cover" />
+      ) : (
+        <span className="block h-full w-full bg-raised" />
+      )}
     </button>
   )
 }
 
-/** 히스토리 칸 하나 — 누르면 크게 보기(선택 중이면 선택), 꾹 누르면 클립보드에 복사 */
-function HistoryThumb(props: {
+/**
+ * 히스토리 칸 하나 — 누르면 크게 보기(선택 중이면 선택), 꾹 누르면 클립보드에 복사.
+ * 스크롤할 때 목록이 프레임마다 다시 그려지므로, 바뀐 것이 없는 칸은 다시 그리지 않는다
+ */
+const HistoryThumb = memo(function HistoryThumb(props: {
   meta: HistoryMeta
   selecting: boolean
   selected: boolean
-  onPress: () => void
+  onPress: (id: number) => void
 }): ReactNode {
   const m = props.meta
   const on = props.selected
   const press = useLongPress(() => void copyImage(m, { haptic: true }))
+  // 썸네일 파일이 없으면 원본으로 다시 만든다 (한 장에 한 번)
+  useEffect(() => {
+    if (!m.thumb) void useHistory.getState().repairThumb(m.id)
+  }, [m.id, m.thumb])
   return (
     <button
       type="button"
       aria-label={`seed ${m.seed}${m.saved ? ' 저장됨' : ''}`}
       aria-pressed={props.selecting ? on : undefined}
-      onClick={props.onPress}
+      onClick={() => props.onPress(m.id)}
       {...press}
       className={cx(
         'no-callout relative block aspect-square w-full overflow-hidden rounded-md border-2',
         on ? 'border-accent' : 'border-transparent'
       )}
     >
-      <img src={m.thumb} alt="" loading="lazy" draggable={false} className="h-full w-full object-cover" />
+      {m.thumb ? (
+        <img
+          src={m.thumb}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          draggable={false}
+          onError={() => void useHistory.getState().repairThumb(m.id)}
+          className="h-full w-full object-cover"
+        />
+      ) : (
+        <span className="block h-full w-full bg-raised" />
+      )}
       {m.kind !== 't2i' && (
         <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 text-[10px]">
           {{ i2i: 'i2i', inpaint: '인페', director: '도구', upscale: '2x', t2i: '' }[m.kind]}
@@ -196,7 +220,7 @@ function HistoryThumb(props: {
       )}
     </button>
   )
-}
+})
 
 export function HistoryPane(): ReactNode {
   const { items, total, hasMore, loadMore, view, remove, filter, setFilter, matchCount } = useHistory()
@@ -221,24 +245,23 @@ export function HistoryPane(): ReactNode {
       ? (scenes.find((x) => x.id === filter.sceneId)?.name ?? items[0]?.sceneName ?? '삭제된 씬')
       : null
   const [selected, setSelected] = useState<Set<number> | null>(null)
-  const sentinel = useRef<HTMLDivElement>(null)
-
+  // 보이는 줄만 그린다 (수만 장이어도 칸 수십 개). 끝 근처까지 내려오면 다음 페이지를 읽는다
+  const grid = useVirtualGrid(items.length, { min: 104, gap: 6 })
+  useScrollReset(grid.ref, filter)
   useEffect(() => {
-    const el = sentinel.current
-    if (!el || !hasMore) return
-    const io = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) void loadMore()
-    })
-    io.observe(el)
-    return () => io.disconnect()
-  }, [hasMore, loadMore, items.length])
+    if (grid.nearEnd && hasMore) void loadMore()
+  }, [grid.nearEnd, hasMore, loadMore, items.length])
 
+  // 칸에 넘기는 누르기 함수는 늘 같은 것 — 그래야 칸이 다시 그려지지 않는다
+  const pressRef = useRef<(id: number) => void>(() => {})
+  const onPress = useCallback((id: number) => pressRef.current(id), [])
   const toggle = (id: number): void => {
     const next = new Set(selected)
     if (next.has(id)) next.delete(id)
     else next.add(id)
     setSelected(next)
   }
+  pressRef.current = (id) => (selected ? toggle(id) : view(id))
   const saveSelected = (): void => {
     if (!selected) return
     // 오래된 것부터 — 일괄 이름의 번호가 만든 순서를 따르게
@@ -287,7 +310,7 @@ export function HistoryPane(): ReactNode {
             <span className="shrink-0 text-sm font-semibold">
               히스토리{' '}
               <span className="ml-1 font-mono text-xs font-normal text-dim">
-                {matchCount !== null ? `${matchCount}/${total}` : filter ? `${items.length}${hasMore ? '+' : ''}/${total}` : total}
+                {matchCount !== null ? `${matchCount}/${total}` : total}
               </span>
             </span>
             <div className="scroll-thin flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto px-2">
@@ -372,24 +395,31 @@ export function HistoryPane(): ReactNode {
           )}
         </div>
       )}
-      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-1.5">
+      <div ref={grid.ref} className="scroll-thin min-h-0 flex-1 overflow-y-auto p-1.5" data-testid="history-scroll">
         {items.length === 0 ? (
           <Empty>{searching ? '검색어와 맞는 이미지가 없습니다' : filter ? '조건에 맞는 이미지가 없습니다' : '생성한 이미지가 여기에 쌓입니다'}</Empty>
         ) : (
-          <ul className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-1.5">
-            {items.map((m) => (
-              <li key={m.id}>
-                <HistoryThumb
-                  meta={m}
-                  selecting={!!selected}
-                  selected={selected?.has(m.id) ?? false}
-                  onPress={() => (selected ? toggle(m.id) : view(m.id))}
-                />
-              </li>
-            ))}
+          <ul className="relative" style={{ height: grid.height }}>
+            {items.slice(grid.start, grid.end).map((m, k) => {
+              const at = grid.pos(grid.start + k)
+              return (
+                <li
+                  key={m.id}
+                  className="absolute"
+                  style={{ top: at.top, left: at.left, width: grid.size, height: grid.size }}
+                >
+                  <HistoryThumb
+                    meta={m}
+                    selecting={!!selected}
+                    selected={selected?.has(m.id) ?? false}
+                    onPress={onPress}
+                  />
+                </li>
+              )
+            })}
           </ul>
         )}
-        <div ref={sentinel} className="h-4" />
+        {hasMore && <div className="h-4" />}
       </div>
     </div>
   )

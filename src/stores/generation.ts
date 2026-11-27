@@ -16,7 +16,8 @@ import {
 import type { HistoryMeta, SettingsSnapshot } from '../lib/db'
 import type { FragmentSource } from '../nai/fragments'
 import { processWildcards, resetSequentialCounters } from '../nai/fragments'
-import { cleanFileName, fileNameFor, job, saveToGallery, setKeepAwake, wait } from '../lib/native'
+import { cleanFileName, fileNameFor, job, setKeepAwake, wait } from '../lib/native'
+import { saveHistoryImageToGallery } from '../storage/export'
 import { randomSeed, uid } from '../lib/util'
 import { positionFor } from '../lib/position'
 // ── Phase 2: 캐릭터 슬롯·변형 뽑기
@@ -34,9 +35,11 @@ import {
   type DrawState
 } from '../nai/cast'
 import { snapshotCastPlan, useCharacters } from './characters'
-import { fragmentSource } from './fragments'
+import { fragmentLibrary, fragmentSourceFrom, type FragmentLibrary } from './fragments'
 import { appendPrompt, useScenes } from './scenes'
 import { primeImageUrl, useHistory } from './history'
+import { newRequestId, queueStore, type ResumeEntry } from './queue-persist'
+import { lowSpaceWarning } from '../storage'
 import { mergePromptParts, usePrompt } from './prompt'
 import { useRefs, vibeKey, type CharRef, type Vibe } from './refs'
 import { toast } from './toast'
@@ -91,6 +94,11 @@ interface GenerationState {
   stop: () => void
   removeQueued: (id: number) => void
   setLatest: (id: number | null) => void
+  /**
+   * 지난 실행에서 끝나지 않은 배치를 이어서 돌린다 (보내지 않은 장만).
+   * withUncertain이면 "확인 필요"(보냈는데 결과를 모르는) 장도 다시 보낸다 — 사용자가 고른 경우에만
+   */
+  resume: (entries: ResumeEntry[], withUncertain: boolean) => Promise<void>
 }
 
 export interface QueuedBatch {
@@ -111,7 +119,9 @@ let lastPreviewAt = 0
 const pendingBatches: Batch[] = []
 
 /** 생성 계획 한 칸 = 서버 요청 1번 = 이미지 1장 */
-interface PlanItem {
+export interface PlanItem {
+  /** 배치 계획에서의 원래 위치 — 진행 기록(queue_items)의 열쇠. 이어서 돌릴 때만 들어 있다 (없으면 순서) */
+  key?: number
   /** reserved: 씬 예약에서 가져온 장이라, 못 뽑으면 예약으로 돌려준다 (다시 생성은 씬 표시만 물려받는다) */
   scene?: { id: number; name: string; prompt: string; negative: string; reserved: boolean }
   /** 씬에 따로 정한 출연 캐릭터(고정 슬롯으로 바꾼 것) — 있으면 화면의 출연 슬롯 대신 쓴다 */
@@ -121,8 +131,11 @@ interface PlanItem {
   offset: number
 }
 
-/** 생성 버튼을 누른 순간의 설정 묶음 — 대기 중에 화면을 고쳐도 이 내용대로 돈다 */
-interface Batch {
+/**
+ * 생성 버튼을 누른 순간의 설정 묶음 — 대기 중에 화면을 고쳐도 이 내용대로 돈다.
+ * 대기열 저장(queue-persist)이 JSON으로 통째로 저장하므로 필드는 JSON으로 옮겨지는 값으로 둔다 (fragments만 예외)
+ */
+export interface Batch {
   id: number
   label: string
   base: GenerationRequest
@@ -131,7 +144,9 @@ interface Batch {
   source: { image: string | null; mask: string | null; strength: number; noise: number; originId: number | null }
   vibes: Vibe[]
   charRefs: CharRef[]
+  /** 조각 치환 함수 — fragmentLib에서 만든다 (저장할 때는 빼고, 되살릴 때 다시 만든다) */
   fragments: FragmentSource
+  fragmentLib: FragmentLibrary
   plan: PlanItem[]
   /** 다시 생성: 이미 치환이 끝난 문장을 그대로 보낸다 */
   verbatim: boolean
@@ -345,6 +360,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
 
     const caps = modelCapabilities(base.model)
     const refs = useRefs.getState()
+    const fragmentLib = fragmentLibrary()
     return {
       id: uid(),
       label,
@@ -355,7 +371,8 @@ export const useGeneration = create<GenerationState>()((set, get) => {
       // 다시 생성은 지금 켜 둔 바이브·레퍼런스를 섞지 않는다 (원래 요청에 없던 것이 들어가면 다른 그림이 된다)
       vibes: caps.vibes && !regen ? refs.vibes.filter((v) => v.enabled) : [],
       charRefs: regen ? [] : refs.charRefs.filter((r) => r.enabled),
-      fragments: fragmentSource(),
+      fragmentLib,
+      fragments: fragmentSourceFrom(fragmentLib),
       plan,
       verbatim: !!regen?.sent && !redraw,
       cast: regen ? (redraw?.plan ?? null) : snapshotCastPlan(),
@@ -432,6 +449,9 @@ export const useGeneration = create<GenerationState>()((set, get) => {
       loopStarted = performance.now()
       for (let i = 0; i < count; i++) {
         const item = plan[i]
+        // 진행 기록의 열쇠 (이어서 돌리는 배치는 원래 위치)
+        const key = item.key ?? i
+        let reqId = ''
         const seed =
           fixedSeed === null || !Number.isFinite(fixedSeed)
             ? randomSeed()
@@ -490,6 +510,9 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         for (let attempt = 0; ; attempt++) {
           set({ phase: attempt === 0 ? 'generating' : 'retrying' })
           try {
+            // 보내기 전에 "보냄"을 먼저 남긴다 — 응답 전에 앱이 죽으면 이 장은 다시 보내지 않고 확인을 받는다
+            reqId = newRequestId()
+            await queueStore.sending(batch.id, key, reqId, seed)
             const useStream = useSettings.getState().streaming && !streamUnsupported
             const seq = ++previewSeq
             const totalSteps = effectiveSteps(request.model, request.steps)
@@ -515,6 +538,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
             if (isAbort(e)) throw e
             if (e instanceof StreamInterruptedError) {
               // 생성이 시작된 뒤 끊겼다 — 서버가 이미 그렸을(과금했을) 수 있어 같은 장을 다시 요청하지 않는다
+              queueStore.failed(batch.id, key, reqId)
               set((s) => ({
                 failed: s.failed + 1,
                 error: `${e.message} — 이미 과금됐을 수 있어 이 장은 다시 요청하지 않았습니다`
@@ -536,6 +560,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
               continue
             }
             set((s) => ({ failed: s.failed + 1, error: (e as Error).message }))
+            queueStore.failed(batch.id, key, reqId)
             // 영구 오류(토큰·Anlas 부족·잘못된 요청)는 남은 장과 대기열도 같은 이유로 실패하므로 모두 멈춘다
             if (!transient) {
               outcome = 'fatal'
@@ -604,10 +629,12 @@ export const useGeneration = create<GenerationState>()((set, get) => {
                   ...(castRes ? { cast: castSent(castRes, countFix) } : batch.castSent ? { cast: batch.castSent } : {})
                 },
                 ...(item.scene ? { sceneId: item.scene.id, sceneName: item.scene.name } : {}),
-                ...(kind !== 't2i' && source.originId !== null ? { parentId: source.originId } : {})
+                ...(kind !== 't2i' && source.originId !== null ? { parentId: source.originId } : {}),
+                requestId: reqId
               },
               image
             )
+            queueStore.done(batch.id, key, reqId, id)
             primeImageUrl(id, image)
             set((s) => ({ done: s.done + 1, latestId: id, error: null }))
             // 완성본이 결과 화면에 올라간 뒤에 미리보기를 거둔다 (그 사이 다음 장 미리보기가 왔으면 그대로 둔다)
@@ -615,7 +642,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
             if (settings.autoSave) {
               const folder = settings.sceneFolders ? item.scene?.name || undefined : undefined
               const fileName = fileNameFor(id, seed, image.type)
-              void saveToGallery(image, fileName, folder)
+              void saveHistoryImageToGallery(id, image, fileName, folder)
                 .then(() => useHistory.getState().markSaved(id, `${folder ? `${cleanFileName(folder)}/` : ''}${fileName}`))
                 .catch((e: Error) => set({ error: `갤러리 저장 실패: ${e.message}` }))
             }
@@ -686,6 +713,8 @@ export const useGeneration = create<GenerationState>()((set, get) => {
       syncQueue()
       controller = new AbortController()
       last = await runBatch(batch, token, controller.signal)
+      // 끝났거나 멈춘 배치는 기록에서 지운다 (못 뽑은 씬 장은 runBatch가 예약으로 돌려줬다)
+      queueStore.drop(batch.id)
       batches++
       totalDone += get().done
       totalFailed += get().failed
@@ -693,7 +722,10 @@ export const useGeneration = create<GenerationState>()((set, get) => {
     }
     controller = null
     // 멈췄거나 막혔으면 남은 대기열은 취소하고 씬 예약을 돌려준다
-    for (const rest of pendingBatches.splice(0)) release(rest.plan)
+    for (const rest of pendingBatches.splice(0)) {
+      release(rest.plan)
+      queueStore.drop(rest.id)
+    }
     syncQueue()
     const error = get().error
     set({ running: false, phase: 'idle', currentLabel: '' })
@@ -723,14 +755,19 @@ export const useGeneration = create<GenerationState>()((set, get) => {
     sceneClaims: {},
     setLatest: (id) => set({ latestId: id }),
     stop: () => {
-      for (const rest of pendingBatches.splice(0)) release(rest.plan)
+      for (const rest of pendingBatches.splice(0)) {
+        release(rest.plan)
+        queueStore.drop(rest.id)
+      }
       syncQueue()
       controller?.abort()
     },
     removeQueued: (id) => {
       const i = pendingBatches.findIndex((b) => b.id === id)
       if (i < 0) return
-      release(pendingBatches.splice(i, 1)[0].plan)
+      const [removed] = pendingBatches.splice(i, 1)
+      release(removed.plan)
+      queueStore.drop(removed.id)
       syncQueue()
     },
     start: async (opts) => {
@@ -742,6 +779,14 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         else set({ error: batch })
         return
       }
+      // 저장 공간이 모자랄 것 같으면 묻는다 (설정은 이미 누른 순간의 것으로 묶였다)
+      const warning = await lowSpaceWarning(batch.plan.length)
+      if (warning && !window.confirm(warning)) {
+        release(batch.plan)
+        return
+      }
+      // 앱이 죽어도 이어서 할 수 있게 배치를 저장한다 (첫 장의 "보냄" 기록보다 먼저 쓰인다)
+      void queueStore.save(batch)
       if (get().running) {
         pendingBatches.push(batch)
         syncQueue()
@@ -749,6 +794,34 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         return
       }
       await runQueue(batch, token)
+    },
+    resume: async (entries, withUncertain) => {
+      const token = useSettings.getState().token
+      if (!token) return set({ error: 'API 토큰을 먼저 설정해 주세요 (설정 탭)' })
+      const batches: Batch[] = []
+      for (const e of entries) {
+        const extra = withUncertain ? e.uncertain.map((u) => u.item) : []
+        // 다시 보내지 않기로 한 "확인 필요" 장은 다음에 또 묻지 않게 표시해 둔다
+        if (!withUncertain && e.uncertain.length) await queueStore.skip(e.batch.id, e.uncertain.map((u) => u.key))
+        const plan = [...e.remaining, ...extra].sort((a, b) => (a.key ?? 0) - (b.key ?? 0))
+        if (!plan.length) {
+          queueStore.drop(e.batch.id)
+          continue
+        }
+        // 이어서 뽑을 씬 장은 다시 이 배치가 가져간 것으로 표시한다 (예약은 처음 누를 때 이미 0으로 줄었다)
+        for (const item of plan) if (item.scene?.reserved) claim(item.scene.id, 1)
+        batches.push({ ...e.batch, label: `${e.batch.label} · 이어서`, plan })
+      }
+      if (!batches.length) return
+      if (get().running) {
+        pendingBatches.push(...batches)
+        syncQueue()
+        toast(`이어서 할 배치 ${batches.length}개를 대기열에 넣었습니다`)
+        return
+      }
+      const [first, ...rest] = batches
+      pendingBatches.push(...rest)
+      await runQueue(first, token)
     }
   }
 })
