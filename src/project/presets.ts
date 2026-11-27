@@ -16,6 +16,17 @@ export const BLANK_PRESET: Omit<PlatformPreset, 'id'> = {
   minQuality: 0.6
 }
 
+/** JPEG 배경색 — #rgb / #rrggbb (캔버스가 못 읽는 글자는 조용히 검정이 되므로 16진수만 받는다) */
+const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i
+
+/** 배경색을 캔버스에 넘길 꼴로 (# 빠진 16진수는 붙여 주고, 읽을 수 없으면 undefined = 기본 흰색) */
+export function normalizeBackground(bg: string | undefined): string | undefined {
+  const t = bg?.trim() ?? ''
+  if (!t) return undefined
+  const hex = t.startsWith('#') ? t : `#${t}`
+  return HEX_COLOR.test(hex) ? hex.toLowerCase() : undefined
+}
+
 /** 저장 전에 확인할 것 — 잘못된 칸마다 한국어 메시지 */
 export function validatePreset(p: Omit<PlatformPreset, 'id'>): string[] {
   const errors: string[] = []
@@ -34,6 +45,9 @@ export function validatePreset(p: Omit<PlatformPreset, 'id'>): string[] {
   if (!q(p.minQuality)) errors.push('품질 하한은 0보다 크고 1 이하여야 합니다')
   if (p.quality !== undefined && p.minQuality !== undefined && p.minQuality > p.quality) {
     errors.push('품질 하한이 품질보다 높습니다')
+  }
+  if (p.format === 'jpeg' && p.background?.trim() && !HEX_COLOR.test(p.background.trim())) {
+    errors.push('배경색은 #ffffff처럼 #과 16진수 3자리 또는 6자리로 적어 주세요')
   }
   return errors
 }
@@ -57,7 +71,8 @@ export function presetToConvertOptions(p: Omit<PlatformPreset, 'id'>): ConvertOp
     ...(p.quality !== undefined ? { quality: p.quality } : {}),
     ...(p.minQuality !== undefined ? { minQuality: p.minQuality } : {}),
     ...(p.maxBytes ? { targetBytes: p.maxBytes } : {}),
-    ...(p.background ? { background: p.background } : {}),
+    // 예전에 저장한 잘못된 색은 넘기지 않는다 (캔버스가 검정으로 채우고 경고는 그 색이라고 말하게 된다)
+    ...(normalizeBackground(p.background) ? { background: normalizeBackground(p.background) } : {}),
     scrubAlpha: true
   }
 }

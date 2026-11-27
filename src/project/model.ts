@@ -1,9 +1,12 @@
 /**
  * 프로젝트 만들기·고치기 순수 함수 — 축·값·캐릭터를 지울 때 그것을 가리키는 제외 규칙·덮어쓰기·분류 규칙도
- * 함께 정리한다 (조건이 사라진 덮어쓰기가 엉뚱하게 넓어지지 않도록 규칙째 지운다).
+ * 함께 정리한다 (조건이 사라진 덮어쓰기·제외 규칙이 엉뚱하게 넓어지지 않도록 규칙째 지운다).
  * 에셋 항목(그림)은 지우지 않는다 — 행렬에서 빠진 항목은 matrix.orphanItems로 따로 보여 준다.
+ * 축이 조합 키에 새로 들어오거나 빠질 때(첫 값·첫 캐릭터 추가, 하나뿐인 값·캐릭터 삭제)는 carryItemKeys가
+ * 지금까지의 그림을 새 키로 옮겨 행렬에 남긴다.
  */
 import { emptyItem } from './curation'
+import { comboKey, parseComboKey, projectAxes } from './matrix'
 import {
   CHARACTER_AXIS,
   DEFAULT_AXIS_TARGET,
@@ -134,12 +137,12 @@ export function addCharacter(
 ): { project: Project; id: string } {
   const id = newId()
   const ch: ProjectCharacter = { libraryId: null, vibeIds: [], refIds: [], ...c, id, name: c.name.trim() || '이름 없음' }
-  return { project: { ...p, characters: [...p.characters, ch] }, id }
+  return { project: carryItemKeys(p, { ...p, characters: [...p.characters, ch] }), id }
 }
 
 export function removeCharacter(p: Project, charId: string): Project {
   const scrubbed = removeValueRefs(p, CHARACTER_AXIS, charId)
-  return {
+  return carryItemKeys(p, {
     ...scrubbed,
     characters: scrubbed.characters.filter((c) => c.id !== charId),
     // 캐릭터별 조각도 정리
@@ -152,7 +155,7 @@ export function removeCharacter(p: Project, charId: string): Project {
         return { ...v, perCharacter: per }
       })
     }))
-  }
+  })
 }
 
 // ── 축 · 값 ──────────────────────────────────────────────────────────────────
@@ -170,19 +173,15 @@ export function addAxis(p: Project, kind: AxisKind, name?: string): { project: P
 }
 
 export function removeAxis(p: Project, axisId: string): Project {
-  return {
+  return carryItemKeys(p, {
     ...p,
     axes: p.axes.filter((a) => a.id !== axisId),
-    exclusions: p.exclusions.flatMap((r) => {
-      if (!(axisId in r.when)) return [r]
-      const when = { ...r.when }
-      delete when[axisId]
-      // 남은 조건이 없으면 규칙이 모든 조합을 지우게 되니 규칙째 뺀다
-      return Object.keys(when).length ? [{ ...r, when }] : []
-    }),
+    // 제외 규칙은 모든 조건이 맞아야 하는 AND라, 이 축 조건만 떼면 규칙이 넓어진다
+    // (하늘 + 수영복 → 하늘 전부). 지운 축의 값은 다시 맞을 수 없으니 규칙째 뺀다
+    exclusions: p.exclusions.filter((r) => !(axisId in r.when)),
     overrides: p.overrides.filter((o) => !(axisId in o.match)),
     rules: p.rules.filter((r) => r.axisId !== axisId)
-  }
+  })
 }
 
 export function moveAxis(p: Project, axisId: string, dir: -1 | 1): Project {
@@ -206,7 +205,7 @@ export function moveValue(p: Project, axisId: string, valueId: string, dir: -1 |
   return { ...p, axes: p.axes.map((a) => (a.id === axisId ? { ...a, values } : a)) }
 }
 
-/** 캐릭터 순서를 한 칸 옮긴다 (행렬·코드 글자 순서가 따라 바뀐다) */
+/** 캐릭터 순서를 한 칸 옮긴다 (행렬 순서가 바뀐다. 코드 글자는 내보내기에서 처음 쓸 때 캐릭터에 적어 두어 그대로다) */
 export function moveCharacter(p: Project, charId: string, dir: -1 | 1): Project {
   const i = p.characters.findIndex((c) => c.id === charId)
   const j = i + dir
@@ -224,7 +223,7 @@ export function addValue(
   const id = newId()
   const value: AxisValue = { prompt: '', ...v, id, label: v.label.trim() || '이름 없음' }
   return {
-    project: { ...p, axes: p.axes.map((a) => (a.id === axisId ? { ...a, values: [...a.values, value] } : a)) },
+    project: carryItemKeys(p, { ...p, axes: p.axes.map((a) => (a.id === axisId ? { ...a, values: [...a.values, value] } : a)) }),
     id
   }
 }
@@ -247,10 +246,71 @@ function removeValueRefs(p: Project, axisId: string, valueId: string): Project {
 
 export function removeValue(p: Project, axisId: string, valueId: string): Project {
   const scrubbed = removeValueRefs(p, axisId, valueId)
-  return {
+  return carryItemKeys(p, {
     ...scrubbed,
     axes: scrubbed.axes.map((a) => (a.id === axisId ? { ...a, values: a.values.filter((v) => v.id !== valueId) } : a))
+  })
+}
+
+/** 조합 키에 들어가는 축(켠 값이 있는 축) → 켠 값 id들 (matrix.expandMatrix와 같은 기준) */
+export function keyedAxes(p: Pick<Project, 'characters' | 'axes'>): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  for (const axis of projectAxes(p)) {
+    const on = axis.values.filter((v) => v.enabled !== false).map((v) => v.id)
+    if (on.length) out.set(axis.id, on)
   }
+  return out
+}
+
+/**
+ * 조합 키는 켠 값이 있는 축 전부로 만들어서, 빈 축에 첫 값을 넣거나(첫 캐릭터 포함) 하나뿐인 값을 지우면
+ * 모든 키가 바뀌고 지금까지의 그림·선별·코드가 통째로 "행렬에서 빠진 조합"으로 밀려난다.
+ * 그 경우(키에 들어가는 축이 하나 늘거나 줄고, 그 축의 켠 값이 하나뿐일 때)만 항목을 새 키로 옮긴다:
+ *   - 축이 생김 → 지금 행렬 모양의 항목에 그 값을 붙인다 (지금까지의 그림 = 첫 값의 조합)
+ *   - 축이 빠짐 → 그 값을 가진 항목에서 축을 뗀다
+ * 옮길 자리에 이미 항목이 있으면 합치지 않고 그대로 둔다. 생성 대기·생성 중인 항목이 있으면(대기열이 옛 키로
+ * 결과를 넣는다) 옮기지 않는다. 그림은 지우지 않는다.
+ */
+export function carryItemKeys(prev: Project, next: Project): Project {
+  const entries = Object.values(next.items)
+  if (!entries.length || entries.some((i) => i.queued > 0 || i.generating > 0)) return next
+  const before = keyedAxes(prev)
+  const after = keyedAxes(next)
+  const added = [...after.keys()].filter((a) => !before.has(a))
+  const removed = [...before.keys()].filter((a) => !after.has(a))
+  if (added.length + removed.length !== 1) return next
+  const axisId = added[0] ?? removed[0]
+  const values = added.length ? after.get(axisId)! : before.get(axisId)!
+  if (values.length !== 1) return next
+  const valueId = values[0]
+  // 지금(prev) 행렬 모양인 키만 — 이미 빠져 있던 항목은 건드리지 않는다
+  const shaped = (coords: Record<string, string>): boolean => {
+    const axes = Object.keys(coords)
+    return axes.length === before.size && axes.every((a) => before.get(a)?.includes(coords[a]))
+  }
+  const items = { ...next.items }
+  const counters = { ...next.exportCounters }
+  let moved = false
+  for (const item of entries) {
+    const coords = parseComboKey(item.key)
+    if (!shaped(coords)) continue
+    const target = { ...coords }
+    if (added.length) target[axisId] = valueId
+    else delete target[axisId]
+    if (!Object.keys(target).length) continue
+    const key = comboKey(target)
+    if (key === item.key || items[key]) continue
+    delete items[item.key]
+    items[key] = { ...item, key }
+    const from = `combination:${item.key}`
+    const to = `combination:${key}`
+    if (counters[from] !== undefined && counters[to] === undefined) {
+      counters[to] = counters[from]
+      delete counters[from]
+    }
+    moved = true
+  }
+  return moved ? { ...next, items, exportCounters: counters } : next
 }
 
 /**
@@ -258,6 +318,8 @@ export function removeValue(p: Project, axisId: string, valueId: string): Projec
  *   "웃음: smile, open mouth"            → 이름 웃음, 프롬프트 smile, open mouth
  *   "웃음 (smile): smile, open mouth"    → 괄호 안은 파일 이름용 slug
  *   "smile, open mouth"                  → 이름이 없으면 첫 조각을 이름으로
+ *   "artist:wlop, smile"                 → 영문 단어 바로 뒤의 콜론(띄어 쓰지 않음)은 NovelAI 태그(artist:·text:)라
+ *                                          이름으로 보지 않는다. 이름은 "이름: " 처럼 띄어 쓰거나 전각 콜론으로
  * 빈 줄·# 주석 줄은 건너뛴다
  */
 export function parseValueLines(text: string): { label: string; slug?: string; prompt: string }[] {
@@ -265,10 +327,13 @@ export function parseValueLines(text: string): { label: string; slug?: string; p
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim()
     if (!line || line.startsWith('#')) continue
-    // 첫 콜론(전각 포함) 앞이 이름. 가중치 문법(1.2::tag::)의 ::는 이름 구분으로 보지 않는다
-    const m = /^([^:：]+?)\s*[:：](?!:)\s*(.*)$/.exec(line)
+    // 첫 콜론(전각 포함) 앞이 이름 (쉼표가 든 앞부분은 이름이 아니다).
+    // 가중치 문법(1.2::tag::)의 ::와 영문 태그의 콜론(artist:wlop)은 이름 구분으로 보지 않는다
+    const hit = /^([^:：,]+?)\s*([:：])(?!:)(\s*)(.*)$/.exec(line)
+    const tagSyntax = !!hit && hit[2] === ':' && !hit[3] && /^[\x20-\x7e]+$/.test(hit[1])
+    const m = hit && !tagSyntax ? hit : null
     let head = m ? m[1].trim() : ''
-    const prompt = (m ? m[2] : line).trim()
+    const prompt = (m ? m[4] : line).trim()
     let slug: string | undefined
     const paren = /^(.*?)\s*[(（]([^()（）]+)[)）]$/.exec(head)
     if (paren && paren[1].trim()) {

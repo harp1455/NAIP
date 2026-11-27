@@ -188,7 +188,8 @@ describe('project model', () => {
 
     const noAxis = removeAxis(p, ax.id)
     expect(noAxis.axes).toEqual([])
-    expect(noAxis.exclusions).toEqual([{ id: 'r1', when: { character: [b.id] } }])
+    // 하늘 + 수영복 규칙은 하늘 전부를 빼는 규칙이 되지 않고 통째로 빠진다
+    expect(noAxis.exclusions).toEqual([])
     expect(noAxis.overrides.map((o) => o.id)).toEqual(['o2'])
 
     const noA = removeCharacter(p, a.id)
