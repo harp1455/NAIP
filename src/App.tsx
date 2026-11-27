@@ -31,16 +31,19 @@ import { SettingsPane } from './components/SettingsPane'
 import { SourceSheet } from './components/SourceSheet'
 import { V5Gauge } from './components/V5Gauge'
 import { Toast } from './components/Toast'
+import { FolderKanban } from 'lucide-react' // ── Phase 5
+import { ProjectPane } from './components/project/ProjectPane' // ── Phase 5
 import { StorageScreens } from './components/StorageScreens'
 import { useStorageBoot } from './stores/storage'
 
-type Tab = 'prompt' | 'scenes' | 'result' | 'history' | 'settings'
+type Tab = 'prompt' | 'scenes' | 'result' | 'history' | 'project' | 'settings' // ── Phase 5: project
 
 const TABS: { id: Tab; label: string; icon: typeof PenLine }[] = [
   { id: 'prompt', label: '프롬프트', icon: PenLine },
   { id: 'scenes', label: '씬', icon: Clapperboard },
   { id: 'result', label: '결과', icon: ImageIcon },
   { id: 'history', label: '히스토리', icon: History },
+  { id: 'project', label: '프로젝트', icon: FolderKanban }, // ── Phase 5
   { id: 'settings', label: '설정', icon: Settings }
 ]
 
@@ -224,6 +227,7 @@ export default function App(): ReactNode {
             {shown === 'result' && <PreviewPane />}
             {shown === 'history' && <HistoryPane />}
             {shown === 'settings' && <SettingsPane />}
+            {shown === 'project' && <ProjectPane />} {/* ── Phase 5 */}
             {!wide && shown === 'result' && bar}
           </main>
         )}
