@@ -4,6 +4,7 @@ import { fetchSubscription } from '../nai/client'
 import type { SubscriptionInfo } from '../nai/types'
 import { clamp, round1 } from '../lib/util'
 import type { TagSourceSetting } from '../lib/tags'
+import { readSecret, writeSecret } from '../lib/secrets'
 
 export const DELAY_MIN = 1
 export const DELAY_MAX = 2
@@ -53,6 +54,11 @@ interface SettingsState {
     >
   ) => void
   refreshSubscription: () => Promise<void>
+  /** 암호화 저장소에서 토큰을 읽었는지 (읽기 전에는 "토큰 없음"으로 단정하지 않는다) */
+  secretsLoaded: boolean
+  /** 앱 시작 시 한 번: 암호화 저장소에서 토큰을 읽고, 예전 평문 토큰이 있으면 옮긴 뒤 지운다 */
+  loadSecrets: () => Promise<void>
+  setGithubToken: (token: string) => void
 }
 
 export const useSettings = create<SettingsState>()(
@@ -80,7 +86,38 @@ export const useSettings = create<SettingsState>()(
       subscription: null,
       subscriptionAt: 0,
       subscriptionError: null,
-      setToken: (token) => set({ token: token.trim(), subscription: null, subscriptionError: null }),
+      setToken: (token) => {
+        const value = token.trim()
+        set({ token: value, subscription: null, subscriptionError: null })
+        void writeSecret('naiToken', value)
+      },
+      setGithubToken: (token) => {
+        const value = token.trim()
+        set({ githubToken: value })
+        void writeSecret('githubToken', value)
+      },
+      secretsLoaded: false,
+      loadSecrets: async () => {
+        // 0.12.0까지는 토큰이 naip-settings(localStorage)에 평문으로 들어 있었다 — 한 번 옮기고 지운다
+        const legacy = get() as SettingsState & { token: string; githubToken: string }
+        const [nai, gh] = await Promise.all([readSecret('naiToken'), readSecret('githubToken')])
+        let token = nai.value
+        let githubToken = gh.value
+        if (!token && legacy.token) {
+          token = legacy.token
+          await writeSecret('naiToken', token)
+        }
+        if (!githubToken && legacy.githubToken) {
+          githubToken = legacy.githubToken
+          await writeSecret('githubToken', githubToken)
+        }
+        set({
+          token,
+          githubToken,
+          secretsLoaded: true,
+          ...(nai.lost ? { subscriptionError: '기기 보안 상태가 바뀌어 저장된 토큰을 읽을 수 없습니다. 토큰을 다시 넣어 주세요' } : {})
+        })
+      },
       setDelay: (min, max) => {
         const lo = round1(clamp(min, DELAY_MIN, DELAY_MAX))
         const hi = round1(clamp(max, DELAY_MIN, DELAY_MAX))
@@ -103,8 +140,8 @@ export const useSettings = create<SettingsState>()(
     }),
     {
       name: 'naip-settings',
+      // 토큰은 여기(평문 localStorage)에 두지 않는다 — loadSecrets/setToken이 암호화 저장소를 쓴다
       partialize: (s) => ({
-        token: s.token,
         delayMin: s.delayMin,
         delayMax: s.delayMax,
         autoSave: s.autoSave,
@@ -120,7 +157,6 @@ export const useSettings = create<SettingsState>()(
         nameMode: s.nameMode,
         nameCounters: s.nameCounters,
         updateRepo: s.updateRepo,
-        githubToken: s.githubToken,
         shareStripMeta: s.shareStripMeta,
         streaming: s.streaming
       })

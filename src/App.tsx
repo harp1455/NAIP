@@ -130,9 +130,15 @@ export default function App(): ReactNode {
 
   useEffect(() => {
     void useHistory.getState().init()
-    void useSettings.getState().refreshSubscription()
-    // 앱을 열 때마다 조용히 새 빌드를 확인한다
-    void useUpdate.getState().check(true)
+    // 토큰을 암호화 저장소에서 읽은 뒤에 계정 정보와 새 빌드를 확인한다 (비공개 저장소면 GitHub 토큰이 필요)
+    void useSettings
+      .getState()
+      .loadSecrets()
+      .catch(() => useSettings.setState({ secretsLoaded: true }))
+      .finally(() => {
+        void useSettings.getState().refreshSubscription()
+        void useUpdate.getState().check(true)
+      })
     // 진행 알림의 "중지" — 지금 배치와 대기열을 모두 멈춘다
     return onStopRequested(() => useGeneration.getState().stop())
   }, [])

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import { shareImage as shareFile } from '../lib/native'
 import { useCharacters } from '../stores/characters'
@@ -145,7 +145,7 @@ function UpdateGroup(): ReactNode {
               label="GitHub 토큰"
               type={showToken ? 'text' : 'password'}
               value={s.githubToken}
-              onChange={(githubToken) => s.patch({ githubToken: githubToken.trim() })}
+              onChange={(githubToken) => s.setGithubToken(githubToken)}
               placeholder="github_pat_..."
               className="font-mono"
             />
@@ -225,6 +225,10 @@ export function SettingsPane(): ReactNode {
   const s = useSettings()
   const history = useHistory()
   const [draft, setDraft] = useState(s.token)
+  // 토큰은 암호화 저장소에서 늦게 읽혀 올 수 있다 — 아직 아무것도 안 적었으면 채워 넣는다
+  useEffect(() => {
+    if (s.secretsLoaded && !draft && s.token) setDraft(s.token)
+  }, [s.secretsLoaded, s.token]) // eslint-disable-line react-hooks/exhaustive-deps
   const [show, setShow] = useState(false)
   const [checking, setChecking] = useState(false)
   const anlas = anlasOf(s.subscription)
