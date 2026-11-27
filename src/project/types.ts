@@ -354,6 +354,8 @@ export interface Project {
   codes: CodeSettings
   /** 내보낼 때 쓸 변환 프리셋 (없으면 원본 그대로) */
   convertPresetId: string | null
+  /** 프리셋 없이 내보낼 때 NAI 메타데이터(PNG 글 청크·알파 숨은 정보)를 지운 PNG로 (기본 false = 원본 바이트 그대로) */
+  exportStripMeta?: boolean
   /** 내보내기 번호 이어 매기기 — 번호 범위 열쇠 → 마지막으로 쓴 번호 (template.previewPaths의 counters) */
   exportCounters: Record<string, number>
   /** 조합 키 → 에셋 항목 (그림이 하나라도 있거나 상태가 있는 조합만) */

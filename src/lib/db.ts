@@ -1,4 +1,5 @@
 import type { CastSent, CastSnapshot } from '../nai/cast'
+import type { ProjectImageTag } from '../project/types' // ── Phase 5
 
 /** 히스토리 저장소 (IndexedDB). meta(썸네일 포함)와 원본 blob을 분리해 목록 로딩을 가볍게 한다. */
 /** 생성 당시의 설정 원본(조각 치환 전) — "설정 적용"으로 그대로 되돌리기 위해 보관 */
@@ -47,6 +48,8 @@ export interface HistoryMeta {
   parentId?: number
   /** 아직 갤러리에 저장하지 않았으면 1 ("미저장만 보기" 인덱스용 — 저장하면 지운다) */
   unsaved?: 1
+  /** ── Phase 5: 에셋 프로젝트 분류 표시 (프로젝트 id·조합 키·좌표) */
+  project?: ProjectImageTag
 }
 
 export type HistoryFilter = { fav: true } | { sceneId: number } | { unsaved: true } | { search: string } | null

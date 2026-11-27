@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import * as db from '../lib/db'
 import type { HistoryFilter, HistoryMeta } from '../lib/db'
 import { useSettings } from './settings'
+import { forgetAllProjectImages, useProjects } from '../project/store' // ── Phase 5
 
 const PAGE = 60
 /** 검색 결과 id 전부 (최신순) — 화면에는 PAGE장씩 꺼내 보여 준다 */
@@ -139,6 +140,7 @@ export const useHistory = create<HistoryState>()((set, get) => ({
   },
   remove: async (ids) => {
     await db.deleteImages(ids)
+    useProjects.getState().forgetImages(ids) // ── Phase 5: 지운 그림을 프로젝트 조합에서도 뺀다
     const gone = new Set(ids)
     set((s) => ({
       items: s.items.filter((m) => !gone.has(m.id)),
@@ -148,6 +150,7 @@ export const useHistory = create<HistoryState>()((set, get) => ({
   },
   clear: async () => {
     await db.clearImages()
+    forgetAllProjectImages() // ── Phase 5
     set({ items: [], total: 0, hasMore: false, viewing: null })
   },
   view: (id) => set({ viewing: id })

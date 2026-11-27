@@ -42,6 +42,15 @@ import { useRefs, vibeKey, type CharRef, type Vibe } from './refs'
 import { toast } from './toast'
 import { useSettings } from './settings'
 import { useSource } from './source'
+// ── Phase 5: 에셋 프로젝트 장의 진행을 프로젝트 조합에 알린다 (src/project/queue.ts)
+import {
+  projectItemFailed,
+  projectItemLanded,
+  projectItemRequest,
+  projectItemStarted,
+  releaseProjectItems,
+  type ProjectPlanItem
+} from '../project/queue'
 
 type Phase = 'idle' | 'preparing' | 'generating' | 'waiting' | 'retrying'
 
@@ -91,6 +100,8 @@ interface GenerationState {
   stop: () => void
   removeQueued: (id: number) => void
   setLatest: (id: number | null) => void
+  /** ── Phase 5: 미리 만든 배치(에셋 프로젝트)를 넣는다 — 생성 중이면 대기열 뒤에, 아니면 바로 돌린다 */
+  enqueueBatches: (batches: Batch[]) => Promise<void>
 }
 
 export interface QueuedBatch {
@@ -119,6 +130,8 @@ interface PlanItem {
   size?: { width: number; height: number }
   /** 고정 시드일 때 더할 오프셋 (씬마다 0부터) */
   offset: number
+  /** ── Phase 5: 에셋 프로젝트 장 — 이 장의 프롬프트(화면 프롬프트 대신)·캐릭터·분류 표시 */
+  project?: ProjectPlanItem
 }
 
 /** 생성 버튼을 누른 순간의 설정 묶음 — 대기 중에 화면을 고쳐도 이 내용대로 돈다 */
@@ -143,6 +156,9 @@ interface Batch {
   /** 다시 생성: 원본의 뽑기 결과 기록을 그대로 물려준다 */
   castSent?: CastSent
 }
+
+// ── Phase 5: 프로젝트 배치를 밖(src/project/run.ts)에서 만들 수 있게 모양만 내보낸다
+export type { Batch as QueueBatch, PlanItem as QueuePlanItem }
 
 type BatchOutcome = 'done' | 'stopped' | 'fatal'
 
@@ -198,6 +214,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
 
   /** 못 뽑은 씬 장을 예약으로 돌려준다 */
   const release = (items: PlanItem[]): void => {
+    releaseProjectItems(items) // ── Phase 5: 못 뽑은 프로젝트 장의 대기·생성 중 장수를 돌려준다
     for (const item of items) {
       if (!item.scene?.reserved) continue
       useScenes.getState().bumpReserve([item.scene.id], 1)
@@ -366,7 +383,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
   /** 배치 하나를 끝까지(또는 멈출 때까지) 돌린다 */
   const runBatch = async (batch: Batch, token: string, signal: AbortSignal): Promise<BatchOutcome> => {
     const settings = useSettings.getState()
-    const { base, snap, fixedSeed, source, plan } = batch
+    const { base, fixedSeed, source, plan } = batch // ── Phase 5: snap은 장마다 정한다 (아래 루프)
     const caps = modelCapabilities(base.model)
     const count = plan.length
     const generated = new Set<number>()
@@ -432,6 +449,8 @@ export const useGeneration = create<GenerationState>()((set, get) => {
       loopStarted = performance.now()
       for (let i = 0; i < count; i++) {
         const item = plan[i]
+        // ── Phase 5: 프로젝트 장은 그 조합의 프롬프트·캐릭터로 (화면 프롬프트를 통째로 대신) — 아래 base·snap은 이 장의 것
+        const { base, snap } = item.project ? projectItemRequest(batch, item.project) : batch
         const seed =
           fixedSeed === null || !Number.isFinite(fixedSeed)
             ? randomSeed()
@@ -485,6 +504,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         if (settings.background) job.update(`${i + 1}/${count}장 생성 중${label}${queued}`, i, count)
 
         // 재시도 대상은 네트워크 요청뿐 — 응답을 받은 뒤의 저장 오류로 다시 요청(이중 과금)하지 않는다
+        projectItemStarted(item) // ── Phase 5
         let result: Awaited<ReturnType<typeof generateImage>> | null = null
         let resultSeq = 0
         for (let attempt = 0; ; attempt++) {
@@ -520,6 +540,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
                 error: `${e.message} — 이미 과금됐을 수 있어 이 장은 다시 요청하지 않았습니다`
               }))
               clearPreview(previewSeq)
+              projectItemFailed(item) // ── Phase 5
               break
             }
             const status = e instanceof NaiHttpError ? e.status : 0
@@ -536,6 +557,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
               continue
             }
             set((s) => ({ failed: s.failed + 1, error: (e as Error).message }))
+            projectItemFailed(item) // ── Phase 5
             // 영구 오류(토큰·Anlas 부족·잘못된 요청)는 남은 장과 대기열도 같은 이유로 실패하므로 모두 멈춘다
             if (!transient) {
               outcome = 'fatal'
@@ -604,11 +626,14 @@ export const useGeneration = create<GenerationState>()((set, get) => {
                   ...(castRes ? { cast: castSent(castRes, countFix) } : batch.castSent ? { cast: batch.castSent } : {})
                 },
                 ...(item.scene ? { sceneId: item.scene.id, sceneName: item.scene.name } : {}),
+                ...(item.project ? { project: item.project.tag } : {}), // ── Phase 5: 분류 표시
                 ...(kind !== 't2i' && source.originId !== null ? { parentId: source.originId } : {})
               },
               image
             )
             primeImageUrl(id, image)
+            // ── Phase 5: 히스토리에 들어간 그림을 조합에 넣는다
+            projectItemLanded(item, { id, ts: Date.now(), seed, width: request.width, height: request.height, mime: image.type })
             set((s) => ({ done: s.done + 1, latestId: id, error: null }))
             // 완성본이 결과 화면에 올라간 뒤에 미리보기를 거둔다 (그 사이 다음 장 미리보기가 왔으면 그대로 둔다)
             clearPreview(resultSeq)
@@ -624,7 +649,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
             timing.processMs += performance.now() - received
           })()
           // 중지로 기다림이 먼저 끝난 뒤 저장이 실패해도 처리되지 않은 오류로 남지 않게 한다
-          post.catch(() => {})
+          post.catch(() => projectItemFailed(item)) // ── Phase 5: 저장 실패면 그 장은 실패 (그 밖에는 그대로 무시)
         }
 
         if (i < count - 1) {
@@ -732,6 +757,25 @@ export const useGeneration = create<GenerationState>()((set, get) => {
       if (i < 0) return
       release(pendingBatches.splice(i, 1)[0].plan)
       syncQueue()
+    },
+    // ── Phase 5: 미리 만든 배치 — buildBatch 대신 받은 배치를 그대로 runQueue/대기열에 (간격·중지·대기열 취소는 같다)
+    enqueueBatches: async (batches) => {
+      if (!batches.length) return
+      const token = useSettings.getState().token
+      if (!token) {
+        for (const b of batches) release(b.plan)
+        set({ error: 'API 토큰을 먼저 설정해 주세요 (설정 탭)' })
+        return
+      }
+      if (get().running) {
+        pendingBatches.push(...batches)
+        syncQueue()
+        toast(`대기열에 추가했습니다 — 배치 ${batches.length}개 · ${batches.reduce((n, b) => n + b.plan.length, 0)}장`)
+        return
+      }
+      const [first, ...rest] = batches
+      pendingBatches.push(...rest)
+      await runQueue(first, token)
     },
     start: async (opts) => {
       const token = useSettings.getState().token

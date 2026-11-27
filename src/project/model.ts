@@ -194,6 +194,28 @@ export function moveAxis(p: Project, axisId: string, dir: -1 | 1): Project {
   return { ...p, axes }
 }
 
+/** 축 안에서 값 순서를 한 칸 옮긴다 (조합 키는 값 id라 바뀌지 않는다) */
+export function moveValue(p: Project, axisId: string, valueId: string, dir: -1 | 1): Project {
+  const axis = p.axes.find((a) => a.id === axisId)
+  if (!axis) return p
+  const i = axis.values.findIndex((v) => v.id === valueId)
+  const j = i + dir
+  if (i < 0 || j < 0 || j >= axis.values.length) return p
+  const values = [...axis.values]
+  ;[values[i], values[j]] = [values[j], values[i]]
+  return { ...p, axes: p.axes.map((a) => (a.id === axisId ? { ...a, values } : a)) }
+}
+
+/** 캐릭터 순서를 한 칸 옮긴다 (행렬·코드 글자 순서가 따라 바뀐다) */
+export function moveCharacter(p: Project, charId: string, dir: -1 | 1): Project {
+  const i = p.characters.findIndex((c) => c.id === charId)
+  const j = i + dir
+  if (i < 0 || j < 0 || j >= p.characters.length) return p
+  const characters = [...p.characters]
+  ;[characters[i], characters[j]] = [characters[j], characters[i]]
+  return { ...p, characters }
+}
+
 export function addValue(
   p: Project,
   axisId: string,
@@ -229,4 +251,33 @@ export function removeValue(p: Project, axisId: string, valueId: string): Projec
     ...scrubbed,
     axes: scrubbed.axes.map((a) => (a.id === axisId ? { ...a, values: a.values.filter((v) => v.id !== valueId) } : a))
   }
+}
+
+/**
+ * 값 여러 줄 붙여넣기 — 한 줄에 하나:
+ *   "웃음: smile, open mouth"            → 이름 웃음, 프롬프트 smile, open mouth
+ *   "웃음 (smile): smile, open mouth"    → 괄호 안은 파일 이름용 slug
+ *   "smile, open mouth"                  → 이름이 없으면 첫 조각을 이름으로
+ * 빈 줄·# 주석 줄은 건너뛴다
+ */
+export function parseValueLines(text: string): { label: string; slug?: string; prompt: string }[] {
+  const out: { label: string; slug?: string; prompt: string }[] = []
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#')) continue
+    // 첫 콜론(전각 포함) 앞이 이름. 가중치 문법(1.2::tag::)의 ::는 이름 구분으로 보지 않는다
+    const m = /^([^:：]+?)\s*[:：](?!:)\s*(.*)$/.exec(line)
+    let head = m ? m[1].trim() : ''
+    const prompt = (m ? m[2] : line).trim()
+    let slug: string | undefined
+    const paren = /^(.*?)\s*[(（]([^()（）]+)[)）]$/.exec(head)
+    if (paren && paren[1].trim()) {
+      head = paren[1].trim()
+      slug = paren[2].trim()
+    }
+    const label = head || prompt.split(',')[0].trim().slice(0, 30)
+    if (!label && !prompt) continue
+    out.push({ label: label || '이름 없음', ...(slug ? { slug } : {}), prompt })
+  }
+  return out
 }
