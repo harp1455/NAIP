@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -11,5 +12,9 @@ export default defineConfig({
     __BUILD__: JSON.stringify(Number(process.env.NAIP_BUILD_NUMBER ?? 0))
   },
   plugins: [react(), tailwindcss()],
-  build: { outDir: 'dist', target: 'es2022' }
+  build: { outDir: 'dist', target: 'es2022' },
+  test: {
+    // 저장소 안에 생기는 에이전트 작업 폴더(.claude/worktrees)의 테스트는 돌리지 않는다
+    exclude: ['**/node_modules/**', '**/dist/**', '.claude/**', 'android/**']
+  }
 })
