@@ -13,7 +13,7 @@ import { Button, Empty, IconButton } from './ui'
 /** 결과 탭: 가장 최근 결과를 크게 + 최근 결과 스트립 */
 export function PreviewPane(): ReactNode {
   const { items, view } = useHistory()
-  const { latestId, setLatest, running, phase } = useGeneration()
+  const { latestId, setLatest, running, phase, preview } = useGeneration()
   const meta = items.find((m) => m.id === latestId) ?? items[0]
   const [url, setUrl] = useState<string | null>(null)
   const index = meta ? items.findIndex((m) => m.id === meta.id) : -1
@@ -35,7 +35,10 @@ export function PreviewPane(): ReactNode {
     }
   }, [meta?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!meta) {
+  // 생성 중 스트리밍 미리보기가 있으면 그것을 크게 보여 준다 (완성되면 결과로 바뀐다)
+  const streamFrame = running && preview ? preview : null
+
+  if (!meta && !streamFrame) {
     return (
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
         <p className="text-lg font-semibold">{running ? '생성하고 있어요' : '아직 결과가 없어요'}</p>
@@ -46,6 +49,31 @@ export function PreviewPane(): ReactNode {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="relative min-h-0 flex-1 bg-black/40">
+        {streamFrame && (
+          <div className="absolute inset-0 z-10 bg-black/60" aria-live="polite">
+            {streamFrame.url ? (
+              <img
+                src={streamFrame.url}
+                alt="생성 중 미리보기"
+                className="absolute inset-0 h-full w-full object-contain"
+              />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center text-sm text-dim">그리는 중…</div>
+            )}
+            <div className="absolute inset-x-3 bottom-3 rounded-full bg-black/60 p-1">
+              <div className="h-1.5 overflow-hidden rounded-full bg-white/15">
+                <div
+                  className="h-full rounded-full bg-accent transition-[width] duration-200"
+                  style={{ width: `${Math.round((streamFrame.step / Math.max(1, streamFrame.total)) * 100)}%` }}
+                />
+              </div>
+            </div>
+            <span className="absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[11px] text-accent">
+              미리보기 · {streamFrame.step}/{streamFrame.total}단계
+            </span>
+          </div>
+        )}
+        {meta && (
         <button
           type="button"
           aria-label="이미지 크게 보기 (꾹 누르면 복사)"
@@ -60,16 +88,18 @@ export function PreviewPane(): ReactNode {
             className={cx('absolute inset-0 h-full w-full object-contain', !url && 'blur-sm')}
           />
         </button>
-        {items.length > 1 && (
+        )}
+        {meta && items.length > 1 && !streamFrame && (
           <span className="pointer-events-none absolute bottom-2 left-2 rounded-full bg-black/60 px-2 py-0.5 font-mono text-[11px] text-white">
             {index + 1}/{items.length}
           </span>
         )}
-        {running && phase === 'generating' && (
+        {running && phase === 'generating' && !streamFrame && (
           <span className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[11px] text-accent">
             다음 장 생성 중…
           </span>
         )}
+        {meta && !streamFrame && (
         <div className="absolute right-2 top-2 flex gap-1.5">
           <button
             type="button"
@@ -90,11 +120,12 @@ export function PreviewPane(): ReactNode {
             <Share2 size={18} />
           </button>
         </div>
+        )}
       </div>
       <ul className="scroll-thin flex shrink-0 gap-1.5 overflow-x-auto border-t border-line p-2">
         {items.slice(0, 30).map((m) => (
           <li key={m.id} className="shrink-0">
-            <StripThumb meta={m} active={m.id === meta.id} onPick={() => setLatest(m.id)} />
+            <StripThumb meta={m} active={m.id === meta?.id} onPick={() => setLatest(m.id)} />
           </li>
         ))}
       </ul>

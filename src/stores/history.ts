@@ -155,6 +155,21 @@ export const useHistory = create<HistoryState>()((set, get) => ({
 
 const urlCache = new Map<number, string>()
 
+/** 방금 받은 원본을 캐시에 미리 넣어, 결과 화면이 썸네일로 깜빡이지 않고 바로 보이게 한다 */
+export function primeImageUrl(id: number, blob: Blob): void {
+  if (urlCache.has(id)) return
+  urlCache.set(id, URL.createObjectURL(blob))
+  trimUrlCache()
+}
+
+function trimUrlCache(): void {
+  while (urlCache.size > 40) {
+    const [oldId, oldUrl] = urlCache.entries().next().value as [number, string]
+    URL.revokeObjectURL(oldUrl)
+    urlCache.delete(oldId)
+  }
+}
+
 /** 원본 이미지의 object URL (세션 캐시, 최근 40장만 유지) */
 export async function imageUrl(id: number, mime: string): Promise<string | null> {
   const hit = urlCache.get(id)
@@ -163,10 +178,6 @@ export async function imageUrl(id: number, mime: string): Promise<string | null>
   if (!blob) return null
   const url = URL.createObjectURL(blob)
   urlCache.set(id, url)
-  if (urlCache.size > 40) {
-    const [oldId, oldUrl] = urlCache.entries().next().value as [number, string]
-    URL.revokeObjectURL(oldUrl)
-    urlCache.delete(oldId)
-  }
+  trimUrlCache()
   return url
 }

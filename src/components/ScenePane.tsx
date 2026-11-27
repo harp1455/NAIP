@@ -4,6 +4,7 @@ import { RESOLUTIONS } from '../nai/constants'
 import { modelCapabilities } from '../nai/models'
 import { cx } from '../lib/util'
 import { useCharacters } from '../stores/characters'
+import { PositionCanvas } from './PositionCanvas'
 import { estimateScenes, useGeneration } from '../stores/generation'
 import { useHistory } from '../stores/history'
 import { usePrompt } from '../stores/prompt'
@@ -21,6 +22,9 @@ function SceneEditor(props: { initial: Partial<Scene>; onClose: () => void }): R
   const [negative, setNegative] = useState(props.initial.negative ?? '')
   const [size, setSize] = useState(props.initial.size ?? null)
   const [cast, setCast] = useState<number[] | undefined>(props.initial.cast)
+  const [centers, setCenters] = useState<Record<number, { x: number; y: number }>>(props.initial.castCenters ?? {})
+  const mainSize = usePrompt((p) => p.params)
+  const sceneModel = usePrompt((p) => p.params.model)
   const { characters, folders: charFolders } = useCharacters()
   const maxChars = modelCapabilities(usePrompt((p) => p.params.model)).maxCharacters
   // 라이브러리에서 지워진 캐릭터는 세지 않는다
@@ -51,7 +55,22 @@ function SceneEditor(props: { initial: Partial<Scene>; onClose: () => void }): R
             variant="primary"
             className="flex-1"
             onClick={() => {
-              saveScene({ id, name, folderId, prompt, negative, size, ...(cast ? { cast: picked } : {}) })
+              saveScene({
+                id,
+                name,
+                folderId,
+                prompt,
+                negative,
+                size,
+                ...(cast
+                  ? {
+                      cast: picked,
+                      castCenters: Object.fromEntries(
+                        Object.entries(centers).filter(([k]) => picked.includes(Number(k)))
+                      )
+                    }
+                  : {})
+              })
               props.onClose()
             }}
           >
@@ -85,7 +104,7 @@ function SceneEditor(props: { initial: Partial<Scene>; onClose: () => void }): R
         <div className="rounded-lg border border-line bg-field px-3">
           <Row
             label="이 씬의 출연 캐릭터를 따로 정하기"
-            hint={cast ? '아래에서 고른 캐릭터만 출연합니다 (위치는 AI 선택)' : '프롬프트 화면에서 켜 둔 출연을 그대로 씁니다'}
+            hint={cast ? '아래에서 고른 캐릭터만 출연합니다. 2명 이상이면 위치도 정할 수 있습니다' : '프롬프트 화면에서 켜 둔 출연을 그대로 씁니다'}
           >
             <Toggle
               label="이 씬의 출연 캐릭터를 따로 정하기"
@@ -134,6 +153,28 @@ function SceneEditor(props: { initial: Partial<Scene>; onClose: () => void }): R
                     )
                   })}
                 </ul>
+              )}
+              {picked.length >= 2 && (
+                <div className="mt-3">
+                  <PositionCanvas
+                    width={(size ?? mainSize).width}
+                    height={(size ?? mainSize).height}
+                    model={sceneModel}
+                    characters={picked.map((cid) => ({
+                      key: cid,
+                      name: characters.find((c) => c.id === cid)?.name ?? '?',
+                      center: centers[cid] ?? null
+                    }))}
+                    onChange={(key, center) =>
+                      setCenters((prev) => {
+                        const next = { ...prev }
+                        if (center) next[key] = center
+                        else delete next[key]
+                        return next
+                      })
+                    }
+                  />
+                </div>
               )}
             </div>
           )}

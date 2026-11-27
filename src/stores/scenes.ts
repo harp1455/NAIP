@@ -21,6 +21,8 @@ export interface Scene {
    * 빈 배열이면 캐릭터 없이 생성한다
    */
   cast?: number[]
+  /** 씬 출연 캐릭터의 위치 (캐릭터 id → 비율 좌표). 없는 캐릭터는 AI 선택 */
+  castCenters?: Record<number, { x: number; y: number }>
   /** 예약 장수 — 생성될 때마다 1씩 줄어든다 */
   reserve: number
 }

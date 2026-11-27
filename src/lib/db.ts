@@ -37,6 +37,8 @@ export interface HistoryMeta {
   }
   /** 갤러리에 저장했으면 Pictures/NAIP 아래의 경로 (마지막으로 저장한 것) */
   saved?: string
+  /** i2i·인페인트 결과면 원본으로 쓴 히스토리 이미지 id (편집 계보) */
+  parentId?: number
   /** 아직 갤러리에 저장하지 않았으면 1 ("미저장만 보기" 인덱스용 — 저장하면 지운다) */
   unsaved?: 1
 }

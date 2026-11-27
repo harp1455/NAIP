@@ -5,6 +5,9 @@ import { modelCapabilities } from '../nai/models'
 import { usePrompt } from '../stores/prompt'
 import { useRefs } from '../stores/refs'
 import { useSource } from '../stores/source'
+import { useHistory } from '../stores/history'
+import { useImporter } from '../stores/importer'
+import { fromSnapshot } from '../lib/apply'
 import { MaskEditor } from './MaskEditor'
 import { Button, Sheet, SliderRow } from './ui'
 
@@ -19,6 +22,7 @@ export function SourceSheet(props: { onClose: () => void }): ReactNode {
       ? ' V5 인페인트에는 켜 둔 레퍼런스가 적용되지 않습니다.'
       : ''
   const [error, setError] = useState<string | null>(null)
+  const origin = useHistory((h) => (s.originId !== null ? h.items.find((m) => m.id === s.originId) : undefined))
 
   const pick = (): void => {
     void pickImageFiles().then(([file]) => {
@@ -80,6 +84,15 @@ export function SourceSheet(props: { onClose: () => void }): ReactNode {
               원본 {s.width}×{s.height} → 생성 {width}×{height}
               {s.width !== width || s.height !== height ? ' (전송 시 맞춰 리사이즈)' : ''}
             </p>
+            {origin?.snap && (
+              <button
+                type="button"
+                className="self-center text-xs text-accent underline"
+                onClick={() => useImporter.getState().open(fromSnapshot(origin.snap!, origin.seed), `seed ${origin.seed}`)}
+              >
+                원본 그림의 프롬프트·설정·시드 골라서 불러오기
+              </button>
+            )}
             <div className="flex gap-2">
               <Button className="flex-1" onClick={() => setEditing(true)}>
                 <Paintbrush size={16} />

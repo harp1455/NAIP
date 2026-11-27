@@ -15,52 +15,11 @@ import { modelCapabilities } from '../nai/models'
 import { cx } from '../lib/util'
 import { useCharacters, type Character } from '../stores/characters'
 import { usePrompt } from '../stores/prompt'
+import { PositionCanvas } from './PositionCanvas'
 import { Button, Empty, IconButton, Select, Sheet, TextArea, TextInput, Toggle } from './ui'
 
 /** 폴더 필터: 'all' = 전체, null = 미분류, number = 폴더 id */
 type FolderFilter = 'all' | null | number
-
-const GRID = [0.1, 0.3, 0.5, 0.7, 0.9]
-
-function PositionGrid(props: {
-  value: { x: number; y: number } | null
-  onChange: (v: { x: number; y: number } | null) => void
-}): ReactNode {
-  return (
-    <div className="flex items-start gap-3 px-3 pb-3">
-      <div className="grid w-40 grid-cols-5 gap-1" role="group" aria-label="캐릭터 위치">
-        {GRID.map((y) =>
-          GRID.map((x) => {
-            const on = props.value?.x === x && props.value?.y === y
-            return (
-              <button
-                key={`${x}-${y}`}
-                type="button"
-                aria-label={`가로 ${x}, 세로 ${y}`}
-                aria-pressed={on}
-                onClick={() => props.onChange({ x, y })}
-                className={cx('aspect-square rounded', on ? 'bg-accent' : 'bg-raised')}
-              />
-            )
-          })
-        )}
-      </div>
-      <div className="flex-1 text-xs text-dim">
-        <p>이미지 안에서 캐릭터가 설 위치입니다. 활성 캐릭터가 2명 이상일 때만 적용됩니다.</p>
-        <button
-          type="button"
-          onClick={() => props.onChange(null)}
-          className={cx(
-            'mt-2 h-9 rounded-lg px-3 text-sm',
-            props.value === null ? 'bg-accent text-accent-fg' : 'bg-raised text-fg'
-          )}
-        >
-          AI 선택
-        </button>
-      </div>
-    </div>
-  )
-}
 
 function CharacterEditor(props: {
   initial: Partial<Character>
@@ -139,13 +98,21 @@ function CharacterEditor(props: {
   )
 }
 
+let positionPanelOpen = false
+
 export function CharacterSheet(props: { onClose: () => void }): ReactNode {
   const s = useCharacters()
   const model = usePrompt((p) => p.params.model)
   const max = modelCapabilities(model).maxCharacters
   const [filter, setFilter] = useState<FolderFilter>('all')
   const [editing, setEditing] = useState<Partial<Character> | null>(null)
-  const [posOpen, setPosOpen] = useState<number | null>(null)
+  // 위치 판을 열어 두었으면 시트를 다시 열어도 그대로 열어 둔다
+  const [posOpen, setPosOpenState] = useState(positionPanelOpen)
+  const setPosOpen = (open: boolean): void => {
+    positionPanelOpen = open
+    setPosOpenState(open)
+  }
+  const { width, height } = usePrompt((p) => p.params)
 
   const inCast = new Set(s.cast.map((e) => e.charId))
   const enabledCount = s.cast.filter((e) => e.enabled).length
@@ -206,13 +173,9 @@ export function CharacterSheet(props: { onClose: () => void }): ReactNode {
                     <span className={cx('ml-2 min-w-0 flex-1 truncate', !e.enabled && 'text-dim')}>
                       {c.name}
                     </span>
-                    <IconButton
-                      label="위치"
-                      active={posOpen === e.charId || e.center !== null}
-                      onClick={() => setPosOpen(posOpen === e.charId ? null : e.charId)}
-                    >
-                      <MapPin size={17} />
-                    </IconButton>
+                    {e.center && e.enabled && (
+                      <MapPin size={15} className="mr-1 shrink-0 text-accent" aria-label="위치 지정됨" />
+                    )}
                     <IconButton label="위로" disabled={i === 0} onClick={() => s.moveCast(e.charId, -1)}>
                       <ArrowUp size={17} />
                     </IconButton>
@@ -227,16 +190,45 @@ export function CharacterSheet(props: { onClose: () => void }): ReactNode {
                       <X size={17} />
                     </IconButton>
                   </div>
-                  {posOpen === e.charId && (
-                    <PositionGrid
-                      value={e.center}
-                      onChange={(center) => s.patchCast(e.charId, { center })}
-                    />
-                  )}
                 </li>
               )
             })}
           </ul>
+        )}
+
+        {s.cast.some((e) => e.enabled) && (
+          <div className="mt-3 rounded-lg border border-line bg-field">
+            <button
+              type="button"
+              aria-expanded={posOpen}
+              onClick={() => setPosOpen(!posOpen)}
+              className="flex h-11 w-full items-center gap-2 px-3 text-left text-sm"
+            >
+              <MapPin size={16} className="text-accent" />
+              <span className="flex-1">위치 정하기</span>
+              <span className="text-xs text-dim">
+                {s.cast.filter((e) => e.enabled && e.center).length
+                  ? `${s.cast.filter((e) => e.enabled && e.center).length}명 지정`
+                  : '모두 AI 선택'}
+              </span>
+            </button>
+            {posOpen && (
+              <div className="border-t border-line p-3">
+                <PositionCanvas
+                  width={width}
+                  height={height}
+                  model={model}
+                  characters={s.cast
+                    .filter((e) => e.enabled)
+                    .flatMap((e) => {
+                      const c = s.characters.find((x) => x.id === e.charId)
+                      return c ? [{ key: e.charId, name: c.name, center: e.center }] : []
+                    })}
+                  onChange={(key, center) => s.patchCast(key, { center })}
+                />
+              </div>
+            )}
+          </div>
         )}
 
         <h3 className="mb-1 mt-5 text-xs text-dim">라이브러리</h3>

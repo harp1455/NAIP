@@ -1,7 +1,8 @@
 import { create } from 'zustand'
-import { encodeVibe, generateImage, NaiHttpError } from '../nai/client'
+import { encodeVibe, generateImage, generateImageStream, NaiHttpError } from '../nai/client'
+import { StreamInterruptedError } from '../nai/stream'
 import { estimateAnlas, type AnlasEstimate } from '../nai/anlas'
-import { inpaintingModelFor, isV5Model, modelCapabilities } from '../nai/models'
+import { effectiveSteps, inpaintingModelFor, isV5Model, modelCapabilities } from '../nai/models'
 import { clampReferenceStrength, referenceCaption, referencesForModel } from '../nai/reference'
 import type { BuildOptions, CharacterReferenceOptions, VibeOptions } from '../nai/payload'
 import type { CharacterPromptInput, GenerationRequest } from '../nai/types'
@@ -17,10 +18,11 @@ import type { FragmentSource } from '../nai/fragments'
 import { processWildcards, resetSequentialCounters } from '../nai/fragments'
 import { cleanFileName, fileNameFor, job, saveToGallery, setKeepAwake, wait } from '../lib/native'
 import { randomSeed, uid } from '../lib/util'
+import { positionFor } from '../lib/position'
 import { useCharacters } from './characters'
 import { fragmentSource } from './fragments'
 import { appendPrompt, useScenes } from './scenes'
-import { useHistory } from './history'
+import { primeImageUrl, useHistory } from './history'
 import { mergePromptParts, usePrompt } from './prompt'
 import { useRefs, vibeKey, type CharRef, type Vibe } from './refs'
 import { toast } from './toast'
@@ -60,6 +62,8 @@ interface GenerationState {
   lastBatch: BatchTiming | null
   /** 지금 도는 배치의 이름 (대기열 표시용) */
   currentLabel: string
+  /** 스트리밍 중간 미리보기 — url은 화면이 꺼져 있으면 만들지 않는다 */
+  preview: { seq: number; url: string | null; step: number; total: number } | null
   /** 지금 배치가 끝나면 이어서 돌 배치들 */
   queue: QueuedBatch[]
   /** 씬별로 지금 배치·대기열이 가져간(아직 안 뽑은) 장수 — 씬 카드에 "진행 중"으로 표시 */
@@ -82,7 +86,13 @@ export interface QueuedBatch {
 }
 
 const MAX_RETRIES = 3
+/** 중간 미리보기를 그리는 최소 간격 — 매 단계 디코딩하면 발열·배터리 소모가 크다 */
+const PREVIEW_INTERVAL_MS = 250
 let controller: AbortController | null = null
+/** 이 세션에서 스트리밍 엔드포인트가 지원되지 않는다고 확인되면 zip 방식으로만 요청한다 */
+let streamUnsupported = false
+let previewSeq = 0
+let lastPreviewAt = 0
 /** 대기열에 들어간 배치의 실제 내용 (상태에는 표시용 요약만 둔다) */
 const pendingBatches: Batch[] = []
 
@@ -104,7 +114,7 @@ interface Batch {
   base: GenerationRequest
   snap: SettingsSnapshot
   fixedSeed: number | null
-  source: { image: string | null; mask: string | null; strength: number; noise: number }
+  source: { image: string | null; mask: string | null; strength: number; noise: number; originId: number | null }
   vibes: Vibe[]
   charRefs: CharRef[]
   fragments: FragmentSource
@@ -139,7 +149,8 @@ export function castPrompts(): CharacterPromptInput[] {
 
 export function buildRequest(seed: number): GenerationRequest {
   const p = usePrompt.getState()
-  const chars = castPrompts()
+  // 위치는 지금 모델이 받는 형태로 (V5 자유 위치 0.1%, V4·V4.5는 5×5 격자로 맞춤)
+  const chars = castPrompts().map((c) => (c.center ? { ...c, center: positionFor(c.center, p.params.model) } : c))
   return {
     ...p.params,
     prompt: mergePromptParts(p),
@@ -169,6 +180,30 @@ export const useGeneration = create<GenerationState>()((set, get) => {
     }
   }
 
+  /** 중간 단계 미리보기 — 너무 자주 그리지 않고, 화면이 꺼져 있으면 단계 번호만 갱신한다 */
+  const showPreview = (seq: number, step: number, total: number, frame?: Uint8Array): void => {
+    const now = performance.now()
+    const prev = get().preview
+    const visible = typeof document === 'undefined' || document.visibilityState === 'visible'
+    const draw = !!frame && visible && (now - lastPreviewAt >= PREVIEW_INTERVAL_MS || prev?.seq !== seq)
+    if (!draw) {
+      if (!prev || prev.seq !== seq || prev.step !== step) set({ preview: { seq, url: prev?.seq === seq ? prev.url : null, step, total } })
+      return
+    }
+    lastPreviewAt = now
+    const url = URL.createObjectURL(new Blob([frame as BlobPart]))
+    if (prev?.url) URL.revokeObjectURL(prev.url)
+    set({ preview: { seq, url, step, total } })
+  }
+
+  /** 미리보기를 거두고 그림 메모리를 돌려준다. seq를 주면 그 장의 미리보기일 때만 */
+  const clearPreview = (seq?: number): void => {
+    const prev = get().preview
+    if (!prev || (seq !== undefined && prev.seq !== seq)) return
+    if (prev.url) URL.revokeObjectURL(prev.url)
+    set({ preview: null })
+  }
+
   const syncQueue = (): void =>
     set({ queue: pendingBatches.map((b) => ({ id: b.id, label: b.label, count: b.plan.length })) })
 
@@ -180,7 +215,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
     let fixedSeed = prompt.seed.trim() === '' ? null : Number(prompt.seed)
     let base = buildRequest(0)
     const live = useSource.getState()
-    let source = { image: live.image, mask: live.mask, strength: live.strength, noise: live.noise }
+    let source = { image: live.image, mask: live.mask, strength: live.strength, noise: live.noise, originId: live.originId }
     let snap: SettingsSnapshot = {
       base: prompt.base,
       additional: prompt.additional,
@@ -216,7 +251,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         useCoords: chars.some((c) => c.center)
       }
       fixedSeed = null
-      source = { image: null, mask: null, strength: 0.7, noise: 0 }
+      source = { image: null, mask: null, strength: 0.7, noise: 0, originId: null }
     }
 
     const plan: PlanItem[] = []
@@ -238,7 +273,18 @@ export const useGeneration = create<GenerationState>()((set, get) => {
       for (const sc of picked) {
         const chars = sc.cast?.flatMap((id) => {
           const c = library.find((x) => x.id === id)
-          return c ? [{ prompt: c.prompt, negativePrompt: c.negative, enabled: true, name: c.name }] : []
+          const center = sc.castCenters?.[id]
+          return c
+            ? [
+                {
+                  prompt: c.prompt,
+                  negativePrompt: c.negative,
+                  enabled: true,
+                  name: c.name,
+                  ...(center ? { center: positionFor(center, base.model) } : {})
+                }
+              ]
+            : []
         })
         for (let i = 0; i < sc.reserve; i++) {
           plan.push({
@@ -366,8 +412,8 @@ export const useGeneration = create<GenerationState>()((set, get) => {
             prompt: wild(c.prompt),
             negativePrompt: wild(c.negativePrompt)
           })),
-          // 씬 출연은 위치를 따로 정하지 않는다 (AI 선택)
-          ...(item.chars ? { useCoords: false } : {})
+          // 씬 출연은 그 씬에 정한 위치를 쓴다 (정하지 않았으면 AI 선택)
+          ...(item.chars ? { useCoords: item.chars.some((c) => c.center) } : {})
         }
         const buildOpts: BuildOptions = {
           ...(vibes.length ? { vibes } : {}),
@@ -380,13 +426,42 @@ export const useGeneration = create<GenerationState>()((set, get) => {
 
         // 재시도 대상은 네트워크 요청뿐 — 응답을 받은 뒤의 저장 오류로 다시 요청(이중 과금)하지 않는다
         let result: Awaited<ReturnType<typeof generateImage>> | null = null
+        let resultSeq = 0
         for (let attempt = 0; ; attempt++) {
           set({ phase: attempt === 0 ? 'generating' : 'retrying' })
           try {
-            result = await generateImage(token, request, buildOpts, signal)
+            const useStream = useSettings.getState().streaming && !streamUnsupported
+            const seq = ++previewSeq
+            const totalSteps = effectiveSteps(request.model, request.steps)
+            result = useStream
+              ? await generateImageStream(
+                  token,
+                  request,
+                  buildOpts,
+                  (step, frame) => showPreview(seq, step + 1, totalSteps, frame),
+                  signal
+                ).catch((e) => {
+                  // 스트리밍 자체를 받지 않는 경우에만(헤더 단계 404·405·501 — 생성 시작 전) 이번부터 zip으로
+                  if (e instanceof NaiHttpError && [404, 405, 501].includes(e.status)) {
+                    streamUnsupported = true
+                    return generateImage(token, request, buildOpts, signal)
+                  }
+                  throw e
+                })
+              : await generateImage(token, request, buildOpts, signal)
+            resultSeq = seq
             break
           } catch (e) {
             if (isAbort(e)) throw e
+            if (e instanceof StreamInterruptedError) {
+              // 생성이 시작된 뒤 끊겼다 — 서버가 이미 그렸을(과금했을) 수 있어 같은 장을 다시 요청하지 않는다
+              set((s) => ({
+                failed: s.failed + 1,
+                error: `${e.message} — 이미 과금됐을 수 있어 이 장은 다시 요청하지 않았습니다`
+              }))
+              clearPreview(previewSeq)
+              break
+            }
             const status = e instanceof NaiHttpError ? e.status : 0
             // 429·5xx·네트워크 오류는 전이성 → 백오프 후 재시도. 그 외 4xx는 영구 오류
             const transient = status === 0 || status === 429 || status >= 500
@@ -438,8 +513,16 @@ export const useGeneration = create<GenerationState>()((set, get) => {
                 negative: String(payload.parameters.negative_prompt ?? ''),
                 mime: image.type,
                 // 씬에 따로 정한 출연이 있으면 그 캐릭터들로 기록해야 "설정 적용"이 같은 출연을 되살린다
-                snap: item.chars
-                  ? { ...snap, chars: item.chars.map((c) => ({ name: c.name ?? '', prompt: c.prompt, negative: c.negativePrompt })) }
+                  snap: item.chars
+                  ? {
+                      ...snap,
+                      chars: item.chars.map((c) => ({
+                        name: c.name ?? '',
+                        prompt: c.prompt,
+                        negative: c.negativePrompt,
+                        ...(c.center ? { center: c.center } : {})
+                      }))
+                    }
                   : snap,
                 sent: {
                   prompt: request.prompt,
@@ -453,11 +536,15 @@ export const useGeneration = create<GenerationState>()((set, get) => {
                       ...(c.center ? { center: c.center } : {})
                     }))
                 },
-                ...(item.scene ? { sceneId: item.scene.id, sceneName: item.scene.name } : {})
+                ...(item.scene ? { sceneId: item.scene.id, sceneName: item.scene.name } : {}),
+                ...(kind !== 't2i' && source.originId !== null ? { parentId: source.originId } : {})
               },
               image
             )
+            primeImageUrl(id, image)
             set((s) => ({ done: s.done + 1, latestId: id, error: null }))
+            // 완성본이 결과 화면에 올라간 뒤에 미리보기를 거둔다 (그 사이 다음 장 미리보기가 왔으면 그대로 둔다)
+            clearPreview(resultSeq)
             if (settings.autoSave) {
               const folder = settings.sceneFolders ? item.scene?.name || undefined : undefined
               const fileName = fileNameFor(id, seed, image.type)
@@ -496,6 +583,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         outcome = 'fatal'
       }
     } finally {
+      clearPreview()
       // 못 뽑은 씬 장(중지·실패)은 예약으로 돌려준다
       release(plan.filter((_, i) => !generated.has(i)))
       if (timing.count > 0 && loopStarted) {
@@ -563,6 +651,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
     startedAt: 0,
     lastBatch: null,
     currentLabel: '',
+    preview: null,
     queue: [],
     sceneClaims: {},
     setLatest: (id) => set({ latestId: id }),

@@ -214,6 +214,18 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
             {meta.sceneName ? ` · 씬 ${meta.sceneName}` : ''} · {new Date(meta.ts).toLocaleString('ko-KR')}
           </p>
           {meta.saved && <p className="mt-1 text-ok">저장 위치: Pictures/NAIP/{meta.saved}</p>}
+          {meta.parentId !== undefined && (
+            <p className="mt-1 text-dim">
+              {meta.kind === 'inpaint' ? '인페인트' : 'i2i'} 원본:{' '}
+              {items.some((m) => m.id === meta.parentId) ? (
+                <button type="button" className="text-accent underline" onClick={() => view(meta.parentId!)}>
+                  원본 그림 보기
+                </button>
+              ) : (
+                <span>히스토리에서 지워졌거나 목록 밖에 있습니다</span>
+              )}
+            </p>
+          )}
           <InfoBlock label="프롬프트" text={meta.prompt} what="프롬프트를" />
           {meta.negative && <InfoBlock label="네거티브" text={meta.negative} what="네거티브를" />}
           {(meta.sent?.chars ?? []).map((c, i) => (
@@ -252,7 +264,8 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
             label="i2i·인페인트"
             onClick={() =>
               void withBlob(async (blob) => {
-                await useSource.getState().setImage(blob)
+                // 인페인트 결과를 다시 고칠 때는 같은 크기면 쓰던 마스크를 그대로 둔다
+                await useSource.getState().setImage(blob, { originId: meta.id, keepMask: true })
                 view(null)
                 props.onUseSource()
               })

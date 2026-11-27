@@ -300,6 +300,12 @@ export function SettingsPane(): ReactNode {
             format={(v) => `${v.toFixed(1)}초`}
             onChange={(v) => s.setDelay(Math.min(v, s.delayMin), v)}
           />
+          <Row
+            label="생성 중 미리보기 (스트리밍)"
+            hint="그리는 과정을 단계별로 보여 줍니다. 중간 그림은 저장되지 않습니다. 생성 도중 멈춰도 이미 시작된 장은 비용·할당량이 청구될 수 있습니다"
+          >
+            <Toggle label="생성 중 미리보기" checked={s.streaming} onChange={(streaming) => s.patch({ streaming })} />
+          </Row>
           <SpeedReport />
           <Row label="생성 중 화면 켜 두기" hint="화면이 꺼지면 안드로이드가 생성을 멈출 수 있습니다">
             <Toggle label="생성 중 화면 켜 두기" checked={s.keepAwake} onChange={(keepAwake) => s.patch({ keepAwake })} />

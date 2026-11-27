@@ -1,6 +1,7 @@
 import JSZip from 'jszip'
 import { ENDPOINTS } from './endpoints'
 import { buildGenerateImagePayload, type BuildOptions } from './payload'
+import { readImageStream } from './stream'
 import { parseSubscriptionResponse, type NaiSubscriptionResponse } from './subscription'
 import type { GenerationRequest, SubscriptionInfo } from './types'
 
@@ -91,6 +92,55 @@ export async function generateImage(
     payload,
     // base64·영문 JSON이라 글자 수가 곧 바이트 수에 가깝다
     stats: { sentBytes: body.length, receivedBytes: buffer.byteLength, waitMs: t1 - t0, downloadMs: t2 - t1 }
+  }
+}
+
+/**
+ * 스트리밍 생성 — 단계별 미리보기를 받으며 최종 이미지를 기다린다 (NAIS3 generateImageStream).
+ * 응답 헤더가 온 뒤에는 서버가 생성을 시작한 것이므로, 그 뒤에 끊기면 StreamInterruptedError를 던지고
+ * 호출하는 쪽은 자동 재시도하지 않는다 (중복 과금 방지).
+ */
+export async function generateImageStream(
+  token: string,
+  request: GenerationRequest,
+  buildOpts: Omit<BuildOptions, 'stream'> = {},
+  onProgress?: (stepIx: number, image?: Uint8Array) => void,
+  signal?: AbortSignal
+): Promise<{
+  image: Blob
+  payload: ReturnType<typeof buildGenerateImagePayload>
+  stats: { sentBytes: number; receivedBytes: number; waitMs: number; downloadMs: number }
+}> {
+  const payload = buildGenerateImagePayload(request, { ...buildOpts, stream: 'msgpack' })
+  const body = JSON.stringify(payload)
+  const t0 = performance.now()
+  const res = await fetch(ENDPOINTS.generateImageStream, {
+    method: 'POST',
+    headers: { ...headers(token), Accept: 'application/x-msgpack' },
+    body,
+    signal
+  })
+  if (!res.ok) await fail('생성 실패', res)
+  if (!res.body) throw new Error('스트리밍 응답이 없습니다')
+  const t1 = performance.now()
+  let received = 0
+  // 받은 바이트 수를 세기 위해 한 번 거친다 (속도 보고용)
+  const counted = res.body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        received += chunk.length
+        controller.enqueue(chunk)
+      }
+    })
+  )
+  const bytes = await readImageStream(counted, { onProgress, signal })
+  const t2 = performance.now()
+  const type = (buildOpts.imageFormat ?? 'png') === 'webp' ? 'image/webp' : 'image/png'
+  return {
+    image: new Blob([bytes as BlobPart], { type }),
+    payload,
+    // 스트리밍은 그리는 동안 받으므로 "서버 시간"에 단계 수신까지 포함한다
+    stats: { sentBytes: body.length, receivedBytes: received, waitMs: t1 - t0 + (t2 - t1), downloadMs: 0 }
   }
 }
 

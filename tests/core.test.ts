@@ -236,3 +236,106 @@ describe('V5 quota', () => {
     expect(formatDuration(5 * 60000)).toBe('5분')
   })
 })
+
+import { encode as msgpackEncode } from '@msgpack/msgpack'
+import { readImageStream, StreamInterruptedError } from '../src/nai/stream'
+
+function frame(message: Record<string, unknown>): Uint8Array {
+  const body = msgpackEncode(message)
+  const out = new Uint8Array(4 + body.length)
+  new DataView(out.buffer).setUint32(0, body.length)
+  out.set(body, 4)
+  return out
+}
+
+/** 바이트를 일부러 어긋난 크기로 잘라 흘려보낸다 (실제 네트워크처럼) */
+function streamOf(bytes: Uint8Array, chunk: number, failAfter?: number): ReadableStream<Uint8Array> {
+  let pos = 0
+  return new ReadableStream({
+    pull(controller) {
+      if (failAfter !== undefined && pos >= failAfter) return controller.error(new TypeError('network'))
+      if (pos >= bytes.length) return controller.close()
+      controller.enqueue(bytes.slice(pos, pos + chunk))
+      pos += chunk
+    }
+  })
+}
+
+describe('stream', () => {
+  const frames = [
+    ...[0, 1, 2].map((i) => frame({ event_type: 'intermediate', step_ix: i, image: new Uint8Array([i, i, i]) })),
+    frame({ event_type: 'final', image: new Uint8Array([9, 8, 7, 6]) })
+  ]
+  const all = new Uint8Array(frames.reduce((n, f) => n + f.length, 0))
+  frames.reduce((at, f) => (all.set(f, at), at + f.length), 0)
+
+  it('parses frames split across arbitrary chunks', async () => {
+    for (const chunk of [1, 3, 7, 64, 4096]) {
+      const steps: number[] = []
+      const image = await readImageStream(streamOf(all, chunk), { onProgress: (s) => steps.push(s) })
+      expect(steps).toEqual([0, 1, 2])
+      expect(Array.from(image)).toEqual([9, 8, 7, 6])
+    }
+  })
+
+  it('reports an interrupted stream instead of retrying silently', async () => {
+    await expect(readImageStream(streamOf(all, 5, 20))).rejects.toBeInstanceOf(StreamInterruptedError)
+    const noFinal = all.slice(0, all.length - frames[3].length)
+    await expect(readImageStream(streamOf(noFinal, 16))).rejects.toBeInstanceOf(StreamInterruptedError)
+  })
+
+  it('surfaces server error messages', async () => {
+    const err = frame({ error: 'Anlas 부족' })
+    await expect(readImageStream(streamOf(err, 8))).rejects.toThrow('Anlas 부족')
+  })
+
+  it('stops on abort', async () => {
+    const ac = new AbortController()
+    const p = readImageStream(streamOf(all, 2), {
+      signal: ac.signal,
+      onProgress: () => ac.abort()
+    })
+    await expect(p).rejects.toMatchObject({ name: 'AbortError' })
+  })
+})
+
+import { dilate, erode, invert as invertMask } from '../src/lib/mask'
+
+describe('mask ops', () => {
+  const W = 9
+  const H = 7
+  const dot = new Uint8Array(W * H)
+  dot[3 * W + 4] = 1
+  const count = (m: Uint8Array): number => m.reduce((a, b) => a + b, 0)
+
+  it('grows a pixel into a square and shrinks it back', () => {
+    const grown = dilate(dot, W, H, 2)
+    expect(count(grown)).toBe(25)
+    expect(grown[1 * W + 2]).toBe(1)
+    expect(grown[0 * W + 4]).toBe(0)
+    expect(count(erode(grown, W, H, 2))).toBe(1)
+  })
+
+  it('clips at the edges and inverts', () => {
+    const corner = new Uint8Array(W * H)
+    corner[0] = 1
+    expect(count(dilate(corner, W, H, 3))).toBe(16)
+    expect(count(invertMask(corner))).toBe(W * H - 1)
+  })
+})
+
+import { mirrorPosition, positionFor, spreadPositions } from '../src/lib/position'
+
+describe('character positions', () => {
+  it('snaps to the 5x5 grid on V4.5 and keeps 0.1% precision on V5', () => {
+    expect(positionFor({ x: 0.37, y: 0.82 }, 'nai-diffusion-4-5-full')).toEqual({ x: 0.3, y: 0.9 })
+    expect(positionFor({ x: 0.3714, y: 0.8249 }, 'nai-diffusion-5-full')).toEqual({ x: 0.371, y: 0.825 })
+    expect(positionFor({ x: -1, y: 2 }, 'nai-diffusion-5-full')).toEqual({ x: 0, y: 1 })
+  })
+
+  it('spreads and mirrors per model', () => {
+    expect(spreadPositions(3, 'nai-diffusion-5-full').map((c) => c.x)).toEqual([0.25, 0.5, 0.75])
+    expect(spreadPositions(3, 'nai-diffusion-4-5-full').map((c) => c.x)).toEqual([0.3, 0.5, 0.7])
+    expect(mirrorPosition({ x: 0.2, y: 0.4 }, 'nai-diffusion-5-full')).toEqual({ x: 0.8, y: 0.4 })
+  })
+})

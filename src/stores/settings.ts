@@ -39,6 +39,8 @@ interface SettingsState {
   githubToken: string
   /** 클립보드 복사·공유로 내보낼 때 NAI 메타데이터를 지울지 */
   shareStripMeta: boolean
+  /** 생성 중 단계별 미리보기 (generate-image-stream) */
+  streaming: boolean
   subscription: SubscriptionInfo | null
   /** subscription을 서버에서 읽은 시각 (V5 할당량이 언제 다 차는지 계산하는 기준) */
   subscriptionAt: number
@@ -47,7 +49,7 @@ interface SettingsState {
   setDelay: (min: number, max: number) => void
   patch: (
     p: Partial<
-      Pick<SettingsState, 'autoSave' | 'keepAwake' | 'background' | 'vibrate' | 'historyLimit' | 'sceneFolders' | 'tagSource' | 'saveFolders' | 'saveFolder' | 'stripMeta' | 'nameMode' | 'nameCounters' | 'updateRepo' | 'githubToken' | 'shareStripMeta'>
+      Pick<SettingsState, 'autoSave' | 'keepAwake' | 'background' | 'vibrate' | 'historyLimit' | 'sceneFolders' | 'tagSource' | 'saveFolders' | 'saveFolder' | 'stripMeta' | 'nameMode' | 'nameCounters' | 'updateRepo' | 'githubToken' | 'shareStripMeta' | 'streaming'>
     >
   ) => void
   refreshSubscription: () => Promise<void>
@@ -74,6 +76,7 @@ export const useSettings = create<SettingsState>()(
       updateRepo: 'harp1455/NAIP',
       githubToken: '',
       shareStripMeta: false,
+      streaming: true,
       subscription: null,
       subscriptionAt: 0,
       subscriptionError: null,
@@ -118,7 +121,8 @@ export const useSettings = create<SettingsState>()(
         nameCounters: s.nameCounters,
         updateRepo: s.updateRepo,
         githubToken: s.githubToken,
-        shareStripMeta: s.shareStripMeta
+        shareStripMeta: s.shareStripMeta,
+        streaming: s.streaming
       })
     }
   )
