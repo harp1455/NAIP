@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 import { shareImage as shareFile } from '../lib/native'
-import { useCharacters } from '../stores/characters'
+import { exportCharacters, importCharacters } from '../stores/characters'
 import { useFragments } from '../stores/fragments'
 import { useScenes } from '../stores/scenes'
 import { useTagUsage } from '../stores/tagUsage'
@@ -165,7 +165,6 @@ function UpdateGroup(): ReactNode {
 
 function exportBackup(): void {
   const p = usePrompt.getState()
-  const c = useCharacters.getState()
   const f = useFragments.getState()
   const sc = useScenes.getState()
   const data = {
@@ -181,7 +180,8 @@ function exportBackup(): void {
       params: p.params,
       presets: p.presets
     },
-    characters: { folders: c.folders, characters: c.characters, cast: c.cast }
+    // 캐릭터는 형식 버전을 함께 남긴다 (불러올 때 예전 형식(prompt 한 칸·cast)도 받는다)
+    characters: exportCharacters()
   }
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
   const stamp = new Date().toISOString().slice(0, 10)
@@ -209,7 +209,7 @@ function importBackup(): void {
         }
         if (!window.confirm('현재 프롬프트·프리셋·캐릭터·조각·씬을 백업 내용으로 덮어쓸까요?')) return
         usePrompt.setState(data.prompt)
-        useCharacters.setState(data.characters)
+        importCharacters(data.characters)
         if (data.fragments) useFragments.setState(data.fragments)
         if (data.scenes) useScenes.setState(data.scenes)
         window.alert('백업을 불러왔습니다')

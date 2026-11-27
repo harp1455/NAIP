@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Dices,
   Download,
   ImageUp,
   ScanFace,
@@ -228,15 +229,27 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
           )}
           <InfoBlock label="프롬프트" text={meta.prompt} what="프롬프트를" />
           {meta.negative && <InfoBlock label="네거티브" text={meta.negative} what="네거티브를" />}
-          {(meta.sent?.chars ?? []).map((c, i) => (
-            <InfoBlock
-              key={i}
-              label={`캐릭터 ${i + 1}${c.name ? ` · ${c.name}` : ''}`}
-              text={c.prompt + (c.negative ? `\n(네거티브) ${c.negative}` : '')}
-              copyText={c.prompt}
-              what="캐릭터 프롬프트를"
-            />
-          ))}
+          {(meta.sent?.chars ?? []).map((c, i) => {
+            // 뽑힌 변형 (복장: 교복 …) — 슬롯 뽑기로 만든 이미지에만 있다
+            const vars = meta.sent?.cast?.chars[i]?.variations ?? []
+            return (
+              <InfoBlock
+                key={i}
+                label={`캐릭터 ${i + 1}${c.name ? ` · ${c.name}` : ''}${vars.length ? ` · ${vars.map((v) => `${v.group} ${v.label}`).join(', ')}` : ''}`}
+                text={c.prompt + (c.negative ? `\n(네거티브) ${c.negative}` : '')}
+                copyText={c.prompt}
+                what="캐릭터 프롬프트를"
+              />
+            )
+          })}
+          {meta.sent?.cast?.dropped?.length ? (
+            <p className="mt-2 text-dim">모델 한도로 뺀 캐릭터: {meta.sent.cast.dropped.join(', ')}</p>
+          ) : null}
+          {meta.sent?.cast?.countFix && (
+            <p className="mt-2 text-dim">
+              인원 태그 자동 고침: {meta.sent.cast.countFix.from} → {meta.sent.cast.countFix.to}
+            </p>
+          )}
           <div className="mt-3 flex flex-wrap gap-1.5">
             <CopyChip onClick={() => void copyTextWithToast(String(meta.seed), '시드를')}>시드 복사</CopyChip>
             <CopyChip onClick={() => void copyTextWithToast(describeImage(meta), '생성 정보를')}>
@@ -315,6 +328,18 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
               }}
             >
               <RefreshCw size={19} />
+            </Action>
+          )}
+          {meta.kind === 't2i' && meta.snap?.cast && (
+            <Action
+              label="재추첨 생성"
+              onClick={() => {
+                if (useGeneration.getState().running) return setNote('생성이 끝난 뒤에 다시 눌러 주세요')
+                void useGeneration.getState().start({ regenerate: meta, redraw: true })
+                setNote('같은 슬롯·변형 설정으로 다시 뽑아 한 장 더 생성합니다')
+              }}
+            >
+              <Dices size={19} />
             </Action>
           )}
           <Action

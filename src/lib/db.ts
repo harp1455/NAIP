@@ -1,3 +1,5 @@
+import type { CastSent, CastSnapshot } from '../nai/cast'
+
 /** 히스토리 저장소 (IndexedDB). meta(썸네일 포함)와 원본 blob을 분리해 목록 로딩을 가볍게 한다. */
 /** 생성 당시의 설정 원본(조각 치환 전) — "설정 적용"으로 그대로 되돌리기 위해 보관 */
 export interface SettingsSnapshot {
@@ -7,6 +9,8 @@ export interface SettingsSnapshot {
   negative: string
   params: Record<string, unknown>
   chars: { name: string; prompt: string; negative: string; center?: { x: number; y: number } }[]
+  /** 출연 슬롯·변형 뽑기 원본(슬롯 설정 + 캐릭터 원문, 조각 치환 전) — "재추첨 생성"이 다시 뽑는 데 쓴다 */
+  cast?: CastSnapshot
 }
 
 export type ImageKind = 't2i' | 'i2i' | 'inpaint' | 'director' | 'upscale'
@@ -34,6 +38,8 @@ export interface HistoryMeta {
     prompt: string
     negative: string
     chars: { name: string; prompt: string; negative: string; center?: { x: number; y: number } }[]
+    /** 슬롯·변형 뽑기 결과 (chars와 같은 순서) — 고른 변형 이름, 한도로 뺀 캐릭터, 고친 인원 태그 */
+    cast?: CastSent
   }
   /** 갤러리에 저장했으면 Pictures/NAIP 아래의 경로 (마지막으로 저장한 것) */
   saved?: string

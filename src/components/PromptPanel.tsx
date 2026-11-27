@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import { ChevronDown, FileSearch, Image as ImageIcon, Layers, Puzzle, ScanFace, Users, Wand2 } from 'lucide-react'
 import { modelCapabilities, promptTokenLimit, isMediumEffortModel, MEDIUM_EFFORT_FIXED } from '../nai/models'
 import { mergeQualityTags, mergeUcPresetForModel, removeComments } from '../nai/presets'
@@ -8,6 +8,7 @@ import { readImageSettings } from '../lib/metadata'
 import { useTokenCount } from '../lib/tokens'
 import { referencesForModel } from '../nai/reference'
 import { cx } from '../lib/util'
+import { checkPeopleCount, createDrawState, resolveCast } from '../nai/cast'
 import { useCharacters } from '../stores/characters'
 import { useDirector } from '../stores/director'
 import { useFragments } from '../stores/fragments'
@@ -64,7 +65,7 @@ function ToolButton(props: {
 
 export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode {
   const p = usePrompt()
-  const { cast, characters } = useCharacters()
+  const { slots, characters, options } = useCharacters()
   const refs = useRefs()
   const source = useSource()
   const fragmentCount = useFragments((f) => f.fragments.length)
@@ -80,10 +81,14 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
   const limit = promptTokenLimit(p.params.model)
   const medium = isMediumEffortModel(p.params.model)
 
-  const activeChars = cast
-    .filter((e) => e.enabled)
-    .map((e) => characters.find((c) => c.id === e.charId))
-    .filter((c) => c !== undefined)
+  // 토큰 수·인원 확인용 예시 — 무작위 슬롯·변형은 첫 후보로 고정해 화면이 흔들리지 않게 한다
+  const castPreview = useMemo(
+    () => resolveCast({ slots, options, characters }, createDrawState(), () => 0, caps.maxCharacters),
+    [slots, options, characters, caps.maxCharacters]
+  )
+  const activeChars = castPreview.chars
+  const activeSlots = slots.filter((x) => x.enabled).length
+  const countCheck = checkPeopleCount(mergePromptParts(p), activeChars.length)
   const merged = mergeQualityTags(removeComments(mergePromptParts(p)), p.params.qualityToggle)
   const mergedUc = mergeUcPresetForModel(
     medium ? '' : removeComments(p.negative),
@@ -159,7 +164,7 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
         <ToolButton
           icon={<Users size={16} />}
           label="캐릭터"
-          badge={activeChars.length}
+          badge={activeSlots}
           onClick={() => props.open('characters')}
         />
         <ToolButton
@@ -183,6 +188,19 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
           onClick={() => props.open('refs')}
         />
       </div>
+      {countCheck?.conflict && (
+        <button
+          type="button"
+          onClick={() => props.open('characters')}
+          className={cx(
+            'rounded-lg border px-3 py-1.5 text-left text-xs',
+            options.autoCountTags ? 'border-line text-dim' : 'border-danger/50 text-danger'
+          )}
+        >
+          인원 태그({countCheck.tags.join(', ')})와 출연 캐릭터 {countCheck.actual}명이 맞지 않습니다
+          {options.autoCountTags ? ' — 보낼 때 자동으로 고칩니다' : ' — 캐릭터 화면에서 자동 고침을 켤 수 있습니다'}
+        </button>
+      )}
 
       <div className="flex gap-1">
         <ToolButton
