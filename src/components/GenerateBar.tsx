@@ -1,9 +1,10 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { SlidersHorizontal, Square } from 'lucide-react'
+import { cx } from '../lib/util'
+import { ListPlus, SlidersHorizontal, Square, X } from 'lucide-react'
 import { useGeneration } from '../stores/generation'
 import { usePrompt } from '../stores/prompt'
 import { useSettings } from '../stores/settings'
-import { IconButton, Stepper } from './ui'
+import { Button, Empty, IconButton, Sheet, Stepper } from './ui'
 
 const PHASE_LABEL = {
   idle: '',
@@ -35,6 +36,59 @@ function useTimeLeft(): string | null {
   return formatLeft((elapsed / settled) * total - elapsed)
 }
 
+/** 지금 도는 배치와 대기 중인 배치 목록 */
+function QueueSheet(props: { onClose: () => void }): ReactNode {
+  const g = useGeneration()
+  return (
+    <Sheet
+      title="생성 대기열"
+      onClose={props.onClose}
+      footer={
+        g.queue.length > 0 && (
+          <Button
+            variant="danger"
+            className="flex-1"
+            onClick={() => {
+              for (const b of g.queue) g.removeQueued(b.id)
+            }}
+          >
+            대기 중인 배치 모두 취소
+          </Button>
+        )
+      }
+    >
+      {g.running && (
+        <div className="mb-3 rounded-lg border border-accent bg-accent/10 px-3 py-2.5">
+          <div className="text-xs text-accent">지금 생성 중</div>
+          <div className="truncate text-sm">{g.currentLabel}</div>
+          <div className="text-xs text-dim">
+            {g.done}/{g.total}장 완료
+          </div>
+        </div>
+      )}
+      {g.queue.length === 0 ? (
+        <Empty>대기 중인 배치가 없습니다. 생성 중에 오른쪽 + 단추를 누르면 그 순간의 설정이 여기에 쌓입니다.</Empty>
+      ) : (
+        <ol className="flex flex-col gap-1.5">
+          {g.queue.map((b, i) => (
+            <li key={b.id} className="flex items-center gap-2 rounded-lg border border-line bg-field py-1 pl-3 pr-1">
+              <span className="w-5 shrink-0 font-mono text-xs text-dim">{i + 1}</span>
+              <span className="min-w-0 flex-1 truncate text-sm">{b.label}</span>
+              <IconButton label={`${b.label} 취소`} onClick={() => g.removeQueued(b.id)}>
+                <X size={17} />
+              </IconButton>
+            </li>
+          ))}
+        </ol>
+      )}
+      <p className={cx('mt-3 text-xs text-dim')}>
+        대기열은 누른 순간의 프롬프트·설정·캐릭터·레퍼런스를 그대로 기억합니다. 씬은 그 순간의 예약 장수를 가져가고,
+        취소하면 예약으로 돌려줍니다.
+      </p>
+    </Sheet>
+  )
+}
+
 export function GenerateBar(props: {
   openParams: () => void
   /** 씬 탭에서는 장수 대신 예약분을 생성한다 */
@@ -49,6 +103,7 @@ export function GenerateBar(props: {
   const pct = g.total ? Math.round((settled / g.total) * 100) : 0
   const scene = props.scene
   const batch = scene ? scene.count : count
+  const [queueOpen, setQueueOpen] = useState(false)
 
   return (
     <div className="border-t border-line bg-panel px-3 pb-2 pt-2">
@@ -65,9 +120,13 @@ export function GenerateBar(props: {
           <Stepper label="장수" value={count} min={1} max={999} onChange={(v) => setPrompt({ count: v })} />
         )}
         {g.running ? (
+          <>
           <button
             type="button"
-            onClick={g.stop}
+            onClick={() => {
+              if (g.queue.length && !window.confirm(`지금 배치를 멈추고 대기 중인 ${g.queue.length}개도 취소할까요?`)) return
+              g.stop()
+            }}
             className="relative flex h-11 min-w-0 flex-1 items-center justify-center gap-2 overflow-hidden rounded-lg bg-raised text-sm font-semibold"
           >
             <span
@@ -79,6 +138,18 @@ export function GenerateBar(props: {
               중지 · {PHASE_LABEL[g.phase]} {Math.min(settled + 1, g.total)}/{g.total}
             </span>
           </button>
+          {/* 생성 중에 지금 화면의 설정으로 다음 배치를 예약한다 */}
+          <button
+            type="button"
+            aria-label={scene ? '예약한 씬을 대기열에 추가' : '지금 설정을 대기열에 추가'}
+            title="대기열에 추가"
+            disabled={!!scene && scene.count === 0}
+            onClick={() => void g.start(scene ? { scenes: scene.ids } : undefined)}
+            className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-fg active:brightness-90 disabled:opacity-40"
+          >
+            <ListPlus size={19} />
+          </button>
+          </>
         ) : scene ? (
           <button
             type="button"
@@ -100,6 +171,17 @@ export function GenerateBar(props: {
           </button>
         )}
       </div>
+      {g.queue.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setQueueOpen(true)}
+          className="mt-1.5 flex h-8 w-full items-center justify-center gap-1.5 rounded-md bg-accent/10 text-xs text-accent"
+        >
+          <ListPlus size={14} />
+          대기 중 {g.queue.length}개 · {g.queue.reduce((n, b) => n + b.count, 0)}장 — 눌러서 보기
+        </button>
+      )}
+      {queueOpen && <QueueSheet onClose={() => setQueueOpen(false)} />}
       <p className="mt-1.5 text-center text-[11px] text-dim">
         {g.running && left
           ? `남은 시간 약 ${left} · `

@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { ArrowDownToLine, Clapperboard, Coins, History, Image as ImageIcon, PenLine, Settings, X } from 'lucide-react'
 import { App as CapApp } from '@capacitor/app'
 import { closeTop } from './lib/back'
-import { isNative } from './lib/native'
+import { isNative, onStopRequested } from './lib/native'
 import { cx } from './lib/util'
 import { estimateCurrent, useGeneration } from './stores/generation'
 import { useHistory } from './stores/history'
@@ -133,6 +133,8 @@ export default function App(): ReactNode {
     void useSettings.getState().refreshSubscription()
     // 앱을 열 때마다 조용히 새 빌드를 확인한다
     void useUpdate.getState().check(true)
+    // 진행 알림의 "중지" — 지금 배치와 대기열을 모두 멈춘다
+    return onStopRequested(() => useGeneration.getState().stop())
   }, [])
 
   // 생성을 시작하면 좁은 화면에서는 결과 탭으로 넘어가 진행을 보여 준다

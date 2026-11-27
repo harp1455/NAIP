@@ -6,6 +6,7 @@ import { highlightRanges } from '../nai/weights'
 import { formatCount, searchTags, type TagCategory, type TagHit, type TagSourceSetting } from '../lib/tags'
 import { cx } from '../lib/util'
 import { useSettings } from '../stores/settings'
+import { boostUsedTags, useTagUsage } from '../stores/tagUsage'
 
 const SOURCE_CYCLE: TagSourceSetting[] = ['both', 'danbooru', 'e621']
 const SOURCE_LABEL: Record<TagSourceSetting, string> = {
@@ -108,6 +109,11 @@ function SuggestionBar(props: {
             onClick={() => props.onPick(hit)}
             className="flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-line bg-field px-3 text-[13px]"
           >
+            {hit.used !== undefined && (
+              <span className="text-[10px] text-accent" title={`자주 쓴 태그 — ${hit.used}번 골랐습니다`}>
+                ★
+              </span>
+            )}
             <span className={cx('font-mono', CATEGORY_CLASS[hit.category])}>{hit.tag}</span>
             {hit.keyword && <span className="text-xs text-dim">{hit.keyword}</span>}
             {(['danbooru', 'e621'] as const).map(
@@ -182,7 +188,9 @@ export function PromptEditor(props: {
     if (!query.trim()) return setHits(null)
     let live = true
     const t = setTimeout(() => {
-      void searchTags(query, source, { artistOnly }).then((r) => live && setHits(r))
+      void searchTags(query, source, { artistOnly }).then(
+        (r) => live && setHits(boostUsedTags(r, query, source, { artistOnly }))
+      )
     }, 120)
     return () => {
       live = false
@@ -200,6 +208,7 @@ export function PromptEditor(props: {
     const tail = /^\s*(,|::|\}|\]|\|)/.test(rest) ? '' : ', '
     pendingCaret.current = token.start + text.length + tail.length
     props.onChange(props.value.slice(0, token.start) + text + tail + rest)
+    useTagUsage.getState().record(hit)
     setHits(null)
     el.focus()
   }

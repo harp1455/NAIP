@@ -17,6 +17,7 @@ interface NaipNativePlugin extends Plugin {
   delay(opts: { ms: number }): Promise<void>
   copyImage(opts: { base64: string; mimeType: string }): Promise<void>
   haptic(): Promise<void>
+  copyText(opts: { text: string; label?: string }): Promise<void>
   startJob(opts: { text: string }): Promise<void>
   updateJob(opts: { text: string; done: number; total: number }): Promise<void>
   stopJob(opts: { text?: string; vibrate: boolean }): Promise<void>
@@ -213,4 +214,17 @@ export async function shareImages(files: { blob: Blob; fileName: string }[]): Pr
   const list = files.map((f) => new File([f.blob], f.fileName, { type: f.blob.type }))
   if (navigator.canShare?.({ files: list })) await navigator.share({ files: list })
   else throw new Error('이 브라우저는 여러 장 공유를 지원하지 않습니다')
+}
+
+/** 진행 알림의 "중지" 단추를 눌렀을 때 */
+export function onStopRequested(handler: () => void): () => void {
+  if (!isNative) return () => {}
+  const handle = NaipNative.addListener('stopRequested', handler)
+  return () => void handle.then((h) => h.remove())
+}
+
+/** 글자를 클립보드에 복사 */
+export async function copyText(text: string, label = 'NAIP'): Promise<void> {
+  if (isNative) await NaipNative.copyText({ text, label })
+  else await navigator.clipboard.writeText(text)
 }

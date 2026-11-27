@@ -14,6 +14,8 @@ export interface TagHit {
   tier: number
   /** 한국어 키워드로 찾았을 때 그 키워드 */
   keyword?: string
+  /** 내가 자동완성에서 고른 횟수 (자주 쓴 태그로 끌어올린 경우) */
+  used?: number
 }
 
 let worker: Worker | null = null

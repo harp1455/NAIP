@@ -4,6 +4,7 @@ import { shareImage as shareFile } from '../lib/native'
 import { useCharacters } from '../stores/characters'
 import { useFragments } from '../stores/fragments'
 import { useScenes } from '../stores/scenes'
+import { useTagUsage } from '../stores/tagUsage'
 import { useHistory } from '../stores/history'
 import { usePrompt } from '../stores/prompt'
 import { anlasOf, DELAY_MAX, DELAY_MIN, useSettings } from '../stores/settings'
@@ -25,6 +26,23 @@ function Group(props: { title: string; children: ReactNode }): ReactNode {
       <h3 className="py-1 text-xs font-semibold text-dim">{props.title}</h3>
       {props.children}
     </section>
+  )
+}
+
+/** 자동완성에서 고른 태그 기록 — 다음 추천에서 앞에 나온다 */
+function TagUsageRow(): ReactNode {
+  const { entries, clear } = useTagUsage()
+  const n = Object.keys(entries).length
+  return (
+    <Row label="자주 쓴 태그 우선" hint={`자동완성에서 고른 태그 ${n}개를 기억해 추천 맨 앞(★)에 보여 줍니다`}>
+      <Button
+        variant="ghost"
+        disabled={n === 0}
+        onClick={() => window.confirm('기억한 태그 기록을 모두 지울까요?') && clear()}
+      >
+        기록 지우기
+      </Button>
+    </Row>
   )
 }
 
@@ -309,6 +327,7 @@ export function SettingsPane(): ReactNode {
               onChange={(tagSource) => s.patch({ tagSource })}
             />
           </Row>
+          <TagUsageRow />
           <p className="pb-2 text-xs text-dim">
             가중치 색상: <span className="rounded px-1" style={{ background: 'color-mix(in srgb, var(--mark-up) 40%, transparent)' }}>강조 1.2::…::, {'{…}'}</span>{' '}
             <span className="rounded px-1" style={{ background: 'color-mix(in srgb, var(--mark-down) 40%, transparent)' }}>약화 0.7::…::, […]</span>{' '}

@@ -4,7 +4,7 @@ import { RESOLUTIONS } from '../nai/constants'
 import { modelCapabilities } from '../nai/models'
 import { cx } from '../lib/util'
 import { useCharacters } from '../stores/characters'
-import { estimateScenes } from '../stores/generation'
+import { estimateScenes, useGeneration } from '../stores/generation'
 import { useHistory } from '../stores/history'
 import { usePrompt } from '../stores/prompt'
 import { useRefs } from '../stores/refs'
@@ -170,6 +170,7 @@ export function ScenePane(props: { bar: (sceneIds: number[], count: number, cost
   const [filter, setFilter] = useState<'all' | null | number>('all')
   const [editing, setEditing] = useState<Partial<Scene> | null>(null)
   const allCharacters = useCharacters((c) => c.characters)
+  const claims = useGeneration((g) => g.sceneClaims)
 
   const shown = s.scenes.filter((x) => filter === 'all' || x.folderId === filter)
   const ids = shown.map((x) => x.id)
@@ -270,6 +271,9 @@ export function ScenePane(props: { bar: (sceneIds: number[], count: number, cost
                   <span className="mt-0.5 line-clamp-2 min-h-8 break-all font-mono text-xs text-dim">
                     {sc.prompt || '(빈 프롬프트)'}
                   </span>
+                  {!!claims[sc.id] && (
+                    <span className="mt-1 block text-[11px] text-accent">생성 중·대기 {claims[sc.id]}장</span>
+                  )}
                   {sc.cast && (
                     <span className="mt-1 block truncate text-[11px] text-accent">
                       출연:{' '}

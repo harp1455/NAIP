@@ -11,7 +11,7 @@ export function Toast(): ReactNode {
   }, [text, seq, error, hide])
   if (!text) return null
   return (
-    <div className="safe-bottom pointer-events-none fixed inset-x-0 bottom-20 z-[70] flex justify-center px-4">
+    <div className="safe-top pointer-events-none fixed inset-x-0 top-14 z-[70] flex justify-center px-4">
       <div
         key={seq}
         role={error ? 'alert' : 'status'}

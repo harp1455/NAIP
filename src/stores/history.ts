@@ -4,6 +4,10 @@ import type { HistoryFilter, HistoryMeta } from '../lib/db'
 import { useSettings } from './settings'
 
 const PAGE = 60
+/** 검색 결과 id 전부 (최신순) — 화면에는 PAGE장씩 꺼내 보여 준다 */
+let searchMatches: number[] = []
+/** 가장 최근에 요청한 검색어 — 늦게 끝난 이전 검색 결과를 버리는 데 쓴다 */
+let latestSearch = ''
 
 interface HistoryState {
   items: HistoryMeta[]
@@ -14,6 +18,8 @@ interface HistoryState {
   viewing: number | null
   /** null = 전체. 즐겨찾기/씬 필터가 걸리면 items는 필터 결과 전체 */
   filter: HistoryFilter
+  /** 검색 중이면 일치한 장수 */
+  matchCount: number | null
   setFilter: (filter: HistoryFilter) => Promise<void>
   toggleFav: (id: number) => Promise<void>
   /** 갤러리에 저장했음을 기록 (path는 Pictures/NAIP 아래 경로) */
@@ -33,11 +39,24 @@ export const useHistory = create<HistoryState>()((set, get) => ({
   hasMore: false,
   viewing: null,
   filter: null,
+  matchCount: null,
   setFilter: async (filter) => {
+    if (!filter || !('search' in filter)) latestSearch = ''
     if (!filter) {
-      set({ filter: null })
+      set({ filter: null, matchCount: null })
       return get().init()
     }
+    if ('search' in filter) {
+      latestSearch = filter.search
+      const ids = await db.searchIds(filter.search)
+      const items = await db.getMetas(ids.slice(0, PAGE))
+      // 입력이 바뀌는 사이에 늦게 도착한 결과는 버린다
+      if (latestSearch !== filter.search) return
+      searchMatches = ids
+      set({ filter, items, hasMore: ids.length > PAGE, matchCount: ids.length })
+      return
+    }
+    set({ matchCount: null })
     if ('unsaved' in filter) {
       const items = await db.listUnsaved(PAGE)
       set({ filter, items, hasMore: items.length === PAGE })
@@ -81,6 +100,11 @@ export const useHistory = create<HistoryState>()((set, get) => ({
   },
   loadMore: async () => {
     const { items, total, filter } = get()
+    if (filter && 'search' in filter) {
+      const more = await db.getMetas(searchMatches.slice(items.length, items.length + PAGE))
+      set({ items: [...items, ...more], hasMore: items.length + PAGE < searchMatches.length })
+      return
+    }
     if (filter && 'unsaved' in filter) {
       const oldest = items[items.length - 1]
       if (!oldest) return
@@ -99,7 +123,11 @@ export const useHistory = create<HistoryState>()((set, get) => ({
     meta = { ...meta, unsaved: 1 }
     await db.addImage(meta, blob)
     const f = get().filter
-    const matches = !f || 'unsaved' in f || ('sceneId' in f && f.sceneId === meta.sceneId)
+    const matches =
+      !f ||
+      'unsaved' in f ||
+      ('sceneId' in f && f.sceneId === meta.sceneId) ||
+      ('search' in f && db.matchesSearch(db.searchText(meta), db.searchTerms(f.search)))
     set((s) => ({ items: matches ? [meta, ...s.items] : s.items, total: s.total + 1 }))
     // 보관 한도를 넘으면 즐겨찾기를 뺀 오래된 것부터 정리
     const limit = useSettings.getState().historyLimit

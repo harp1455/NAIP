@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Check, CheckSquare, Copy, Download, Share2, Star, Trash2, X } from 'lucide-react'
+import { Check, CheckSquare, Copy, Download, Search, Share2, Star, Trash2, X } from 'lucide-react'
 import type { HistoryMeta } from '../lib/db'
 import { useLongPress } from '../lib/longpress'
 import { copyImage, shareHistoryImages } from '../lib/share'
@@ -16,7 +16,15 @@ export function PreviewPane(): ReactNode {
   const { latestId, setLatest, running, phase } = useGeneration()
   const meta = items.find((m) => m.id === latestId) ?? items[0]
   const [url, setUrl] = useState<string | null>(null)
-  const press = useLongPress(() => meta && void copyImage(meta, { haptic: true }))
+  const index = meta ? items.findIndex((m) => m.id === meta.id) : -1
+  // 좌우로 밀어 이전·다음 결과 (왼쪽으로 밀면 더 이전에 만든 그림)
+  const press = useLongPress(
+    () => meta && void copyImage(meta, { haptic: true }),
+    (dir) => {
+      const next = items[index + dir]
+      if (next) setLatest(next.id)
+    }
+  )
 
   useEffect(() => {
     if (!meta) return setUrl(null)
@@ -41,7 +49,7 @@ export function PreviewPane(): ReactNode {
         <button
           type="button"
           aria-label="이미지 크게 보기 (꾹 누르면 복사)"
-          className="no-callout absolute inset-0"
+          className="no-callout absolute inset-0 touch-pan-y"
           onClick={() => view(meta.id)}
           {...press}
         >
@@ -52,6 +60,11 @@ export function PreviewPane(): ReactNode {
             className={cx('absolute inset-0 h-full w-full object-contain', !url && 'blur-sm')}
           />
         </button>
+        {items.length > 1 && (
+          <span className="pointer-events-none absolute bottom-2 left-2 rounded-full bg-black/60 px-2 py-0.5 font-mono text-[11px] text-white">
+            {index + 1}/{items.length}
+          </span>
+        )}
         {running && phase === 'generating' && (
           <span className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/70 px-2.5 py-1 text-[11px] text-accent">
             다음 장 생성 중…
@@ -155,7 +168,22 @@ function HistoryThumb(props: {
 }
 
 export function HistoryPane(): ReactNode {
-  const { items, total, hasMore, loadMore, view, remove, filter, setFilter } = useHistory()
+  const { items, total, hasMore, loadMore, view, remove, filter, setFilter, matchCount } = useHistory()
+  const searching = !!filter && 'search' in filter
+  const [query, setQuery] = useState(searching ? (filter as { search: string }).search : '')
+  const [searchOpen, setSearchOpen] = useState(searching)
+  // 입력을 잠깐 멈추면 검색한다
+  useEffect(() => {
+    if (!searchOpen) return
+    const t = setTimeout(() => {
+      const q = query.trim()
+      const current = useHistory.getState().filter
+      if (!q) {
+        if (current && 'search' in current) void setFilter(null)
+      } else if (!(current && 'search' in current && current.search === q)) void setFilter({ search: q })
+    }, 300)
+    return () => clearTimeout(t)
+  }, [query, searchOpen, setFilter])
   const scenes = useScenes((x) => x.scenes)
   const sceneName =
     filter && 'sceneId' in filter
@@ -228,14 +256,17 @@ export function HistoryPane(): ReactNode {
             <span className="shrink-0 text-sm font-semibold">
               히스토리{' '}
               <span className="ml-1 font-mono text-xs font-normal text-dim">
-                {filter ? `${items.length}${hasMore ? '+' : ''}/${total}` : total}
+                {matchCount !== null ? `${matchCount}/${total}` : filter ? `${items.length}${hasMore ? '+' : ''}/${total}` : total}
               </span>
             </span>
             <div className="scroll-thin flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto px-2">
               <button
                 type="button"
                 aria-pressed={!!filter && 'fav' in filter}
-                onClick={() => void setFilter(filter && 'fav' in filter ? null : { fav: true })}
+                onClick={() => {
+                  setQuery('')
+                  void setFilter(filter && 'fav' in filter ? null : { fav: true })
+                }}
                 className={cx(
                   'flex h-8 shrink-0 items-center gap-1 rounded-full border px-2.5 text-xs',
                   filter && 'fav' in filter ? 'border-accent bg-accent/15 text-accent' : 'border-line text-dim'
@@ -247,7 +278,10 @@ export function HistoryPane(): ReactNode {
               <button
                 type="button"
                 aria-pressed={!!filter && 'unsaved' in filter}
-                onClick={() => void setFilter(filter && 'unsaved' in filter ? null : { unsaved: true })}
+                onClick={() => {
+                  setQuery('')
+                  void setFilter(filter && 'unsaved' in filter ? null : { unsaved: true })
+                }}
                 className={cx(
                   'flex h-8 shrink-0 items-center gap-1 rounded-full border px-2.5 text-xs',
                   filter && 'unsaved' in filter ? 'border-accent bg-accent/15 text-accent' : 'border-line text-dim'
@@ -267,15 +301,49 @@ export function HistoryPane(): ReactNode {
                 </button>
               )}
             </div>
+            <IconButton
+              label="히스토리 검색"
+              active={searchOpen}
+              onClick={() => {
+                if (searchOpen) {
+                  setSearchOpen(false)
+                  setQuery('')
+                  if (searching) void setFilter(null)
+                } else setSearchOpen(true)
+              }}
+            >
+              <Search size={18} />
+            </IconButton>
             <Button variant="ghost" disabled={!items.length} onClick={() => setSelected(new Set())}>
               선택
             </Button>
           </>
         )}
       </div>
+      {searchOpen && !selected && (
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-line px-3 py-2">
+          <input
+            type="search"
+            aria-label="히스토리 검색어"
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="프롬프트·캐릭터·씬·시드 (쉼표로 여러 개)"
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            className="h-10 min-w-0 flex-1 rounded-lg border border-line bg-field px-3 text-sm text-fg placeholder:text-dim/60"
+          />
+          {query && (
+            <IconButton label="검색어 지우기" onClick={() => setQuery('')}>
+              <X size={17} />
+            </IconButton>
+          )}
+        </div>
+      )}
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-1.5">
         {items.length === 0 ? (
-          <Empty>{filter ? '조건에 맞는 이미지가 없습니다' : '생성한 이미지가 여기에 쌓입니다'}</Empty>
+          <Empty>{searching ? '검색어와 맞는 이미지가 없습니다' : filter ? '조건에 맞는 이미지가 없습니다' : '생성한 이미지가 여기에 쌓입니다'}</Empty>
         ) : (
           <ul className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-1.5">
             {items.map((m) => (

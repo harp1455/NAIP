@@ -41,14 +41,14 @@ export interface HistoryMeta {
   unsaved?: 1
 }
 
-export type HistoryFilter = { fav: true } | { sceneId: number } | { unsaved: true } | null
+export type HistoryFilter = { fav: true } | { sceneId: number } | { unsaved: true } | { search: string } | null
 
 const DB_NAME = 'naip'
 let dbp: Promise<IDBDatabase> | null = null
 
 function open(): Promise<IDBDatabase> {
   dbp ??= new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 3)
+    const req = indexedDB.open(DB_NAME, 4)
     req.onupgradeneeded = () => {
       const db = req.result
       if (!db.objectStoreNames.contains('meta')) {
@@ -73,11 +73,52 @@ function open(): Promise<IDBDatabase> {
           cur.continue()
         }
       }
+      // v4: 히스토리 검색용 글자 색인 (이미지마다 짧은 소문자 글 한 줄 — 썸네일이 든 meta를 훑지 않으려고 따로 둔다)
+      if (!db.objectStoreNames.contains('text')) {
+        const text = db.createObjectStore('text')
+        const cursor = meta.openCursor()
+        cursor.onsuccess = () => {
+          const cur = cursor.result
+          if (!cur) return
+          const value = cur.value as HistoryMeta
+          text.put(searchText(value), value.id)
+          cur.continue()
+        }
+      }
     }
     req.onsuccess = () => resolve(req.result)
     req.onerror = () => reject(req.error)
   })
   return dbp
+}
+
+/** 검색 대상 글 — 보낸 프롬프트·네거티브·캐릭터·씬 이름·시드·모델·저장 이름 */
+export function searchText(meta: HistoryMeta): string {
+  return [
+    meta.prompt,
+    meta.negative,
+    ...(meta.sent?.chars ?? []).flatMap((c) => [c.name, c.prompt]),
+    meta.sceneName ?? '',
+    String(meta.seed),
+    meta.model,
+    meta.saved ?? ''
+  ]
+    .join('\n')
+    .toLowerCase()
+}
+
+/** 검색어를 쉼표로 나눈 조각들 — 모두 들어 있어야 일치 (예: "blue eyes, beach") */
+export function searchTerms(query: string): string[] {
+  return query
+    .toLowerCase()
+    .replace(/_/g, ' ')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean)
+}
+
+export function matchesSearch(text: string, terms: string[]): boolean {
+  return terms.length > 0 && terms.every((t) => text.includes(t))
 }
 
 function done<T>(req: IDBRequest<T>): Promise<T> {
@@ -100,10 +141,38 @@ export async function addImage(meta: HistoryMeta, blob: Blob): Promise<void> {
   // WebView에 따라 IndexedDB의 Blob 저장이 불안정해 ArrayBuffer로 저장한다.
   // 트랜잭션 안에서 await하면 트랜잭션이 닫히므로 버퍼를 먼저 만든다.
   const buffer = await blob.arrayBuffer()
-  const tx = db.transaction(['meta', 'blobs'], 'readwrite')
+  const tx = db.transaction(['meta', 'blobs', 'text'], 'readwrite')
   tx.objectStore('meta').put(meta)
   tx.objectStore('blobs').put(buffer, meta.id)
+  tx.objectStore('text').put(searchText(meta), meta.id)
   await txDone(tx)
+}
+
+/** 검색어에 맞는 이미지 id (최신순, 전부) */
+export async function searchIds(query: string): Promise<number[]> {
+  const terms = searchTerms(query)
+  if (!terms.length) return []
+  const db = await open()
+  const store = db.transaction('text').objectStore('text')
+  return new Promise((resolve, reject) => {
+    const out: number[] = []
+    const req = store.openCursor(null, 'prev')
+    req.onsuccess = () => {
+      const cur = req.result
+      if (!cur) return resolve(out)
+      if (matchesSearch(cur.value as string, terms)) out.push(cur.key as number)
+      cur.continue()
+    }
+    req.onerror = () => reject(req.error)
+  })
+}
+
+/** id 목록의 meta (순서 유지, 지워진 것은 건너뜀) */
+export async function getMetas(ids: number[]): Promise<HistoryMeta[]> {
+  const db = await open()
+  const store = db.transaction('meta').objectStore('meta')
+  const found = await Promise.all(ids.map((id) => done(store.get(id)) as Promise<HistoryMeta | undefined>))
+  return found.filter((m): m is HistoryMeta => !!m)
 }
 
 export async function listMeta(limit: number, beforeId?: number): Promise<HistoryMeta[]> {
@@ -161,8 +230,9 @@ export async function listUnsaved(limit: number, beforeId?: number): Promise<His
 
 export async function putMeta(meta: HistoryMeta): Promise<void> {
   const db = await open()
-  const tx = db.transaction('meta', 'readwrite')
+  const tx = db.transaction(['meta', 'text'], 'readwrite')
   tx.objectStore('meta').put(meta)
+  tx.objectStore('text').put(searchText(meta), meta.id)
   await txDone(tx)
 }
 
@@ -198,19 +268,21 @@ export async function getBlob(id: number, mime = 'image/png'): Promise<Blob | nu
 
 export async function deleteImages(ids: number[]): Promise<void> {
   const db = await open()
-  const tx = db.transaction(['meta', 'blobs'], 'readwrite')
+  const tx = db.transaction(['meta', 'blobs', 'text'], 'readwrite')
   for (const id of ids) {
     tx.objectStore('meta').delete(id)
     tx.objectStore('blobs').delete(id)
+    tx.objectStore('text').delete(id)
   }
   await txDone(tx)
 }
 
 export async function clearImages(): Promise<void> {
   const db = await open()
-  const tx = db.transaction(['meta', 'blobs'], 'readwrite')
+  const tx = db.transaction(['meta', 'blobs', 'text'], 'readwrite')
   tx.objectStore('meta').clear()
   tx.objectStore('blobs').clear()
+  tx.objectStore('text').clear()
   await txDone(tx)
 }
 

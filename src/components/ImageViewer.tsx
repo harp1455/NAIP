@@ -21,7 +21,7 @@ import { fromMetadata, fromSnapshot } from '../lib/apply'
 import { useBackClose } from '../lib/back'
 import { readImageSettings } from '../lib/metadata'
 import { fileNameFor } from '../lib/native'
-import { copyImage, shareHistoryImages } from '../lib/share'
+import { copyImage, copyTextWithToast, describeImage, shareHistoryImages } from '../lib/share'
 import { cx } from '../lib/util'
 import { imageUrl, useHistory } from '../stores/history'
 import { useDirector } from '../stores/director'
@@ -54,6 +54,40 @@ function Action(props: {
       {props.children}
       <span>{props.label}</span>
     </button>
+  )
+}
+
+function CopyChip(props: { onClick: () => void; children: ReactNode }): ReactNode {
+  return (
+    <button
+      type="button"
+      onClick={props.onClick}
+      className="flex h-8 items-center gap-1 rounded-full border border-line px-3 text-xs text-fg active:bg-raised"
+    >
+      <Copy size={13} />
+      {props.children}
+    </button>
+  )
+}
+
+/** 정보 칸 한 덩어리 — 제목 옆의 복사 단추로 글만 복사한다 */
+function InfoBlock(props: { label: string; text: string; what: string; copyText?: string }): ReactNode {
+  return (
+    <div className="mt-2">
+      <div className="flex items-center justify-between">
+        <span className="text-dim">{props.label}</span>
+        <button
+          type="button"
+          aria-label={`${props.label} 복사`}
+          onClick={() => void copyTextWithToast(props.copyText ?? props.text, props.what)}
+          className="flex h-7 items-center gap-1 rounded-md px-2 text-[11px] text-accent active:bg-raised"
+        >
+          <Copy size={12} />
+          복사
+        </button>
+      </div>
+      <p className="whitespace-pre-wrap break-words font-mono">{props.text}</p>
+    </div>
   )
 }
 
@@ -107,9 +141,14 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
         <button type="button" aria-label="닫기" className="flex h-10 w-10 items-center justify-center" onClick={() => view(null)}>
           <X size={22} />
         </button>
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-dim">
+        <button
+          type="button"
+          title="시드 복사"
+          onClick={() => void copyTextWithToast(String(meta.seed), '시드를')}
+          className="min-w-0 flex-1 truncate text-left font-mono text-xs text-dim active:text-fg"
+        >
           {meta.width}×{meta.height} · seed {meta.seed}
-        </span>
+        </button>
         {meta.saved && (
           <span className="flex h-6 shrink-0 items-center gap-1 rounded-full bg-ok px-2 text-[11px] font-semibold text-black">
             <Download size={12} strokeWidth={3} />
@@ -175,10 +214,23 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
             {meta.sceneName ? ` · 씬 ${meta.sceneName}` : ''} · {new Date(meta.ts).toLocaleString('ko-KR')}
           </p>
           {meta.saved && <p className="mt-1 text-ok">저장 위치: Pictures/NAIP/{meta.saved}</p>}
-          <p className="mt-2 text-dim">프롬프트</p>
-          <p className="mt-0.5 whitespace-pre-wrap break-words font-mono">{meta.prompt}</p>
-          <p className="mt-2 text-dim">네거티브</p>
-          <p className="mt-0.5 whitespace-pre-wrap break-words font-mono">{meta.negative}</p>
+          <InfoBlock label="프롬프트" text={meta.prompt} what="프롬프트를" />
+          {meta.negative && <InfoBlock label="네거티브" text={meta.negative} what="네거티브를" />}
+          {(meta.sent?.chars ?? []).map((c, i) => (
+            <InfoBlock
+              key={i}
+              label={`캐릭터 ${i + 1}${c.name ? ` · ${c.name}` : ''}`}
+              text={c.prompt + (c.negative ? `\n(네거티브) ${c.negative}` : '')}
+              copyText={c.prompt}
+              what="캐릭터 프롬프트를"
+            />
+          ))}
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            <CopyChip onClick={() => void copyTextWithToast(String(meta.seed), '시드를')}>시드 복사</CopyChip>
+            <CopyChip onClick={() => void copyTextWithToast(describeImage(meta), '생성 정보를')}>
+              생성 정보 전부 복사
+            </CopyChip>
+          </div>
         </div>
       )}
 

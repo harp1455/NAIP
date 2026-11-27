@@ -13,6 +13,7 @@ import {
   resizeToPngBase64
 } from '../lib/image'
 import type { HistoryMeta, SettingsSnapshot } from '../lib/db'
+import type { FragmentSource } from '../nai/fragments'
 import { processWildcards, resetSequentialCounters } from '../nai/fragments'
 import { cleanFileName, fileNameFor, job, saveToGallery, setKeepAwake, wait } from '../lib/native'
 import { randomSeed, uid } from '../lib/util'
@@ -21,7 +22,8 @@ import { fragmentSource } from './fragments'
 import { appendPrompt, useScenes } from './scenes'
 import { useHistory } from './history'
 import { mergePromptParts, usePrompt } from './prompt'
-import { useRefs, vibeKey } from './refs'
+import { useRefs, vibeKey, type CharRef, type Vibe } from './refs'
+import { toast } from './toast'
 import { useSettings } from './settings'
 import { useSource } from './source'
 
@@ -56,17 +58,62 @@ interface GenerationState {
   startedAt: number
   /** 지난 배치에서 장당 평균 어디에 시간이 들었는지 (느릴 때 원인을 보기 위한 측정) */
   lastBatch: BatchTiming | null
+  /** 지금 도는 배치의 이름 (대기열 표시용) */
+  currentLabel: string
+  /** 지금 배치가 끝나면 이어서 돌 배치들 */
+  queue: QueuedBatch[]
+  /** 씬별로 지금 배치·대기열이 가져간(아직 안 뽑은) 장수 — 씬 카드에 "진행 중"으로 표시 */
+  sceneClaims: Record<number, number>
   /**
    * scenes를 주면 그 씬들의 예약분을, regenerate를 주면 그 이미지를 같은 설정·새 시드로 한 장 더,
-   * 아무것도 없으면 메인 프롬프트를 장수만큼 생성
+   * 아무것도 없으면 메인 프롬프트를 장수만큼 생성. 이미 생성 중이면 누른 시점의 설정으로 대기열에 넣는다
    */
   start: (opts?: { scenes?: number[]; regenerate?: HistoryMeta }) => Promise<void>
+  /** 지금 배치를 멈추고 대기열도 비운다 */
   stop: () => void
+  removeQueued: (id: number) => void
   setLatest: (id: number | null) => void
+}
+
+export interface QueuedBatch {
+  id: number
+  label: string
+  count: number
 }
 
 const MAX_RETRIES = 3
 let controller: AbortController | null = null
+/** 대기열에 들어간 배치의 실제 내용 (상태에는 표시용 요약만 둔다) */
+const pendingBatches: Batch[] = []
+
+/** 생성 계획 한 칸 = 서버 요청 1번 = 이미지 1장 */
+interface PlanItem {
+  /** reserved: 씬 예약에서 가져온 장이라, 못 뽑으면 예약으로 돌려준다 (다시 생성은 씬 표시만 물려받는다) */
+  scene?: { id: number; name: string; prompt: string; negative: string; reserved: boolean }
+  /** 씬에 따로 정한 출연 캐릭터 — 있으면 화면에서 켜 둔 출연 대신 쓴다 */
+  chars?: CharacterPromptInput[]
+  size?: { width: number; height: number }
+  /** 고정 시드일 때 더할 오프셋 (씬마다 0부터) */
+  offset: number
+}
+
+/** 생성 버튼을 누른 순간의 설정 묶음 — 대기 중에 화면을 고쳐도 이 내용대로 돈다 */
+interface Batch {
+  id: number
+  label: string
+  base: GenerationRequest
+  snap: SettingsSnapshot
+  fixedSeed: number | null
+  source: { image: string | null; mask: string | null; strength: number; noise: number }
+  vibes: Vibe[]
+  charRefs: CharRef[]
+  fragments: FragmentSource
+  plan: PlanItem[]
+  /** 다시 생성: 이미 치환이 끝난 문장을 그대로 보낸다 */
+  verbatim: boolean
+}
+
+type BatchOutcome = 'done' | 'stopped' | 'fatal'
 
 function isAbort(e: unknown): boolean {
   return e instanceof DOMException && e.name === 'AbortError'
@@ -104,32 +151,36 @@ export function buildRequest(seed: number): GenerationRequest {
   }
 }
 
-export const useGeneration = create<GenerationState>()((set, get) => ({
-  running: false,
-  phase: 'idle',
-  total: 0,
-  done: 0,
-  failed: 0,
-  error: null,
-  latestId: null,
-  startedAt: 0,
-  lastBatch: null,
-  setLatest: (id) => set({ latestId: id }),
-  stop: () => controller?.abort(),
-  start: async (opts) => {
-    if (get().running) return
-    const settings = useSettings.getState()
-    const token = settings.token
-    if (!token) return set({ error: 'API 토큰을 먼저 설정해 주세요 (설정 탭)' })
+export const useGeneration = create<GenerationState>()((set, get) => {
+  /** 씬 예약을 배치가 가져가거나(+) 돌려줄 때(−) 진행 중 표시를 맞춘다 */
+  const claim = (sceneId: number, delta: number): void =>
+    set((s) => {
+      const next = { ...s.sceneClaims, [sceneId]: Math.max(0, (s.sceneClaims[sceneId] ?? 0) + delta) }
+      if (!next[sceneId]) delete next[sceneId]
+      return { sceneClaims: next }
+    })
+
+  /** 못 뽑은 씬 장을 예약으로 돌려준다 */
+  const release = (items: PlanItem[]): void => {
+    for (const item of items) {
+      if (!item.scene?.reserved) continue
+      useScenes.getState().bumpReserve([item.scene.id], 1)
+      claim(item.scene.id, -1)
+    }
+  }
+
+  const syncQueue = (): void =>
+    set({ queue: pendingBatches.map((b) => ({ id: b.id, label: b.label, count: b.plan.length })) })
+
+  /** 지금 화면의 설정으로 배치를 만든다 (씬 배치는 이 순간 예약을 가져간다). 만들 수 없으면 이유 */
+  const buildBatch = (opts?: { scenes?: number[]; regenerate?: HistoryMeta }): Batch | string => {
     const sceneIds = opts?.scenes
     const regen = opts?.regenerate
-
-    // ── 시작 시점의 설정을 스냅샷 — 진행 중 편집은 다음 배치부터 반영
     const prompt = usePrompt.getState()
     let fixedSeed = prompt.seed.trim() === '' ? null : Number(prompt.seed)
     let base = buildRequest(0)
-    let source: Pick<ReturnType<typeof useSource.getState>, 'image' | 'mask' | 'strength' | 'noise'> =
-      useSource.getState()
+    const live = useSource.getState()
+    let source = { image: live.image, mask: live.mask, strength: live.strength, noise: live.noise }
     let snap: SettingsSnapshot = {
       base: prompt.base,
       additional: prompt.additional,
@@ -147,7 +198,7 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
     }
     if (regen) {
       // 다시 생성: 화면의 프롬프트·설정·i2i 소스·레퍼런스는 쓰지 않고, 그 이미지를 만들 때의 내용만 쓴다
-      if (!regen.snap) return set({ error: '이 이미지에는 다시 생성에 필요한 정보가 없습니다' })
+      if (!regen.snap) return '이 이미지에는 다시 생성에 필요한 정보가 없습니다'
       snap = regen.snap
       const chars = regen.sent?.chars ?? regen.snap.chars
       base = {
@@ -167,20 +218,9 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
       fixedSeed = null
       source = { image: null, mask: null, strength: 0.7, noise: 0 }
     }
-    const caps = modelCapabilities(base.model)
-    const fragments = fragmentSource()
 
-    // ── 생성 계획: 한 항목 = 서버 요청 1번 = 이미지 1장
-    interface PlanItem {
-      /** reserved: 씬 예약분이라 뽑히면 예약을 하나 줄인다 (다시 생성은 씬 표시만 물려받는다) */
-      scene?: { id: number; name: string; prompt: string; negative: string; reserved: boolean }
-      /** 씬에 따로 정한 출연 캐릭터 — 있으면 화면에서 켜 둔 출연 대신 쓴다 */
-      chars?: CharacterPromptInput[]
-      size?: { width: number; height: number }
-      /** 고정 시드일 때 더할 오프셋 (씬마다 0부터) */
-      offset: number
-    }
     const plan: PlanItem[] = []
+    let label: string
     if (regen) {
       plan.push({
         offset: 0,
@@ -189,72 +229,86 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
           ? { scene: { id: regen.sceneId, name: regen.sceneName ?? '', prompt: '', negative: '', reserved: false } }
           : {})
       })
+      label = `다시 생성 · seed ${regen.seed}`
     } else if (sceneIds) {
       const want = new Set(sceneIds)
       // 씬별 출연: 라이브러리에서 지워진 캐릭터는 건너뛴다
       const library = useCharacters.getState().characters
-      const sceneCast = new Map<number, CharacterPromptInput[]>()
-      for (const sc of useScenes.getState().scenes) {
-        if (!want.has(sc.id) || !sc.cast) continue
-        sceneCast.set(
-          sc.id,
-          sc.cast.flatMap((id) => {
-            const c = library.find((x) => x.id === id)
-            return c ? [{ prompt: c.prompt, negativePrompt: c.negative, enabled: true, name: c.name }] : []
-          })
-        )
-      }
-      for (const sc of useScenes.getState().scenes) {
-        if (!want.has(sc.id)) continue
+      const picked = useScenes.getState().scenes.filter((sc) => want.has(sc.id) && sc.reserve > 0)
+      for (const sc of picked) {
+        const chars = sc.cast?.flatMap((id) => {
+          const c = library.find((x) => x.id === id)
+          return c ? [{ prompt: c.prompt, negativePrompt: c.negative, enabled: true, name: c.name }] : []
+        })
         for (let i = 0; i < sc.reserve; i++) {
           plan.push({
             scene: { id: sc.id, name: sc.name, prompt: sc.prompt, negative: sc.negative, reserved: true },
-            ...(sceneCast.get(sc.id) ? { chars: sceneCast.get(sc.id) } : {}),
+            ...(chars ? { chars } : {}),
             // i2i 소스가 있으면 소스에 맞춘 메인 해상도를 유지한다
             ...(sc.size && !source.image ? { size: sc.size } : {}),
             offset: i
           })
         }
       }
-      if (!plan.length) return set({ error: '예약된 씬이 없습니다. 씬 카드에서 장수를 정해 주세요' })
+      if (!plan.length) return '예약된 씬이 없습니다. 씬 카드에서 장수를 정해 주세요'
+      // 예약을 이 배치가 가져간다 — 대기 중에 다시 눌러도 같은 장을 두 번 뽑지 않게
+      for (const sc of picked) {
+        claim(sc.id, sc.reserve)
+        useScenes.getState().setReserve(sc.id, 0)
+      }
+      label = picked.length === 1 ? `씬 ${picked[0].name} · ${plan.length}장` : `씬 ${picked.length}개 · ${plan.length}장`
     } else {
       const count = Math.max(1, Math.floor(prompt.count))
       for (let i = 0; i < count; i++) plan.push({ offset: i })
+      const presetName = prompt.presets.find((x) => x.id === prompt.activePresetId)?.name
+      label = `${presetName ?? '메인 프롬프트'} · ${count}장`
     }
-    const count = plan.length
 
-    // 다시 생성은 지금 켜 둔 바이브·레퍼런스를 섞지 않는다 (원래 요청에 없던 것이 들어가면 다른 그림이 된다)
-    const vibeRows = caps.vibes && !regen ? useRefs.getState().vibes.filter((v) => v.enabled) : []
-    controller = new AbortController()
-    const signal = controller.signal
-    set({
-      running: true,
-      phase: 'preparing',
-      total: count,
-      done: 0,
-      failed: 0,
-      error: null,
-      startedAt: Date.now()
-    })
-    if (settings.keepAwake) setKeepAwake(true)
-    if (settings.background) job.start(`0/${count}장 준비 중`)
+    const caps = modelCapabilities(base.model)
+    const refs = useRefs.getState()
+    return {
+      id: uid(),
+      label,
+      base,
+      snap,
+      fixedSeed,
+      source,
+      // 다시 생성은 지금 켜 둔 바이브·레퍼런스를 섞지 않는다 (원래 요청에 없던 것이 들어가면 다른 그림이 된다)
+      vibes: caps.vibes && !regen ? refs.vibes.filter((v) => v.enabled) : [],
+      charRefs: regen ? [] : refs.charRefs.filter((r) => r.enabled),
+      fragments: fragmentSource(),
+      plan,
+      verbatim: !!regen?.sent
+    }
+  }
+
+  /** 배치 하나를 끝까지(또는 멈출 때까지) 돌린다 */
+  const runBatch = async (batch: Batch, token: string, signal: AbortSignal): Promise<BatchOutcome> => {
+    const settings = useSettings.getState()
+    const { base, snap, fixedSeed, source, plan } = batch
+    const caps = modelCapabilities(base.model)
+    const count = plan.length
+    const generated = new Set<number>()
+    set({ phase: 'preparing', total: count, done: 0, failed: 0, error: null, startedAt: Date.now(), currentLabel: batch.label })
+    if (settings.background) job.update(`${batch.label} · 준비 중`, 0, count)
     resetSequentialCounters()
-    let stoppedByUser = false
     const timing = { count: 0, gaps: 0, waitMs: 0, downloadMs: 0, processMs: 0, gapMs: 0, sentBytes: 0, receivedBytes: 0 }
     let loopStarted = 0
+    let outcome: BatchOutcome = 'done'
 
     try {
-      // ── 레퍼런스 준비 (배치당 1회)
+      // ── 레퍼런스 준비 (배치당 1회). 바이브 인코딩은 앞 배치가 저장했을 수 있어 최신 값을 다시 본다
       const vibes: VibeOptions[] = []
-      for (const v of vibeRows) {
-        const key = vibeKey(base.model, v.infoExtracted)
+      for (const snapshotVibe of batch.vibes) {
+        const v = useRefs.getState().vibes.find((x) => x.id === snapshotVibe.id) ?? snapshotVibe
+        const key = vibeKey(base.model, snapshotVibe.infoExtracted)
         let encoded = v.encodings[key]
         if (!encoded) {
           if (!v.image) throw new Error(`"${v.name}" 바이브에 ${base.model} 인코딩이 없습니다`)
-          encoded = await encodeVibe(token, v.image, v.infoExtracted, base.model, signal)
+          encoded = await encodeVibe(token, v.image, snapshotVibe.infoExtracted, base.model, signal)
           useRefs.getState().setVibeEncoding(v.id, key, encoded)
         }
-        vibes.push({ strength: v.strength, encodedVibeBase64: encoded })
+        vibes.push({ strength: snapshotVibe.strength, encodedVibeBase64: encoded })
       }
       // ── i2i / 인페인트 소스 준비
       let i2iBase: Omit<NonNullable<BuildOptions['i2i']>, 'extraNoiseSeed'> | null = null
@@ -277,8 +331,7 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
 
       // ── 정밀 레퍼런스 준비 (배치당 1회). 모델이 받는 종류만, 모델에 맞는 크기·강도로 보낸다
       const characterReferences: CharacterReferenceOptions[] = []
-      const refRows = regen ? [] : referencesForModel(useRefs.getState().charRefs, base.model, kind === 'inpaint')
-      for (const r of refRows) {
+      for (const r of referencesForModel(batch.charRefs, base.model, kind === 'inpaint')) {
         characterReferences.push({
           referenceType: referenceCaption(r.type, r.sameOutfit, caps)!,
           strength: clampReferenceStrength(r.strength, caps),
@@ -299,9 +352,8 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
           fixedSeed === null || !Number.isFinite(fixedSeed)
             ? randomSeed()
             : (fixedSeed + item.offset) % 4294967296
-        // 조각(와일드카드)은 장마다 새로 뽑는다
-        // 다시 생성은 이미 치환이 끝난 문장을 그대로 보낸다
-        const wild = (text: string): string => (regen?.sent ? text : processWildcards(text, fragments))
+        // 조각(와일드카드)은 장마다 새로 뽑는다. 다시 생성은 이미 치환이 끝난 문장을 그대로 보낸다
+        const wild = (text: string): string => (batch.verbatim ? text : processWildcards(text, batch.fragments))
         const request: GenerationRequest = {
           ...base,
           ...(item.size ?? {}),
@@ -322,8 +374,9 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
           ...(characterReferences.length ? { characterReferences } : {}),
           ...(i2iBase ? { i2i: { ...i2iBase, extraNoiseSeed: Math.max(0, seed - 1) } } : {})
         }
-        const label = item.scene ? ` · ${item.scene.name}` : ''
-        if (settings.background) job.update(`${i + 1}/${count}장 생성 중${label}`, i, count)
+        const label = item.scene?.name ? ` · ${item.scene.name}` : ''
+        const queued = pendingBatches.length ? ` (대기 ${pendingBatches.length})` : ''
+        if (settings.background) job.update(`${i + 1}/${count}장 생성 중${label}${queued}`, i, count)
 
         // 재시도 대상은 네트워크 요청뿐 — 응답을 받은 뒤의 저장 오류로 다시 요청(이중 과금)하지 않는다
         let result: Awaited<ReturnType<typeof generateImage>> | null = null
@@ -348,8 +401,11 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
               continue
             }
             set((s) => ({ failed: s.failed + 1, error: (e as Error).message }))
-            // 영구 오류(토큰·Anlas 부족·잘못된 요청)는 남은 장도 같은 이유로 실패하므로 배치를 멈춘다
-            if (!transient) return
+            // 영구 오류(토큰·Anlas 부족·잘못된 요청)는 남은 장과 대기열도 같은 이유로 실패하므로 모두 멈춘다
+            if (!transient) {
+              outcome = 'fatal'
+              return outcome
+            }
             break
           }
         }
@@ -359,6 +415,8 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
         let post: Promise<void> = Promise.resolve()
         if (result) {
           const { image, payload } = result
+          generated.add(i)
+          if (item.scene?.reserved) claim(item.scene.id, -1)
           timing.count++
           timing.waitMs += result.stats.waitMs
           timing.downloadMs += result.stats.downloadMs
@@ -366,52 +424,50 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
           timing.receivedBytes += result.stats.receivedBytes
           const id = uid()
           post = (async () => {
-          await useHistory.getState().add(
-            {
-              id,
-              ts: Date.now(),
-              thumb: await makeThumb(image),
-              width: request.width,
-              height: request.height,
-              seed,
-              model,
-              kind,
-              prompt: payload.input,
-              negative: String(payload.parameters.negative_prompt ?? ''),
-              mime: image.type,
-              // 씬에 따로 정한 출연이 있으면 그 캐릭터들로 기록해야 "설정 적용"이 같은 출연을 되살린다
-              snap: item.chars
-                ? { ...snap, chars: item.chars.map((c) => ({ name: c.name ?? '', prompt: c.prompt, negative: c.negativePrompt })) }
-                : snap,
-              sent: {
-                prompt: request.prompt,
-                negative: request.negativePrompt,
-                chars: request.characterPrompts
-                  .filter((c) => c.enabled)
-                  .map((c) => ({
-                    name: c.name ?? '',
-                    prompt: c.prompt,
-                    negative: c.negativePrompt,
-                    ...(c.center ? { center: c.center } : {})
-                  }))
+            await useHistory.getState().add(
+              {
+                id,
+                ts: Date.now(),
+                thumb: await makeThumb(image),
+                width: request.width,
+                height: request.height,
+                seed,
+                model,
+                kind,
+                prompt: payload.input,
+                negative: String(payload.parameters.negative_prompt ?? ''),
+                mime: image.type,
+                // 씬에 따로 정한 출연이 있으면 그 캐릭터들로 기록해야 "설정 적용"이 같은 출연을 되살린다
+                snap: item.chars
+                  ? { ...snap, chars: item.chars.map((c) => ({ name: c.name ?? '', prompt: c.prompt, negative: c.negativePrompt })) }
+                  : snap,
+                sent: {
+                  prompt: request.prompt,
+                  negative: request.negativePrompt,
+                  chars: request.characterPrompts
+                    .filter((c) => c.enabled)
+                    .map((c) => ({
+                      name: c.name ?? '',
+                      prompt: c.prompt,
+                      negative: c.negativePrompt,
+                      ...(c.center ? { center: c.center } : {})
+                    }))
+                },
+                ...(item.scene ? { sceneId: item.scene.id, sceneName: item.scene.name } : {})
               },
-              ...(item.scene ? { sceneId: item.scene.id, sceneName: item.scene.name } : {})
-            },
-            image
-          )
-          set((s) => ({ done: s.done + 1, latestId: id, error: null }))
-          // 씬 예약은 실제로 뽑힌 만큼만 줄인다 (중지·실패분은 예약에 남는다)
-          if (item.scene?.reserved) useScenes.getState().bumpReserve([item.scene.id], -1)
-          if (settings.autoSave) {
-            const folder = settings.sceneFolders ? item.scene?.name || undefined : undefined
-            const fileName = fileNameFor(id, seed, image.type)
-            void saveToGallery(image, fileName, folder)
-              .then(() => useHistory.getState().markSaved(id, `${folder ? `${cleanFileName(folder)}/` : ''}${fileName}`))
-              .catch((e: Error) => set({ error: `갤러리 저장 실패: ${e.message}` }))
-          }
-          // V5는 할당량 게이지가 장마다 줄어드는 것이 보이도록 매번, 그 밖에는 10장마다 잔액을 새로 읽는다
-          if (isV5Model(base.model) || (i + 1) % 10 === 0) void useSettings.getState().refreshSubscription()
-          timing.processMs += performance.now() - received
+              image
+            )
+            set((s) => ({ done: s.done + 1, latestId: id, error: null }))
+            if (settings.autoSave) {
+              const folder = settings.sceneFolders ? item.scene?.name || undefined : undefined
+              const fileName = fileNameFor(id, seed, image.type)
+              void saveToGallery(image, fileName, folder)
+                .then(() => useHistory.getState().markSaved(id, `${folder ? `${cleanFileName(folder)}/` : ''}${fileName}`))
+                .catch((e: Error) => set({ error: `갤러리 저장 실패: ${e.message}` }))
+            }
+            // V5는 할당량 게이지가 장마다 줄어드는 것이 보이도록 매번, 그 밖에는 10장마다 잔액을 새로 읽는다
+            if (isV5Model(base.model) || (i + 1) % 10 === 0) void useSettings.getState().refreshSubscription()
+            timing.processMs += performance.now() - received
           })()
           // 중지로 기다림이 먼저 끝난 뒤 저장이 실패해도 처리되지 않은 오류로 남지 않게 한다
           post.catch(() => {})
@@ -434,12 +490,14 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
         }
       }
     } catch (e) {
-      if (isAbort(e)) stoppedByUser = true
-      else set({ error: (e as Error).message })
+      if (isAbort(e)) outcome = 'stopped'
+      else {
+        set({ error: (e as Error).message })
+        outcome = 'fatal'
+      }
     } finally {
-      controller = null
-      const { done, failed, error } = get()
-      set({ running: false, phase: 'idle' })
+      // 못 뽑은 씬 장(중지·실패)은 예약으로 돌려준다
+      release(plan.filter((_, i) => !generated.has(i)))
       if (timing.count > 0 && loopStarted) {
         const n = timing.count
         set({
@@ -455,15 +513,89 @@ export const useGeneration = create<GenerationState>()((set, get) => ({
           }
         })
       }
-      setKeepAwake(false)
-      const summary = error
-        ? `오류로 중단 — ${done}/${count}장 완료`
-        : `${done}장 생성 완료${failed ? ` (실패 ${failed}장)` : ''}`
-      job.stop(stoppedByUser ? undefined : summary, settings.vibrate && !stoppedByUser && count > 1)
-      void useSettings.getState().refreshSubscription()
+    }
+    return outcome
+  }
+
+  /** 첫 배치를 돌리고, 대기열에 쌓인 배치를 차례로 이어서 돌린다 */
+  const runQueue = async (first: Batch, token: string): Promise<void> => {
+    const settings = useSettings.getState()
+    set({ running: true })
+    if (settings.keepAwake) setKeepAwake(true)
+    if (settings.background) job.start(`${first.label} · 준비 중`)
+    let totalDone = 0
+    let totalFailed = 0
+    let batches = 0
+    let last: BatchOutcome = 'done'
+    for (let batch: Batch | undefined = first; batch; batch = pendingBatches.shift()) {
+      syncQueue()
+      controller = new AbortController()
+      last = await runBatch(batch, token, controller.signal)
+      batches++
+      totalDone += get().done
+      totalFailed += get().failed
+      if (last !== 'done') break
+    }
+    controller = null
+    // 멈췄거나 막혔으면 남은 대기열은 취소하고 씬 예약을 돌려준다
+    for (const rest of pendingBatches.splice(0)) release(rest.plan)
+    syncQueue()
+    const error = get().error
+    set({ running: false, phase: 'idle', currentLabel: '' })
+    setKeepAwake(false)
+    const stopped = last === 'stopped'
+    const summary =
+      last === 'fatal' || error
+        ? `오류로 중단 — ${totalDone}장 완료`
+        : `${totalDone}장 생성 완료${batches > 1 ? ` (배치 ${batches}개)` : ''}${totalFailed ? ` · 실패 ${totalFailed}장` : ''}`
+    job.stop(stopped ? undefined : summary, settings.vibrate && !stopped && totalDone + totalFailed > 1)
+    void useSettings.getState().refreshSubscription()
+  }
+
+  return {
+    running: false,
+    phase: 'idle',
+    total: 0,
+    done: 0,
+    failed: 0,
+    error: null,
+    latestId: null,
+    startedAt: 0,
+    lastBatch: null,
+    currentLabel: '',
+    queue: [],
+    sceneClaims: {},
+    setLatest: (id) => set({ latestId: id }),
+    stop: () => {
+      for (const rest of pendingBatches.splice(0)) release(rest.plan)
+      syncQueue()
+      controller?.abort()
+    },
+    removeQueued: (id) => {
+      const i = pendingBatches.findIndex((b) => b.id === id)
+      if (i < 0) return
+      release(pendingBatches.splice(i, 1)[0].plan)
+      syncQueue()
+    },
+    start: async (opts) => {
+      const token = useSettings.getState().token
+      if (!token) return set({ error: 'API 토큰을 먼저 설정해 주세요 (설정 탭)' })
+      const batch = buildBatch(opts)
+      if (typeof batch === 'string') {
+        if (get().running) toast(batch, true)
+        else set({ error: batch })
+        return
+      }
+      if (get().running) {
+        pendingBatches.push(batch)
+        syncQueue()
+        toast(`대기열에 추가했습니다 — ${pendingBatches.length}번째 (${batch.label})`)
+        return
+      }
+      await runQueue(batch, token)
     }
   }
-}))
+})
 
 /** 현재 설정 기준 예상 Anlas (상단 표시용) */
 export function estimateCurrent(

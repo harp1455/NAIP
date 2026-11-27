@@ -53,6 +53,21 @@ public class NaipNativePlugin extends Plugin {
 
     private boolean inForeground = true;
     private boolean jobRunning = false;
+    /** 알림의 "중지" 단추가 웹뷰에 알릴 수 있도록 살아 있는 플러그인을 기억해 둔다 */
+    private static NaipNativePlugin instance;
+
+    @Override
+    public void load() {
+        instance = this;
+    }
+
+    /** 알림에서 "중지"를 눌렀을 때 — 웹뷰로 stopRequested 이벤트를 보낸다. 받을 곳이 없으면 false */
+    static boolean requestStop() {
+        NaipNativePlugin plugin = instance;
+        if (plugin == null || !plugin.jobRunning) return false;
+        plugin.notifyListeners("stopRequested", new JSObject());
+        return true;
+    }
 
     @Override
     protected void handleOnResume() {
@@ -68,6 +83,7 @@ public class NaipNativePlugin extends Plugin {
 
     @Override
     protected void handleOnDestroy() {
+        if (instance == this) instance = null;
         getContext().stopService(new Intent(getContext(), GenerationService.class));
     }
 
@@ -203,6 +219,17 @@ public class NaipNativePlugin extends Plugin {
         } catch (Exception e) {
             call.reject("copy failed: " + e.getMessage(), e);
         }
+    }
+
+    @PluginMethod
+    public void copyText(PluginCall call) {
+        ClipboardManager clipboard = getContext().getSystemService(ClipboardManager.class);
+        if (clipboard == null) {
+            call.reject("clipboard unavailable");
+            return;
+        }
+        clipboard.setPrimaryClip(ClipData.newPlainText(call.getString("label", "NAIP"), call.getString("text", "")));
+        call.resolve();
     }
 
     @PluginMethod

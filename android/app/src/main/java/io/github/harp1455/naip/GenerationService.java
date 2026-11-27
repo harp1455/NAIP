@@ -23,6 +23,8 @@ public class GenerationService extends Service {
     static final int ID_PROGRESS = 1;
     static final int ID_DONE = 2;
     static final String EXTRA_TEXT = "text";
+    /** 진행 알림의 "중지" 단추가 보내는 동작 */
+    static final String ACTION_STOP = "io.github.harp1455.naip.STOP_GENERATION";
     /** 한 배치가 이보다 오래 걸리면 wake lock은 풀린다 (서비스는 유지) */
     private static final long WAKE_LOCK_TIMEOUT_MS = 6L * 60 * 60 * 1000;
 
@@ -41,8 +43,14 @@ public class GenerationService extends Service {
         return PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
     }
 
+    private static PendingIntent stopIntent(Context context) {
+        Intent intent = new Intent(context, GenerationService.class).setAction(ACTION_STOP);
+        return PendingIntent.getService(context, 1, intent, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+    }
+
     static Notification progressNotification(Context context, String text, int done, int total) {
         return new NotificationCompat.Builder(context, CHANNEL_PROGRESS)
+            .addAction(0, "중지", stopIntent(context))
             .setSmallIcon(R.drawable.ic_stat_naip)
             .setContentTitle("NAIP 생성 중")
             .setContentText(text)
@@ -66,6 +74,16 @@ public class GenerationService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         createChannels(this);
+        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            // 알림의 "중지": 웹뷰에 알려 지금 배치와 대기열을 멈추게 한다. 서비스는 웹뷰가 stopJob 으로 끝낸다
+            boolean delivered = NaipNativePlugin.requestStop();
+            if (!delivered) stopSelf();
+            else {
+                getSystemService(NotificationManager.class)
+                    .notify(ID_PROGRESS, progressNotification(this, "중지하는 중…", 0, 0));
+            }
+            return START_NOT_STICKY;
+        }
         String text = intent != null ? intent.getStringExtra(EXTRA_TEXT) : null;
         Notification n = progressNotification(this, text != null ? text : "", 0, 0);
         startForeground(ID_PROGRESS, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
