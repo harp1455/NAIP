@@ -97,11 +97,18 @@ const item = (batchId: number, idx: number, state: QueueItemRow['state'], reqId 
 
 describe('batch snapshot serialization', () => {
   it('drops the fragment closure, keeps every other field and rebuilds the source', () => {
-    const b = { ...batch(1, 2), futureField: { nested: [1, 2] } } as Batch & { futureField: unknown }
+    // 출연 슬롯(Phase 2)처럼 나중에 붙은 필드도 따로 손대지 않고 함께 저장된다
+    const cast = {
+      slots: [{ id: 1, enabled: true, mode: 'random' as const, charId: null, candidates: [{ kind: 'char' as const, id: 5, weight: 2 }], chance: 1, wrap: false, center: { x: 0.3, y: 0.5 } }],
+      options: { allowDuplicates: false, scope: 'image' as const, perScene: false, autoCountTags: true },
+      characters: [{ id: 5, name: 'Alice', folderId: null, base: 'blue eyes', additional: '', detail: '', negative: '', variations: [] }]
+    }
+    const b = { ...batch(1, 2), cast, futureField: { nested: [1, 2] } } as Batch & { futureField: unknown }
     const json = serializeBatch(b)
     expect(JSON.parse(json)).not.toHaveProperty('fragments')
     const back = deserializeBatch(json) as Batch & { futureField: unknown }
     expect(back.futureField).toEqual({ nested: [1, 2] })
+    expect(back.cast).toEqual(cast)
     expect(back.fragments.getLines('hair')).toEqual(['black hair'])
     expect(back.plan).toEqual(b.plan)
   })
