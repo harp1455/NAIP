@@ -1,6 +1,7 @@
 import * as db from './db'
 import type { HistoryMeta } from './db'
-import { copyImageToClipboard, copyText, fileNameFor, haptic, shareImages } from './native'
+import { copyImageToClipboard, copyText, fileNameFor, haptic, isNative, shareImages } from './native'
+import { copyStoredImage, shareStoredImages } from '../storage/export'
 import { stripMetadata } from './strip'
 import { useSettings } from '../stores/settings'
 import { toast } from '../stores/toast'
@@ -16,7 +17,9 @@ async function exportBlob(meta: HistoryMeta): Promise<Blob> {
 export async function copyImage(meta: HistoryMeta, opts: { haptic?: boolean } = {}): Promise<void> {
   if (opts.haptic) haptic()
   try {
-    await copyImageToClipboard(await exportBlob(meta))
+    // 메타데이터를 그대로 둘 때는 휴대폰에서 원본 파일을 바로 복사한다 (그림을 웹뷰로 읽어 오지 않는다)
+    if (isNative && !useSettings.getState().shareStripMeta) await copyStoredImage(meta.id, meta.mime)
+    else await copyImageToClipboard(await exportBlob(meta))
     toast(
       useSettings.getState().shareStripMeta
         ? '클립보드에 복사했습니다 (메타데이터 지움)'
@@ -31,6 +34,10 @@ export async function copyImage(meta: HistoryMeta, opts: { haptic?: boolean } = 
 export async function shareHistoryImages(metas: HistoryMeta[]): Promise<void> {
   if (!metas.length) return
   try {
+    if (isNative && !useSettings.getState().shareStripMeta) {
+      await shareStoredImages(metas.map((m) => ({ id: m.id, mime: m.mime, fileName: fileNameFor(m.id, m.seed, m.mime) })))
+      return
+    }
     const files = []
     for (const m of metas) files.push({ blob: await exportBlob(m), fileName: fileNameFor(m.id, m.seed, m.mime) })
     await shareImages(files)

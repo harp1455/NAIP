@@ -1,13 +1,15 @@
 import { create } from 'zustand'
-import * as db from '../lib/db'
 import type { HistoryFilter, HistoryMeta } from '../lib/db'
+import { makeThumb } from '../lib/image'
+import { getStorage } from '../storage'
+import { filterToQuery, matchesSearch, searchTerms, searchText, thumbPathFor } from '../storage/history-repo'
 import { useSettings } from './settings'
 
-const PAGE = 60
-/** 검색 결과 id 전부 (최신순) — 화면에는 PAGE장씩 꺼내 보여 준다 */
-let searchMatches: number[] = []
-/** 가장 최근에 요청한 검색어 — 늦게 끝난 이전 검색 결과를 버리는 데 쓴다 */
-let latestSearch = ''
+/** 한 번에 읽는 장수 (최신순 커서 페이지) */
+const PAGE = 90
+/** 필터·검색이 바뀔 때마다 늘린다 — 늦게 끝난 이전 조회 결과를 버리는 데 쓴다 */
+let generation = 0
+let loadingMore: Promise<void> | null = null
 
 interface HistoryState {
   items: HistoryMeta[]
@@ -16,9 +18,9 @@ interface HistoryState {
   hasMore: boolean
   /** 뷰어에 열린 이미지 id */
   viewing: number | null
-  /** null = 전체. 즐겨찾기/씬 필터가 걸리면 items는 필터 결과 전체 */
+  /** null = 전체 */
   filter: HistoryFilter
-  /** 검색 중이면 일치한 장수 */
+  /** 필터·검색 중이면 맞는 장수 */
   matchCount: number | null
   setFilter: (filter: HistoryFilter) => Promise<void>
   toggleFav: (id: number) => Promise<void>
@@ -30,7 +32,11 @@ interface HistoryState {
   remove: (ids: number[]) => Promise<void>
   clear: () => Promise<void>
   view: (id: number | null) => void
+  /** 썸네일 파일이 없거나 깨졌을 때 원본으로 다시 만든다 (한 장에 한 번만) */
+  repairThumb: (id: number) => Promise<void>
 }
+
+const repaired = new Set<number>()
 
 export const useHistory = create<HistoryState>()((set, get) => ({
   items: [],
@@ -41,28 +47,17 @@ export const useHistory = create<HistoryState>()((set, get) => ({
   filter: null,
   matchCount: null,
   setFilter: async (filter) => {
-    if (!filter || !('search' in filter)) latestSearch = ''
-    if (!filter) {
-      set({ filter: null, matchCount: null })
-      return get().init()
-    }
-    if ('search' in filter) {
-      latestSearch = filter.search
-      const ids = await db.searchIds(filter.search)
-      const items = await db.getMetas(ids.slice(0, PAGE))
-      // 입력이 바뀌는 사이에 늦게 도착한 결과는 버린다
-      if (latestSearch !== filter.search) return
-      searchMatches = ids
-      set({ filter, items, hasMore: ids.length > PAGE, matchCount: ids.length })
-      return
-    }
-    set({ matchCount: null })
-    if ('unsaved' in filter) {
-      const items = await db.listUnsaved(PAGE)
-      set({ filter, items, hasMore: items.length === PAGE })
-      return
-    }
-    set({ filter, items: await db.listFiltered(filter), hasMore: false })
+    const gen = ++generation
+    const { history } = await getStorage()
+    const q = filterToQuery(filter)
+    const [items, count, total] = await Promise.all([
+      history.list(q, PAGE),
+      filter ? history.count(q) : null,
+      filter ? null : history.count({})
+    ])
+    // 입력이 바뀌는 사이에 늦게 도착한 결과는 버린다
+    if (gen !== generation) return
+    set({ filter, items, matchCount: count, hasMore: items.length === PAGE, ...(total !== null ? { total } : {}) })
   },
   toggleFav: async (id) => {
     const meta = get().items.find((m) => m.id === id)
@@ -70,23 +65,27 @@ export const useHistory = create<HistoryState>()((set, get) => ({
     const next = { ...meta }
     if (meta.fav) delete next.fav
     else next.fav = 1
-    await db.putMeta(next)
+    await (await getStorage()).history.put(next)
     set((s) => ({ items: s.items.map((m) => (m.id === id ? next : m)) }))
   },
   markSaved: async (id, path) => {
+    const { history } = await getStorage()
     // 목록에 없는(필터·페이지 밖) 이미지도 기록되도록 DB에서 읽는다
-    const meta = get().items.find((m) => m.id === id) ?? (await db.getMeta(id))
+    const meta = get().items.find((m) => m.id === id) ?? (await history.get(id))
     if (!meta) return
     const next = { ...meta, saved: path }
     delete next.unsaved
-    await db.putMeta(next)
-    if (get().filter && 'unsaved' in get().filter!) {
+    await history.put(next)
+    const f = get().filter
+    if (f && 'unsaved' in f) {
       // 미저장만 보는 중이면 저장한 그림은 목록에서 빠진다. 크게 보고 있었다면 다음 그림으로 넘어간다
       set((s) => {
         const i = s.items.findIndex((m) => m.id === id)
+        if (i < 0) return {}
         const rest = s.items.filter((m) => m.id !== id)
         return {
           items: rest,
+          matchCount: s.matchCount !== null ? Math.max(0, s.matchCount - 1) : null,
           viewing: s.viewing === id ? (rest[Math.min(i, rest.length - 1)]?.id ?? null) : s.viewing
         }
       })
@@ -95,89 +94,109 @@ export const useHistory = create<HistoryState>()((set, get) => ({
     set((s) => ({ items: s.items.map((m) => (m.id === id ? next : m)) }))
   },
   init: async () => {
-    const [items, total] = await Promise.all([db.listMeta(PAGE), db.countImages()])
-    set({ items, total, loaded: true, hasMore: items.length < total })
+    const gen = ++generation
+    const { history } = await getStorage()
+    const [items, total] = await Promise.all([history.list({}, PAGE), history.count({})])
+    if (gen !== generation) return
+    set({ items, total, loaded: true, hasMore: items.length < total, filter: null, matchCount: null })
   },
   loadMore: async () => {
-    const { items, total, filter } = get()
-    if (filter && 'search' in filter) {
-      const more = await db.getMetas(searchMatches.slice(items.length, items.length + PAGE))
-      set({ items: [...items, ...more], hasMore: items.length + PAGE < searchMatches.length })
-      return
-    }
-    if (filter && 'unsaved' in filter) {
-      const oldest = items[items.length - 1]
-      if (!oldest) return
-      const more = await db.listUnsaved(PAGE, oldest.id)
-      set({ items: [...get().items, ...more], hasMore: more.length === PAGE })
-      return
-    }
-    if (filter) return
+    // 스크롤이 빨라 여러 번 불려도 한 번에 하나씩
+    if (loadingMore) return loadingMore
+    const { items, filter, hasMore } = get()
     const last = items[items.length - 1]
-    if (!last) return
-    const more = await db.listMeta(PAGE, last.id)
-    const next = [...items, ...more]
-    set({ items: next, hasMore: more.length > 0 && next.length < total })
+    if (!hasMore || !last) return
+    const gen = generation
+    loadingMore = (async () => {
+      const { history } = await getStorage()
+      const more = await history.list(filterToQuery(filter), PAGE, last.id)
+      if (gen !== generation) return
+      set((s) => ({ items: [...s.items, ...more], hasMore: more.length === PAGE }))
+    })().finally(() => {
+      loadingMore = null
+    })
+    return loadingMore
   },
   add: async (meta, blob) => {
     meta = { ...meta, unsaved: 1 }
-    await db.addImage(meta, blob)
+    await (await getStorage()).history.add(meta, blob)
     const f = get().filter
     const matches =
       !f ||
       'unsaved' in f ||
       ('sceneId' in f && f.sceneId === meta.sceneId) ||
-      ('search' in f && db.matchesSearch(db.searchText(meta), db.searchTerms(f.search)))
-    set((s) => ({ items: matches ? [meta, ...s.items] : s.items, total: s.total + 1 }))
+      ('search' in f && matchesSearch(searchText(meta), searchTerms(f.search)))
+    set((s) => ({
+      items: matches ? [meta, ...s.items] : s.items,
+      total: s.total + 1,
+      matchCount: matches && s.matchCount !== null ? s.matchCount + 1 : s.matchCount
+    }))
     // 보관 한도를 넘으면 즐겨찾기를 뺀 오래된 것부터 정리
     const limit = useSettings.getState().historyLimit
     const over = limit > 0 ? get().total - limit : 0
     if (over > 0) {
-      const ids = await db.oldestIds(over)
+      const ids = await (await getStorage()).history.oldestIds(over)
       if (ids.length) await get().remove(ids)
     }
   },
   remove: async (ids) => {
-    await db.deleteImages(ids)
+    await (await getStorage()).history.remove(ids)
     const gone = new Set(ids)
-    set((s) => ({
-      items: s.items.filter((m) => !gone.has(m.id)),
-      total: Math.max(0, s.total - ids.length),
-      viewing: s.viewing !== null && gone.has(s.viewing) ? null : s.viewing
-    }))
+    set((s) => {
+      const removed = s.items.filter((m) => gone.has(m.id)).length
+      return {
+        items: s.items.filter((m) => !gone.has(m.id)),
+        total: Math.max(0, s.total - ids.length),
+        matchCount: s.matchCount !== null ? Math.max(0, s.matchCount - removed) : null,
+        viewing: s.viewing !== null && gone.has(s.viewing) ? null : s.viewing
+      }
+    })
   },
   clear: async () => {
-    await db.clearImages()
-    set({ items: [], total: 0, hasMore: false, viewing: null })
+    await (await getStorage()).history.clear()
+    set({ items: [], total: 0, hasMore: false, viewing: null, matchCount: get().filter ? 0 : null })
   },
-  view: (id) => set({ viewing: id })
+  view: (id) => set({ viewing: id }),
+  repairThumb: async (id) => {
+    if (repaired.has(id)) return
+    repaired.add(id)
+    const meta = get().items.find((m) => m.id === id)
+    if (!meta) return
+    try {
+      const { history, files } = await getStorage()
+      const original = await history.readOriginal(meta.id, meta.mime)
+      if (!original) return
+      const thumb = await makeThumb(original)
+      const path = thumbPathFor(meta.id, 'image/jpeg')
+      await files.write(path, thumb)
+      const url = await history.setThumb(meta.id, path)
+      // 같은 주소면 웹뷰가 깨진 그림을 기억하고 있을 수 있어 덧붙인다
+      const shown = url.startsWith('blob:') ? url : `${url}?v=${Date.now()}`
+      set((s) => ({ items: s.items.map((m) => (m.id === id ? { ...m, thumb: shown } : m)) }))
+    } catch {
+      /* 원본도 없으면 그대로 둔다 */
+    }
+  }
 }))
 
-const urlCache = new Map<number, string>()
+/** 방금 받은 원본의 object URL (최근 40장) — 파일을 다시 읽지 않고 바로 띄운다 */
+const primed = new Map<number, string>()
 
 /** 방금 받은 원본을 캐시에 미리 넣어, 결과 화면이 썸네일로 깜빡이지 않고 바로 보이게 한다 */
 export function primeImageUrl(id: number, blob: Blob): void {
-  if (urlCache.has(id)) return
-  urlCache.set(id, URL.createObjectURL(blob))
-  trimUrlCache()
-}
-
-function trimUrlCache(): void {
-  while (urlCache.size > 40) {
-    const [oldId, oldUrl] = urlCache.entries().next().value as [number, string]
+  if (primed.has(id)) return
+  primed.set(id, URL.createObjectURL(blob))
+  while (primed.size > 40) {
+    const [oldId, oldUrl] = primed.entries().next().value as [number, string]
     URL.revokeObjectURL(oldUrl)
-    urlCache.delete(oldId)
+    primed.delete(oldId)
   }
 }
 
-/** 원본 이미지의 object URL (세션 캐시, 최근 40장만 유지) */
+/** 원본 이미지 주소 — 휴대폰은 파일 주소(웹뷰가 디스크에서 바로 읽는다), 브라우저는 object URL */
 export async function imageUrl(id: number, mime: string): Promise<string | null> {
-  const hit = urlCache.get(id)
+  const hit = primed.get(id)
   if (hit) return hit
-  const blob = await db.getBlob(id, mime)
-  if (!blob) return null
-  const url = URL.createObjectURL(blob)
-  urlCache.set(id, url)
-  trimUrlCache()
-  return url
+  const url = await (await getStorage()).history.originalUrl(id, mime)
+  return url || null
 }

@@ -65,19 +65,34 @@ export function fragmentPath(f: Fragment, folders: FragFolder[]): string {
   return folder ? `${folder.name}/${f.name}` : f.name
 }
 
-/** 현재 조각 라이브러리의 스냅샷으로 치환 소스를 만든다 (폴더/이름, 이름 둘 다로 찾을 수 있다) */
-export function fragmentSource(): FragmentSource {
+/** 조각 라이브러리 사본 — 대기열에 저장해 두었다가 앱을 다시 열어도 같은 조각으로 치환한다 */
+export interface FragmentLibrary {
+  folders: FragFolder[]
+  fragments: Fragment[]
+}
+
+export function fragmentLibrary(): FragmentLibrary {
   const { fragments, folders } = useFragments.getState()
+  return { folders, fragments }
+}
+
+/** 라이브러리 사본으로 치환 소스를 만든다 (폴더/이름, 이름 둘 다로 찾을 수 있다) */
+export function fragmentSourceFrom(lib: FragmentLibrary): FragmentSource {
   const map = new Map<string, string[]>()
-  for (const f of fragments) {
+  for (const f of lib.fragments) {
     const lines = f.content
       .split('\n')
       .map((l) => l.trim())
       .filter((l) => l && !l.startsWith('#'))
-    const full = normalizeFragmentPath(fragmentPath(f, folders))
+    const full = normalizeFragmentPath(fragmentPath(f, lib.folders))
     map.set(full, lines)
     const bare = normalizeFragmentPath(f.name)
     if (!map.has(bare)) map.set(bare, lines)
   }
   return { getLines: (path) => map.get(path) ?? null }
+}
+
+/** 현재 조각 라이브러리의 스냅샷으로 치환 소스를 만든다 */
+export function fragmentSource(): FragmentSource {
+  return fragmentSourceFrom(fragmentLibrary())
 }

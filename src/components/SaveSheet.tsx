@@ -2,7 +2,8 @@ import { useState, type ReactNode } from 'react'
 import { FolderPlus } from 'lucide-react'
 import * as db from '../lib/db'
 import { STRIP_CONCURRENCY, stripMetadata } from '../lib/strip'
-import { cleanFileName, fileNameFor, saveToGallery } from '../lib/native'
+import { cleanFileName, fileNameFor, isNative, saveToGallery } from '../lib/native'
+import { saveStoredToGallery } from '../storage/export'
 import { cx } from '../lib/util'
 import { useHistory } from '../stores/history'
 import { useSaver } from '../stores/saver'
@@ -72,12 +73,19 @@ export function SaveSheet(): ReactNode {
         const i = next++
         const m = items[i]
         try {
-          const original = await db.getBlob(m.id, m.mime)
-          if (!original) throw new Error('원본을 찾을 수 없는 이미지가 있습니다')
-          const blob = strip ? await stripMetadata(original) : original
-          const ext = blob.type === 'image/webp' ? 'webp' : 'png'
           const name = finalNames[i]
-          await saveToGallery(blob, `${name}.${ext}`, folder || undefined)
+          let ext: string
+          if (isNative && !strip) {
+            // 메타데이터를 남길 때는 원본 파일을 그대로 복사한다 (웹뷰로 읽어 오지 않는다)
+            ext = m.mime === 'image/webp' ? 'webp' : 'png'
+            await saveStoredToGallery(m.id, m.mime, `${name}.${ext}`, folder || undefined)
+          } else {
+            const original = await db.getBlob(m.id, m.mime)
+            if (!original) throw new Error('원본을 찾을 수 없는 이미지가 있습니다')
+            const blob = strip ? await stripMetadata(original) : original
+            ext = blob.type === 'image/webp' ? 'webp' : 'png'
+            await saveToGallery(blob, `${name}.${ext}`, folder || undefined)
+          }
           await useHistory.getState().markSaved(m.id, `${folder ? `${folder}/` : ''}${name}.${ext}`)
           saved++
           setProgress(saved)

@@ -1,6 +1,8 @@
+/** 히스토리 자료형과 IndexedDB kv. 히스토리 자체는 src/storage (SQLite + 파일)에 있다. */
 import type { CastSent, CastSnapshot } from '../nai/cast'
+import { getStorage } from '../storage'
+import { matchesSearch, searchTerms, searchText, type HistoryRepo } from '../storage/history-repo'
 
-/** 히스토리 저장소 (IndexedDB). meta(썸네일 포함)와 원본 blob을 분리해 목록 로딩을 가볍게 한다. */
 /** 생성 당시의 설정 원본(조각 치환 전) — "설정 적용"으로 그대로 되돌리기 위해 보관 */
 export interface SettingsSnapshot {
   base: string
@@ -18,6 +20,7 @@ export type ImageKind = 't2i' | 'i2i' | 'inpaint' | 'director' | 'upscale'
 export interface HistoryMeta {
   id: number
   ts: number
+  /** 화면에 띄울 썸네일 주소 (파일 주소·object URL, 방금 만든 것은 data: URL). 비어 있으면 화면이 다시 만든다 */
   thumb: string
   width: number
   height: number
@@ -47,6 +50,8 @@ export interface HistoryMeta {
   parentId?: number
   /** 아직 갤러리에 저장하지 않았으면 1 ("미저장만 보기" 인덱스용 — 저장하면 지운다) */
   unsaved?: 1
+  /** 이 그림을 만든 생성 요청의 id (앱이 죽은 뒤 대기열을 되살릴 때 이미 받은 결과인지 확인) */
+  requestId?: string
 }
 
 export type HistoryFilter = { fav: true } | { sceneId: number } | { unsaved: true } | { search: string } | null
@@ -54,7 +59,11 @@ export type HistoryFilter = { fav: true } | { sceneId: number } | { unsaved: tru
 const DB_NAME = 'naip'
 let dbp: Promise<IDBDatabase> | null = null
 
-function open(): Promise<IDBDatabase> {
+/**
+ * IndexedDB 'naip' (v4). 지금은 kv(레퍼런스·마스크 등 zustand 상태)만 쓰고,
+ * meta·blobs·text는 예전 히스토리 — SQLite로 옮긴 뒤 비운다 (지우지는 않는다: 버전을 올리지 않으려고)
+ */
+export function openIdb(): Promise<IDBDatabase> {
   dbp ??= new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 4)
     req.onupgradeneeded = () => {
@@ -100,43 +109,16 @@ function open(): Promise<IDBDatabase> {
   return dbp
 }
 
-/** 검색 대상 글 — 보낸 프롬프트·네거티브·캐릭터·씬 이름·시드·모델·저장 이름 */
-export function searchText(meta: HistoryMeta): string {
-  return [
-    meta.prompt,
-    meta.negative,
-    ...(meta.sent?.chars ?? []).flatMap((c) => [c.name, c.prompt]),
-    meta.sceneName ?? '',
-    String(meta.seed),
-    meta.model,
-    meta.saved ?? ''
-  ]
-    .join('\n')
-    .toLowerCase()
-}
+export { matchesSearch, searchTerms, searchText }
 
-/** 검색어를 쉼표로 나눈 조각들 — 모두 들어 있어야 일치 (예: "blue eyes, beach") */
-export function searchTerms(query: string): string[] {
-  return query
-    .toLowerCase()
-    .replace(/_/g, ' ')
-    .split(',')
-    .map((t) => t.trim())
-    .filter(Boolean)
-}
-
-export function matchesSearch(text: string, terms: string[]): boolean {
-  return terms.length > 0 && terms.every((t) => text.includes(t))
-}
-
-function done<T>(req: IDBRequest<T>): Promise<T> {
+export function done<T>(req: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     req.onsuccess = () => resolve(req.result)
     req.onerror = () => reject(req.error)
   })
 }
 
-function txDone(tx: IDBTransaction): Promise<void> {
+export function txDone(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve()
     tx.onerror = () => reject(tx.error)
@@ -144,170 +126,87 @@ function txDone(tx: IDBTransaction): Promise<void> {
   })
 }
 
+/**
+ * 예전 히스토리 함수들 — 이제는 SQLite + 파일 저장소(src/storage)로 넘겨준다.
+ * 이름과 모양을 그대로 둬서 이 파일을 쓰던 코드가 바뀌지 않아도 된다.
+ * (옛 IndexedDB의 meta·blobs·text는 src/storage/legacy-idb.ts가 처음 실행 때 옮기고 비운다)
+ */
+async function repo(): Promise<HistoryRepo> {
+  return (await getStorage()).history
+}
+
 export async function addImage(meta: HistoryMeta, blob: Blob): Promise<void> {
-  const db = await open()
-  // WebView에 따라 IndexedDB의 Blob 저장이 불안정해 ArrayBuffer로 저장한다.
-  // 트랜잭션 안에서 await하면 트랜잭션이 닫히므로 버퍼를 먼저 만든다.
-  const buffer = await blob.arrayBuffer()
-  const tx = db.transaction(['meta', 'blobs', 'text'], 'readwrite')
-  tx.objectStore('meta').put(meta)
-  tx.objectStore('blobs').put(buffer, meta.id)
-  tx.objectStore('text').put(searchText(meta), meta.id)
-  await txDone(tx)
+  await (await repo()).add(meta, blob)
 }
 
 /** 검색어에 맞는 이미지 id (최신순, 전부) */
 export async function searchIds(query: string): Promise<number[]> {
-  const terms = searchTerms(query)
-  if (!terms.length) return []
-  const db = await open()
-  const store = db.transaction('text').objectStore('text')
-  return new Promise((resolve, reject) => {
-    const out: number[] = []
-    const req = store.openCursor(null, 'prev')
-    req.onsuccess = () => {
-      const cur = req.result
-      if (!cur) return resolve(out)
-      if (matchesSearch(cur.value as string, terms)) out.push(cur.key as number)
-      cur.continue()
-    }
-    req.onerror = () => reject(req.error)
-  })
+  return (await repo()).ids({ search: query })
 }
 
 /** id 목록의 meta (순서 유지, 지워진 것은 건너뜀) */
 export async function getMetas(ids: number[]): Promise<HistoryMeta[]> {
-  const db = await open()
-  const store = db.transaction('meta').objectStore('meta')
-  const found = await Promise.all(ids.map((id) => done(store.get(id)) as Promise<HistoryMeta | undefined>))
-  return found.filter((m): m is HistoryMeta => !!m)
+  return (await repo()).getMany(ids)
 }
 
 export async function listMeta(limit: number, beforeId?: number): Promise<HistoryMeta[]> {
-  const db = await open()
-  const store = db.transaction('meta').objectStore('meta')
-  const range = beforeId === undefined ? undefined : IDBKeyRange.upperBound(beforeId, true)
-  return new Promise((resolve, reject) => {
-    const out: HistoryMeta[] = []
-    const req = store.openCursor(range, 'prev')
-    req.onsuccess = () => {
-      const cur = req.result
-      if (!cur || out.length >= limit) return resolve(out)
-      out.push(cur.value as HistoryMeta)
-      cur.continue()
-    }
-    req.onerror = () => reject(req.error)
-  })
+  return (await repo()).list({}, limit, beforeId)
 }
 
-/** 필터에 맞는 전체 목록 (최신순). 즐겨찾기·씬 단위라 한 번에 읽는다 */
-export async function listFiltered(
-  filter: { fav: true } | { sceneId: number }
-): Promise<HistoryMeta[]> {
-  const db = await open()
-  const store = db.transaction('meta').objectStore('meta')
-  const req =
-    'fav' in filter
-      ? store.index('fav').getAll(IDBKeyRange.only(1))
-      : store.index('scene').getAll(IDBKeyRange.only(filter.sceneId))
-  return ((await done(req)) as HistoryMeta[]).sort((a, b) => b.id - a.id)
+/** 필터에 맞는 전체 목록 (최신순) */
+export async function listFiltered(filter: { fav: true } | { sceneId: number }): Promise<HistoryMeta[]> {
+  return (await repo()).list('fav' in filter ? { fav: true } : { sceneId: filter.sceneId }, Number.MAX_SAFE_INTEGER)
 }
 
 export async function getMeta(id: number): Promise<HistoryMeta | null> {
-  const db = await open()
-  return ((await done(db.transaction('meta').objectStore('meta').get(id))) as HistoryMeta | undefined) ?? null
+  return (await repo()).get(id)
 }
 
 /** 아직 저장하지 않은 이미지 (최신순, limit장씩). beforeId를 주면 그보다 오래된 것부터 */
 export async function listUnsaved(limit: number, beforeId?: number): Promise<HistoryMeta[]> {
-  const db = await open()
-  const index = db.transaction('meta').objectStore('meta').index('unsaved')
-  const range = IDBKeyRange.bound([1, 0], [1, beforeId ?? Number.MAX_SAFE_INTEGER], false, beforeId !== undefined)
-  return new Promise((resolve, reject) => {
-    const out: HistoryMeta[] = []
-    const req = index.openCursor(range, 'prev')
-    req.onsuccess = () => {
-      const cur = req.result
-      if (!cur || out.length >= limit) return resolve(out)
-      out.push(cur.value as HistoryMeta)
-      cur.continue()
-    }
-    req.onerror = () => reject(req.error)
-  })
+  return (await repo()).list({ unsaved: true }, limit, beforeId)
 }
 
 export async function putMeta(meta: HistoryMeta): Promise<void> {
-  const db = await open()
-  const tx = db.transaction(['meta', 'text'], 'readwrite')
-  tx.objectStore('meta').put(meta)
-  tx.objectStore('text').put(searchText(meta), meta.id)
-  await txDone(tx)
+  await (await repo()).put(meta)
 }
 
 /** 보관 한도 정리용: 즐겨찾기를 뺀 가장 오래된 n장의 id */
 export async function oldestIds(n: number): Promise<number[]> {
-  const db = await open()
-  const store = db.transaction('meta').objectStore('meta')
-  return new Promise((resolve, reject) => {
-    const out: number[] = []
-    const req = store.openCursor()
-    req.onsuccess = () => {
-      const cur = req.result
-      if (!cur || out.length >= n) return resolve(out)
-      if (!(cur.value as HistoryMeta).fav) out.push(cur.value.id as number)
-      cur.continue()
-    }
-    req.onerror = () => reject(req.error)
-  })
+  return (await repo()).oldestIds(n)
 }
 
 export async function countImages(): Promise<number> {
-  const db = await open()
-  return done(db.transaction('meta').objectStore('meta').count())
+  return (await repo()).count({})
 }
 
+/** 원본 이미지 (휴대폰은 파일을 웹뷰 주소로 읽는다 — base64 왕복 없음) */
 export async function getBlob(id: number, mime = 'image/png'): Promise<Blob | null> {
-  const db = await open()
-  const buf = (await done(db.transaction('blobs').objectStore('blobs').get(id))) as
-    | ArrayBuffer
-    | undefined
-  return buf ? new Blob([buf], { type: mime }) : null
+  return (await repo()).readOriginal(id, mime)
 }
 
 export async function deleteImages(ids: number[]): Promise<void> {
-  const db = await open()
-  const tx = db.transaction(['meta', 'blobs', 'text'], 'readwrite')
-  for (const id of ids) {
-    tx.objectStore('meta').delete(id)
-    tx.objectStore('blobs').delete(id)
-    tx.objectStore('text').delete(id)
-  }
-  await txDone(tx)
+  await (await repo()).remove(ids)
 }
 
 export async function clearImages(): Promise<void> {
-  const db = await open()
-  const tx = db.transaction(['meta', 'blobs', 'text'], 'readwrite')
-  tx.objectStore('meta').clear()
-  tx.objectStore('blobs').clear()
-  tx.objectStore('text').clear()
-  await txDone(tx)
+  await (await repo()).clear()
 }
 
 /** zustand persist용 KV (레퍼런스 이미지처럼 localStorage 한도를 넘는 상태) */
 export const idbStorage = {
   async getItem(name: string): Promise<string | null> {
-    const db = await open()
+    const db = await openIdb()
     return ((await done(db.transaction('kv').objectStore('kv').get(name))) as string) ?? null
   },
   async setItem(name: string, value: string): Promise<void> {
-    const db = await open()
+    const db = await openIdb()
     const tx = db.transaction('kv', 'readwrite')
     tx.objectStore('kv').put(value, name)
     await txDone(tx)
   },
   async removeItem(name: string): Promise<void> {
-    const db = await open()
+    const db = await openIdb()
     const tx = db.transaction('kv', 'readwrite')
     tx.objectStore('kv').delete(name)
     await txDone(tx)
