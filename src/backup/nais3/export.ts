@@ -79,12 +79,17 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
     tables[table] = rows
     included.push(table)
   }
+  // NAIS3 는 들어 있는 표를 통째로 바꾸므로, 항목이 하나도 없는 섹션은 표를 넣지 않는다 (NAIS3 쪽 것을 지우지 않게)
+  const empty = (section: Nais3ExportSection, count: number): boolean => {
+    if (count > 0) return false
+    lost.add(SECTION_LABELS[section], '내보낼 항목이 없어 넣지 않음 — NAIS3 쪽 것은 그대로 둡니다')
+    return true
+  }
 
   // ── 캐릭터 ──
-  const charIds = new Map<number, number>()
   let anyCenter = false
   const ch = want.has('characters') && isObj(data.characters) ? data.characters : null
-  if (ch) {
+  if (ch && !empty('characters', items(ch.characters).length)) {
     const folderIds = new Map<number, number>()
     const folderRows: Nais3OutRow[] = items(ch.folders).map((f, i) => {
       folderIds.set(n(f.id, NaN), i + 1)
@@ -110,7 +115,6 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
     const chars = items(ch.characters)
     const rows: Nais3OutRow[] = chars.map((c, i) => {
       const id = i + 1
-      charIds.set(n(c.id, NaN), id)
       const name = s(c.name) || '이름 없음'
       const e = cast.get(n(c.id, NaN))
       if (e && !e.enabled) lost.add('캐릭터', '출연 목록에 넣고 꺼 둔 상태 — NAIS3 에는 카드 켜기/끄기만 있음', name)
@@ -168,7 +172,7 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
 
   // ── 프롬프트 프리셋 ──
   const pr = want.has('presets') && isObj(data.presets) ? data.presets : null
-  if (pr) {
+  if (pr && !empty('presets', items(pr.presets).length)) {
     const rows: Nais3OutRow[] = items(pr.presets).map((p, i) => {
       const name = s(p.name) || '프리셋'
       const params = isObj(p.params) ? Object.fromEntries(PARAM_KEYS.filter((k) => p.params && (p.params as Obj)[k] !== undefined).map((k) => [k, (p.params as Obj)[k]])) : null
@@ -190,7 +194,7 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
 
   // ── 조각 ──
   const fr = want.has('fragments') && isObj(data.fragments) ? data.fragments : null
-  if (fr) {
+  if (fr && !empty('fragments', items(fr.fragments).length)) {
     const folderIds = new Map<number, number>()
     const folderRows: Nais3OutRow[] = items(fr.folders).map((f, i) => {
       folderIds.set(n(f.id, NaN), i + 1)
@@ -221,7 +225,7 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
   const prompt = isObj(data.prompt) ? data.prompt : null
   const mainSize = isObj(prompt?.params) ? { width: n(prompt!.params.width, 832), height: n(prompt!.params.height, 1216) } : { width: 832, height: 1216 }
   const sc = want.has('scenes') && isObj(data.scenes) ? data.scenes : null
-  if (sc) {
+  if (sc && !empty('scenes', items(sc.scenes).length)) {
     const folders = items(sc.folders)
     const scenes = items(sc.scenes)
     const presetIds = new Map<number, number>()
@@ -230,21 +234,15 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
     // 묶음 없는 씬은 NAIS3 의 기본 묶음으로 (gen_scenes.preset_id 는 비울 수 없다)
     const needDefault = scenes.some((x) => presetOf(x) === null)
     const defaultId = folders.length + 1
-    const presetRows: Nais3OutRow[] = folders.map((f, i) => {
-      const inside = scenes.filter((x) => presetOf(x) === i + 1)
-      // 묶음 안 모든 씬의 출연이 같으면 NAIS3 의 묶음 캐릭터 지정으로 옮길 수 있다
-      const casts = inside.map((x) => (Array.isArray(x.cast) ? JSON.stringify(x.cast) : null))
-      const same = inside.length > 0 && casts.every((c) => c !== null && c === casts[0])
-      const ids = same ? (JSON.parse(casts[0]!) as unknown[]).flatMap((id) => (typeof id === 'number' && charIds.has(id) ? [charIds.get(id)!] : [])) : []
-      return {
-        id: i + 1,
-        name: s(f.name) || '묶음',
-        sort_order: i,
-        default_width: null,
-        default_height: null,
-        character_ids: same && ids.length ? JSON.stringify(ids) : null
-      }
-    })
+    // 묶음의 캐릭터 지정(character_ids)은 NAIS3 1.0.33 이 생성에 쓰지 않는 값이라 채우지 않는다 — 씬 출연은 잃는 것으로 알린다
+    const presetRows: Nais3OutRow[] = folders.map((f, i) => ({
+      id: i + 1,
+      name: s(f.name) || '묶음',
+      sort_order: i,
+      default_width: null,
+      default_height: null,
+      character_ids: null
+    }))
     if (needDefault) presetRows.push({ id: defaultId, name: '기본', sort_order: presetRows.length, default_width: null, default_height: null, character_ids: null })
     const orderIn = new Map<number, number>()
     const rows: Nais3OutRow[] = scenes.map((x, i) => {
@@ -254,9 +252,7 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
       orderIn.set(preset, order + 1)
       const size = isObj(x.size) ? { width: n(x.size.width, mainSize.width), height: n(x.size.height, mainSize.height) } : null
       if (!size) lost.add('씬', `메인 해상도를 따르던 씬 → 내보낼 때의 해상도(${mainSize.width}×${mainSize.height})로 고정`, name)
-      const presetRow = presetRows.find((p) => p.id === preset)
-      if (Array.isArray(x.cast) && !presetRow?.character_ids) lost.add('씬', '씬별 출연 캐릭터 — NAIS3 는 묶음 단위로만 지정', name)
-      if (Array.isArray(x.cast) && presetRow?.character_ids && charIds.size === 0) lost.add('씬', '출연 캐릭터 — 캐릭터를 함께 내보내지 않음', name)
+      if (Array.isArray(x.cast)) lost.add('씬', '씬별 출연 캐릭터 — NAIS3 에는 씬마다 쓰는 출연 지정이 없어, NAIS3 에서는 켜 둔 캐릭터 카드로 생성됩니다', name)
       if (isObj(x.castCenters) && Object.keys(x.castCenters).length) lost.add('씬', '씬별 출연 위치 — NAIS3 는 캐릭터 카드의 위치를 씀', name)
       const extra = extraKeys(x, ['id', 'name', 'folderId', 'prompt', 'negative', 'size', 'cast', 'castCenters', 'reserve'])
       if (extra.length) lost.add('씬', `NAIP 전용 씬 항목(${extra.join(', ')})`, name)
@@ -282,7 +278,7 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
 
   // ── 바이브 ──
   const vb = want.has('vibes') && isObj(data.vibes) ? data.vibes : null
-  if (vb) {
+  if (vb && !empty('vibes', items(vb.vibes).length)) {
     const rows: Nais3OutRow[] = []
     for (const [i, v] of items(vb.vibes).entries()) {
       const name = s(v.name) || '바이브'
@@ -297,15 +293,28 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
         list.push({ ie: keyIe, data: value })
         byModel.set(key.slice(0, cut), list)
       }
+      const image = s(v.image)
+      // 원본 없는 바이브는 NAIS3 에서 다시 인코딩할 수 없어 정보 추출값이 저장된 인코딩의 값으로 고정되고,
+      // 그 값의 인코딩이 없으면 생성이 실패한다 — 행의 값을 인코딩이 있는 값으로 맞춘다
+      // (지금 값의 인코딩이 있으면 그대로, 없으면 가장 많은 모델이 가진 값)
+      let rowIe = ie
+      if (!image && byModel.size && ![...byModel.values()].some((list) => list.some((e) => e.ie === ie))) {
+        const tally = new Map<number, number>()
+        for (const list of byModel.values()) for (const x of new Set(list.map((e) => e.ie))) tally.set(x, (tally.get(x) ?? 0) + 1)
+        rowIe = [...tally.entries()].reduce((a, b) => (b[1] > a[1] ? b : a))[0]
+        lost.add('바이브', '원본 없는 바이브의 정보 추출값 → 저장된 인코딩의 값으로 (NAIS3 는 원본 없이 다시 인코딩할 수 없음)', `${name}: ${ie} → ${rowIe}`)
+      }
       const cache: VibeCache = {}
       for (const [model, list] of byModel) {
-        cache[model] = list.find((e) => e.ie === ie) ?? list[0]
+        cache[model] = list.find((e) => e.ie === rowIe) ?? list[0]
         if (list.length > 1) {
           lost.add('바이브', '같은 모델의 다른 정보 추출값 인코딩 — NAIS3 는 모델마다 하나만 보관', `${name} (${model})`, list.length - 1)
         }
+        if (!image && cache[model].ie !== rowIe) {
+          lost.add('바이브', '원본이 없고 정보 추출값이 달라 NAIS3 에서 쓸 수 없는 인코딩', `${name} (${model}, ${cache[model].ie})`)
+        }
       }
       const packed = Object.keys(cache).length ? packVibeCache(cache) : null
-      const image = s(v.image)
       let file: { file: Uint8Array; ext: string }
       if (image) {
         const bytes = fromBase64(image)
@@ -325,20 +334,22 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
         thumbnail: thumb ? fromBase64(thumb) : null,
         enabled: v.enabled ? 1 : 0,
         strength: n(v.strength, 0.6),
-        info_extracted: ie,
+        info_extracted: rowIe,
         encoded: packed,
-        encoded_ie: packed ? ie : null,
+        encoded_ie: packed ? rowIe : null,
         folder_id: null,
         sort_order: i
       })
     }
-    use('vibe_images', rows)
-    exported.push({ section: 'vibes', label: SECTION_LABELS.vibes, count: rows.length })
+    if (!empty('vibes', rows.length)) {
+      use('vibe_images', rows)
+      exported.push({ section: 'vibes', label: SECTION_LABELS.vibes, count: rows.length })
+    }
   }
 
   // ── 정밀 레퍼런스 ──
   const cr = want.has('charRefs') && isObj(data.charRefs) ? data.charRefs : null
-  if (cr) {
+  if (cr && !empty('charRefs', items(cr.charRefs).length)) {
     const rows: Nais3OutRow[] = []
     for (const [i, r] of items(cr.charRefs).entries()) {
       const name = s(r.name) || '레퍼런스'
@@ -373,8 +384,10 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
         sort_order: i
       })
     }
-    use('charref_images', rows)
-    exported.push({ section: 'charRefs', label: SECTION_LABELS.charRefs, count: rows.length })
+    if (!empty('charRefs', rows.length)) {
+      use('charref_images', rows)
+      exported.push({ section: 'charRefs', label: SECTION_LABELS.charRefs, count: rows.length })
+    }
   }
 
   // ── 작업 중인 프롬프트 → mainParams ──

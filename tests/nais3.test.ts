@@ -23,6 +23,7 @@ import {
   type ConversionReport
 } from '../src/backup'
 import { fromUtf8, sniffImage, toBase64, utf8 } from '../src/backup/bytes'
+import { sha256Hex } from '../src/backup/hash'
 import { parseVibeCache, packVibeCache } from '../src/backup/nais3/vibe-cache'
 import { nais3ReadNaisArchive, nais3ValidateRows } from './helpers/nais3-reference'
 import { craftZip, rewriteZip } from './helpers/zip-craft'
@@ -101,11 +102,13 @@ describe('NAIS3 .nais import (real archive written by NAIS3)', () => {
     ])
     expect(list(data.scenes, 'scenes')).toEqual([
       { id: 1, name: '교실', folderId: 1, prompt: 'classroom, desk', negative: 'lowres', size: { width: 832, height: 1216 }, reserve: 3 },
-      { id: 2, name: '해변', folderId: 2, prompt: 'beach, ocean', negative: '', size: { width: 1216, height: 832 }, reserve: 2, cast: [1, 2] },
-      { id: 3, name: '숲', folderId: 2, prompt: 'forest', negative: '', size: { width: 1024, height: 1024 }, reserve: 0, cast: [1, 2] }
+      { id: 2, name: '해변', folderId: 2, prompt: 'beach, ocean', negative: '', size: { width: 1216, height: 832 }, reserve: 2 },
+      { id: 3, name: '숲', folderId: 2, prompt: 'forest', negative: '', size: { width: 1024, height: 1024 }, reserve: 0 }
     ])
     expect(line(report.notImported, '씬', '기본 해상도')?.items).toEqual(['야외 (1024×1024)'])
-    expect(line(report.transformed, '씬', '출연 캐릭터로')?.items).toEqual(['해변', '숲'])
+    // NAIS3 1.0.33 은 묶음의 캐릭터 지정(character_ids)을 생성에 쓰지 않는다 — 씬 출연으로 옮기면 생성 캐릭터가 달라진다
+    expect(line(report.notImported, '씬', '묶음의 캐릭터 지정')?.items).toEqual(['야외'])
+    expect(line(report.transformed, '씬', '출연 캐릭터로')).toBeUndefined()
     expect(line(report.transformed, '씬', '합계 예약')?.items).toEqual(['해변'])
   })
 
@@ -204,9 +207,8 @@ describe('NAIS3 .nais import (real archive written by NAIS3)', () => {
     expect(seen.filter((s) => s.startsWith('charRef')).length).toBe(6)
     const chars = list(data.characters, 'characters')
     expect(chars.every((c) => (c.id as number) > 5000)).toBe(true)
-    // 씬 출연도 같은 새 id 를 가리킨다
-    const beach = list(data.scenes, 'scenes').find((s) => s.name === '해변')!
-    expect(beach.cast).toEqual([chars.find((c) => c.name === 'Alice' && c.folderId !== null)!.id, chars.find((c) => c.name === 'Bob')!.id])
+    // 출연(켜 둔 카드)도 같은 새 id 를 가리킨다
+    expect((data.characters!.cast as { charId: number }[]).map((c) => c.charId)).toEqual([chars.find((c) => c.name === 'Bob')!.id, chars.find((c) => c.name === 'Alice' && c.folderId !== null)!.id])
     expect(list(data.charRefs, 'charRefs')[0].thumb).toBe('data:image/jpeg;base64,THUMB')
   })
 
@@ -265,6 +267,59 @@ describe('NAIS3 .nais import (real archive written by NAIS3)', () => {
     expect(list(data.vibes, 'vibes')[0].image).toBe(toBase64(Uint8Array.from(atob(PNG_1X1), (c) => c.charCodeAt(0))))
     expect(list(data.charRefs, 'charRefs')).toEqual([])
     expect(line(report.notImported, '정밀 레퍼런스', '원본 그림을 읽지 못함')?.items).toEqual(['r'])
+  })
+
+  it('uses split prompt parts only when they still join to the prompt (like NAIS3)', async () => {
+    const legacy = {
+      _app: 'NAIS3',
+      _version: 1,
+      mainParams: JSON.stringify({ prompt: 'current main prompt', promptParts: { base: 'stale', additional: '', detail: '' } }),
+      tables: {
+        prompt_presets: [
+          // 3분할을 끈 뒤 prompt 만 고친 프리셋 — 조각은 예전 것
+          { id: 1, name: '고친 것', prompt: 'NEW edited prompt', negative_prompt: '', sort_order: 0, params_json: null, prompt_parts_json: JSON.stringify({ base: 'old base', additional: 'old add', detail: 'old detail' }) },
+          { id: 2, name: '그대로', prompt: 'a, b, c', negative_prompt: '', sort_order: 1, params_json: null, prompt_parts_json: JSON.stringify({ base: 'a', additional: 'b', detail: 'c' }) }
+        ]
+      }
+    }
+    const { data, report } = await importNais3(nais3ArchiveFromLegacyJson(legacy))
+    const presets = list(data.presets, 'presets')
+    expect(presets[0]).toMatchObject({ base: 'NEW edited prompt', detail: '' })
+    expect(presets[1]).toMatchObject({ base: 'a, b', detail: 'c' })
+    expect(line(report.transformed, '프롬프트 프리셋', '3분할 정보가 지금 프롬프트와 달라')?.items).toEqual(['고친 것'])
+    expect(data.prompt).toMatchObject({ base: 'current main prompt', additional: '', detail: '' })
+  })
+
+  it('skips rows whose id repeats instead of merging them into one item', async () => {
+    const row = (id: number, name: string) => ({ id, name, prompt: name, negative_prompt: '', enabled: 0, center_x: 0.5, center_y: 0.5, folder_id: null, sort_order: 0, settings_json: '{}' })
+    const legacy = { _app: 'NAIS3', _version: 1, mainParams: null, tables: { character_prompts: [row(5, 'A'), row(5, 'B'), row(6, 'C')] } }
+    const archive = nais3ArchiveFromLegacyJson(legacy)
+    expect(archive.tables.character_prompts!.map((r) => r.name)).toEqual(['A', 'C'])
+    expect(archive.problems.some((p) => p.detail.includes('id 5'))).toBe(true)
+    let next = 100
+    const { data } = await importNais3(archive, { newId: () => ++next })
+    const ids = list(data.characters, 'characters').map((c) => c.id)
+    expect(new Set(ids).size).toBe(ids.length)
+
+    // .nais 도 같게
+    const sink = memorySink()
+    await exportNais3({ fragments: { folders: [], fragments: [{ id: 1, name: 'x', folderId: null, content: 'a' }, { id: 2, name: 'y', folderId: null, content: 'b' }] } }, sink, { appVersion: '0.12.0' })
+    let table: Uint8Array = new Uint8Array()
+    const dup = await rewriteZip(sink.bytes(), (path, data) => {
+      if (path !== 'data/tables/fragments.json') return data
+      table = utf8(fromUtf8(data).replace('"id": 2', '"id": 1'))
+      return table
+    })
+    // 체크섬도 맞춰 준다 (손으로 고친 파일)
+    const resummed = await rewriteZip(dup, (path, data) => {
+      if (path !== 'checksums.json') return data
+      const sums = JSON.parse(fromUtf8(data)) as Record<string, { sha256: string; bytes: number }>
+      sums['data/tables/fragments.json'] = { sha256: sha256Hex(table), bytes: table.byteLength }
+      return utf8(JSON.stringify(sums))
+    })
+    const nais = await readNaisArchive(bytesSource(resummed))
+    expect(nais.tables.fragments!.map((r) => r.name)).toEqual(['x'])
+    expect(nais.problems.some((p) => p.path === 'data/tables/fragments.json' && p.detail.includes('id 1'))).toBe(true)
   })
 
   it('plans a merge of the imported data like any other backup', async () => {
@@ -381,7 +436,7 @@ describe('NAIS3 .nais export', () => {
     expect(plan.output.mainParams).toBeNull()
   })
 
-  it('maps a shared scene cast to the NAIS3 scene-preset character binding', () => {
+  it('reports scene casts as lost instead of writing the scene-preset binding NAIS3 ignores', () => {
     const data: BackupData = {
       characters: { folders: [], characters: [{ id: 7, name: 'A', folderId: null, prompt: '', negative: '' }], cast: [] },
       scenes: {
@@ -393,8 +448,69 @@ describe('NAIS3 .nais export', () => {
       }
     }
     const plan = naipToNais3(data)
-    expect(plan.output.tables.scene_presets).toEqual([{ id: 1, name: 'g', sort_order: 0, default_width: null, default_height: null, character_ids: '[1]' }])
-    expect(plan.lost.some((l) => l.text.includes('씬별 출연 캐릭터'))).toBe(false)
+    expect(plan.output.tables.scene_presets).toEqual([{ id: 1, name: 'g', sort_order: 0, default_width: null, default_height: null, character_ids: null }])
+    expect(plan.lost.find((l) => l.text.includes('씬별 출연 캐릭터'))?.items).toEqual(['s1', 's2'])
+  })
+
+  it('leaves out empty sections so NAIS3 keeps its own tables', () => {
+    const plan = naipToNais3(
+      {
+        presets: { presets: [{ id: 1, name: 'p', base: 'a', detail: '', negative: '', params: PARAMS }] },
+        characters: { folders: [{ id: 1, name: 'f' }], characters: [], slots: [], options: {} },
+        fragments: { folders: [], fragments: [] },
+        scenes: { folders: [{ id: 2, name: '묶음' }], scenes: [] },
+        vibes: { vibes: [{ id: 3, name: '빈 바이브', image: '', thumb: '', strength: 0.6, infoExtracted: 1, enabled: true, encodings: {} }] },
+        charRefs: { charRefs: [] }
+      },
+      { sections: ALL }
+    )
+    expect(plan.output.includedTables).toEqual(['prompt_presets'])
+    expect(plan.exported.map((e) => e.section)).toEqual(['presets'])
+    for (const label of ['캐릭터', '조각', '씬', '바이브', '정밀 레퍼런스']) {
+      expect(plan.lost.some((l) => l.scope === label && l.text.includes('NAIS3 쪽 것은 그대로'))).toBe(true)
+    }
+  })
+
+  it('exports Phase 2 characters (split prompt, fixed slots) with their prompt and enabled cards', () => {
+    const plan = naipToNais3({
+      characters: {
+        folders: [],
+        characters: [
+          { id: 5, name: 'Alice', folderId: null, base: '1girl, blonde hair', additional: 'smile', detail: '', negative: 'bad', variations: [] },
+          { id: 6, name: 'Bob', folderId: null, base: '1boy', additional: '', detail: '', negative: '', variations: [] }
+        ],
+        slots: [
+          { id: 1, mode: 'fixed', charId: 5, enabled: true, center: { x: 0.3, y: 0.5 }, candidates: [] },
+          { id: 2, mode: 'random', charId: null, enabled: true, center: null, candidates: [{ kind: 'char', id: 6 }] }
+        ],
+        options: {}
+      }
+    })
+    expect(plan.output.tables.character_prompts!.map((r) => [r.name, r.prompt, r.enabled, r.center_x])).toEqual([
+      ['Alice', '1girl, blonde hair, smile', 1, 0.3],
+      ['Bob', '1boy', 0, 0.5]
+    ])
+    expect(plan.lost.some((l) => l.text.includes('무작위·순차·확률 출연 슬롯'))).toBe(true)
+  })
+
+  it('pins an image-less vibe to the information-extracted value its encodings were made with', async () => {
+    const data: BackupData = {
+      vibes: {
+        vibes: [
+          // 슬라이더는 1 이지만 인코딩은 0.7 뿐 — NAIS3 는 원본 없이 다시 인코딩할 수 없다
+          { id: 1, name: '복원', image: '', thumb: '', strength: 0.5, infoExtracted: 1, enabled: true, encodings: { 'nai-diffusion-4-5-full|0.7': 'E07', 'nai-diffusion-4-5-curated|0.5': 'C05' } },
+          // 원본이 있으면 NAIS3 가 다시 인코딩하므로 슬라이더 값을 그대로 둔다
+          { id: 2, name: '그림', image: PNG_1X1, thumb: '', strength: 0.5, infoExtracted: 1, enabled: true, encodings: { 'nai-diffusion-4-5-full|0.7': 'E07' } }
+        ]
+      }
+    }
+    const plan = naipToNais3(data, { sections: ['vibes'] })
+    const [restored, pictured] = plan.output.tables.vibe_images!
+    expect(restored).toMatchObject({ info_extracted: 0.7, encoded_ie: 0.7 })
+    expect(parseVibeCache(restored.encoded as string, null)['nai-diffusion-4-5-full']).toEqual({ ie: 0.7, data: 'E07' })
+    expect(pictured).toMatchObject({ info_extracted: 1 })
+    expect(plan.lost.find((l) => l.text.includes('원본 없는 바이브의 정보 추출값'))?.items).toEqual(['복원: 1 → 0.7'])
+    expect(plan.lost.find((l) => l.text.includes('NAIS3 에서 쓸 수 없는 인코딩'))?.items).toEqual(['복원 (nai-diffusion-4-5-curated, 0.5)'])
   })
 })
 

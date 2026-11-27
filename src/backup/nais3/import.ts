@@ -8,7 +8,7 @@
  * | character_folders / character_prompts| characters.folders / characters.characters, enabled → cast     |
  * | prompt_presets (+params, 3분할)       | presets.presets (가변 칸은 고정 칸 끝에 붙임)                    |
  * | fragment_folders / fragments         | fragments.folders / fragments.fragments                       |
- * | scene_presets / gen_scenes           | scenes.folders(묶음) / scenes.scenes (+묶음 캐릭터 → 씬 출연)     |
+ * | scene_presets / gen_scenes           | scenes.folders(묶음) / scenes.scenes (묶음 캐릭터 지정은 뺌)        |
  * | vibe_images (+인코딩 캐시, .nais3vibe) | vibes.vibes (encodings `${model}|${ie}`)                       |
  * | charref_images (V5 종류 포함)          | charRefs.charRefs (type + sameOutfit)                          |
  * | data/settings.json mainParams        | prompt (작업 중인 프롬프트)                                      |
@@ -112,8 +112,17 @@ function parseObject(raw: Nais3Value | undefined): { value: Record<string, unkno
   }
 }
 
-function joinPrompt(a: string, b: string): string {
-  return [a, b].filter((p) => p.trim()).join(', ')
+function joinPrompt(...parts: string[]): string {
+  return parts.filter((p) => p.trim()).join(', ')
+}
+
+/**
+ * 3분할 조각을 쓸지 — NAIS3 는 조각을 합친 것이 prompt 와 똑같을 때만 조각을 쓴다
+ * (prompt-presets-store partsForApply, generation-store setPromptSplitEnabled). 3분할을 끈 채 prompt 만 고치면
+ * 조각은 예전 내용으로 남으므로, 다르면 prompt 가 진짜다.
+ */
+function freshParts(prompt: string, base: string, additional: string, detail: string): boolean {
+  return joinPrompt(base, additional, detail) === prompt
 }
 
 function dataUrl(bytes: Uint8Array): string {
@@ -238,10 +247,6 @@ export async function importNais3(archive: Nais3Archive, opts: Nais3ImportOption
     data.characters = { folders, characters, cast }
     rb.imported('characters', characters.length)
   }
-  const charId = (nais3Id: number): number | null => {
-    if (!has('character_prompts')) return null
-    return (t.character_prompts ?? []).some((c) => c.id === nais3Id) ? idFor('character_prompts', nais3Id) : null
-  }
 
   // ── 프롬프트 프리셋 ──
   if (has('prompt_presets')) {
@@ -253,11 +258,16 @@ export async function importNais3(archive: Nais3Archive, opts: Nais3ImportOption
       const parts = parseObject(p.prompt_parts_json)
       if (parts.value && typeof parts.value.base === 'string') {
         const additional = typeof parts.value.additional === 'string' ? parts.value.additional : ''
-        base = parts.value.base
-        detail = typeof parts.value.detail === 'string' ? parts.value.detail : ''
-        if (additional.trim()) {
-          base = joinPrompt(base, additional)
-          rb.transformed('프롬프트 프리셋', 'NAIP 프리셋에는 가변 칸이 없어 고정 칸 끝에 붙임 (합친 프롬프트는 같음)', name)
+        const partDetail = typeof parts.value.detail === 'string' ? parts.value.detail : ''
+        if (!freshParts(base, parts.value.base, additional, partDetail)) {
+          rb.transformed('프롬프트 프리셋', '3분할 정보가 지금 프롬프트와 달라(3분할을 끈 뒤 고친 프리셋) NAIS3 처럼 프롬프트 전체를 고정 칸에', name)
+        } else {
+          base = parts.value.base
+          detail = partDetail
+          if (additional.trim()) {
+            base = joinPrompt(base, additional)
+            rb.transformed('프롬프트 프리셋', 'NAIP 프리셋에는 가변 칸이 없어 고정 칸 끝에 붙임 (합친 프롬프트는 같음)', name)
+          }
         }
       } else if (parts.broken) {
         rb.transformed('프롬프트 프리셋', '3분할 정보를 읽을 수 없어 합친 프롬프트를 고정 칸에', name)
@@ -310,30 +320,18 @@ export async function importNais3(archive: Nais3Archive, opts: Nais3ImportOption
   // ── 씬 ──
   if (has('gen_scenes') || has('scene_presets')) {
     const folders: BackupItem[] = []
-    const presetInfo = new Map<number, { id: number; name: string; order: number; cast: number[] | null }>()
+    const presetInfo = new Map<number, { id: number; name: string; order: number }>()
     sorted(t.scene_presets).forEach((p, order) => {
       const id = idFor('scene_presets', p.id as number)
       const name = str(p.name) || '묶음'
       folders.push({ id, name })
-      let cast: number[] | null = null
+      // 묶음의 캐릭터 지정(character_ids)은 NAIS3 1.0.33 이 생성에 쓰지 않는 예전 값이다 — NAIS3 의 씬은
+      // 사이드바에서 켠 캐릭터(또는 씬 출연)로 생성된다. NAIP 씬 출연(cast)으로 옮기면 생성되는 캐릭터가 달라지므로
+      // 옮기지 않는다 (씬은 프롬프트 화면 출연을 따른다 — NAIS3 와 같게)
       if (typeof p.character_ids === 'string' && p.character_ids.trim()) {
-        let raw: unknown = null
-        try {
-          raw = JSON.parse(p.character_ids)
-        } catch {
-          raw = null
-        }
-        if (Array.isArray(raw)) {
-          const ids = raw.filter((x): x is number => typeof x === 'number')
-          cast = ids.flatMap((x) => (charId(x) === null ? [] : [charId(x)!]))
-          if (cast.length < ids.length) {
-            rb.notImported('씬', `묶음에 지정된 캐릭터 중 ${ids.length - cast.length}명을 찾을 수 없음 (캐릭터를 함께 가져오지 않았거나 지워짐)`, name)
-          }
-        } else {
-          rb.notImported('씬', '묶음의 캐릭터 지정을 읽을 수 없음', name)
-        }
+        rb.notImported('씬', '묶음의 캐릭터 지정 — NAIS3 가 생성에 쓰지 않는 예전 값이라 가져오지 않음 (씬은 프롬프트 화면 출연을 따름)', name)
       }
-      presetInfo.set(p.id as number, { id, name, order, cast })
+      presetInfo.set(p.id as number, { id, name, order })
       if (p.default_width !== null && p.default_width !== undefined) {
         rb.notImported('씬', '묶음의 새 씬 기본 해상도 — NAIP 에 대응 항목이 없습니다', `${name} (${String(p.default_width)}×${String(p.default_height)})`)
       }
@@ -357,10 +355,6 @@ export async function importNais3(archive: Nais3Archive, opts: Nais3ImportOption
         negative: str(s.negative_prompt),
         size: { width: num(s.width, 832), height: num(s.height, 1216) },
         reserve: Math.min(999, Math.max(0, Math.round(num(s.reserve_count, 0))))
-      }
-      if (preset?.cast) {
-        scene.cast = preset.cast
-        rb.transformed('씬', '묶음에 지정한 캐릭터 → 그 묶음 안 씬마다 출연 캐릭터로', name)
       }
       const reserves = parseObject(s.reserve_json).value
       if (reserves && Object.entries(reserves).some(([k, v]) => k !== '' && typeof v === 'number' && v > 0)) {
@@ -487,8 +481,13 @@ export async function importNais3(archive: Nais3Archive, opts: Nais3ImportOption
 
   // ── 작업 중인 프롬프트 (mainParams) ──
   if (main) {
-    const parts = main.promptParts && typeof main.promptParts === 'object' ? (main.promptParts as Record<string, unknown>) : null
     const s = (v: unknown): string => (typeof v === 'string' ? v : '')
+    let parts = main.promptParts && typeof main.promptParts === 'object' ? (main.promptParts as Record<string, unknown>) : null
+    // 조각이 지금 prompt 와 다르면(3분할을 끈 뒤 고친 것) NAIS3 처럼 prompt 를 쓴다
+    if (parts && !(typeof parts.base === 'string' && freshParts(s(main.prompt), parts.base, s(parts.additional), s(parts.detail)))) {
+      parts = null
+      rb.transformed('작업 중인 프롬프트', '3분할 정보가 지금 프롬프트와 달라(3분할을 끈 뒤 고친 것) NAIS3 처럼 프롬프트 전체를 고정 칸에')
+    }
     const m = mapParams(main)
     if (m.missing.length) rb.transformed('작업 중인 프롬프트', `저장되지 않은 파라미터(${m.missing.join(', ')})는 NAIP 기본값으로`)
     if (m.invalid.length) rb.notImported('작업 중인 프롬프트', `값이 잘못된 파라미터(${m.invalid.join(', ')}) — 기본값을 씀`)
