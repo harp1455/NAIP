@@ -27,7 +27,9 @@ export const SECTION_IDS = [
   'saveFolders',
   'collections',
   'exportTemplates',
-  'queue',
+  // ── Phase 4 UI: 에셋 프로젝트 (naip-projects). 생성 대기열(queue)은 섹션에서 뺐다 — 배치에 i2i 원본·레퍼런스
+  // base64 가 들어 있고, 되살리면 유료 생성이 다시 돌 수 있다. 예전 백업의 'queue' 는 모르는 섹션으로 건너뛴다.
+  'projects',
   'history',
   'historyOriginals'
 ] as const
@@ -54,7 +56,7 @@ export const SECTION_LABELS: Record<SectionId, string> = {
   saveFolders: '저장 폴더·이름 번호',
   collections: '즐겨찾기·모음',
   exportTemplates: '내보내기 템플릿',
-  queue: '생성 대기열',
+  projects: '에셋 프로젝트',
   history: '히스토리 기록',
   historyOriginals: '히스토리 원본 그림'
 }
@@ -106,7 +108,8 @@ export interface SectionPayloads {
   } & Record<string, unknown>
   collections: Record<string, unknown>
   exportTemplates: Record<string, unknown>
-  queue: Record<string, unknown>
+  /** 에셋 프로젝트 스토어 (불투명) — 프로젝트·변환 프리셋 id 는 문자열 */
+  projects: { projects?: { id: string; name?: string; [key: string]: unknown }[]; activeId?: string | null } & Record<string, unknown>
 }
 
 /** 백업에 담기는 JSON 데이터 전체 (섹션이 없으면 그 섹션은 백업·복원 대상이 아님) */

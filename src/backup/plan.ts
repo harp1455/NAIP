@@ -9,6 +9,13 @@
  * - selective(골라서): 섹션마다 overwrite / merge / skip
  *
  * 섹션의 모양은 RESTORE_SCHEMA 로만 안다 — Phase 2 처럼 필드가 늘면 표에 컬렉션·참조를 더하면 된다.
+ *
+ * ── Phase 4 UI 에서 더한 것:
+ * - Phase 2 출연 슬롯(slots[].charId, slots[].candidates[].id — kind 'char' 는 캐릭터, 'folder' 는 폴더, null = 미분류)
+ * - 에셋 프로젝트(projects): id 가 문자열이라 addMissing — 합치면 지금 없는 id 의 프로젝트만 더하고 같은 id 는 지금 것을 유지.
+ *   프로젝트 캐릭터의 libraryId·vibeIds·refIds 는 바뀐 id 를 따라가고, 프로젝트 그림(AssetImage.id = 히스토리 id)은
+ *   바꾸지 않는다 — 히스토리 id 는 만든 시각(ms)이라 같은 id 를 같은 그림으로 본다 (restoreHistory 의 합치기도 같은 규칙).
+ * - 합치기에서 컬렉션이 아닌 배열(출연 슬롯 등)은 지금 것이 비어 있을 때만 백업 것을 쓴다.
  */
 import { countSection } from './format'
 import { DATA_SECTION_IDS, SECTION_LABELS, type BackupData, type DataSectionId, type SectionId } from './types'
@@ -33,6 +40,11 @@ export interface SectionSchema {
   lists?: string[]
   /** false = 합치기를 지원하지 않는 섹션 (합치기를 고르면 지금 것을 유지) */
   mergeable?: boolean
+  /**
+   * id(문자열도 됨)로만 합치는 배열 — 지금 없는 id 의 항목만 더하고 같은 id 는 지금 것을 유지한다
+   * (새 id·이름 바꾸기 없음). 에셋 프로젝트처럼 id 가 다른 데이터에 박혀 있어 바꿀 수 없는 것용 — Phase 4 UI
+   */
+  addMissing?: { key: string; nameField?: string }[]
 }
 
 export interface RefSchema {
@@ -45,6 +57,8 @@ export interface RefSchema {
   target: { section: DataSectionId; key: string }
   /** 가리키는 것이 없어지면: null 로 두기(기본, 예: 미분류 폴더) 또는 그 배열 항목을 빼기 */
   onMissing?: 'null' | 'drop'
+  /** 참조가 든 객체가 이 조건에 맞을 때만 (예: 슬롯 후보의 kind 가 'char') — Phase 4 UI */
+  when?: { field: string; equals?: string | number | boolean | null; notEquals?: string | number | boolean | null }
 }
 
 /** 섹션 처리 순서 — 참조는 항상 앞서 처리한 섹션·컬렉션을 가리켜야 한다 */
@@ -62,7 +76,7 @@ const ORDER: DataSectionId[] = [
   'masks',
   'collections',
   'exportTemplates',
-  'queue'
+  'projects'
 ]
 
 export const RESTORE_SCHEMA: { sections: Record<DataSectionId, SectionSchema>; refs: RefSchema[] } = {
@@ -95,7 +109,8 @@ export const RESTORE_SCHEMA: { sections: Record<DataSectionId, SectionSchema>; r
     saveFolders: { lists: ['saveFolders'], maps: [{ key: 'nameCounters', resolve: 'max' }] },
     collections: { mergeable: false },
     exportTemplates: { mergeable: false },
-    queue: { mergeable: false }
+    // ── Phase 4 UI
+    projects: { addMissing: [{ key: 'projects', nameField: 'name' }, { key: 'presets', nameField: 'name' }] }
   },
   refs: [
     { section: 'characters', path: 'characters[].folderId', target: { section: 'characters', key: 'folders' } },
@@ -104,14 +119,25 @@ export const RESTORE_SCHEMA: { sections: Record<DataSectionId, SectionSchema>; r
     { section: 'scenes', path: 'scenes[].folderId', target: { section: 'scenes', key: 'folders' } },
     { section: 'scenes', path: 'scenes[].cast[]', target: { section: 'characters', key: 'characters' } },
     { section: 'scenes', path: 'scenes[].castCenters{}', target: { section: 'characters', key: 'characters' } },
-    { section: 'prompt', path: 'activePresetId', target: { section: 'presets', key: 'presets' } }
+    { section: 'prompt', path: 'activePresetId', target: { section: 'presets', key: 'presets' } },
+    // ── Phase 4 UI: Phase 2 출연 슬롯. 고정 슬롯의 캐릭터가 사라지면 슬롯째 빼고(스토어 pruneSlots 와 같게),
+    // 다른 모드의 charId 는 비운다. 후보는 kind 에 따라 캐릭터·폴더를 가리키며 사라지면 후보에서 뺀다
+    { section: 'characters', path: 'slots[].charId', when: { field: 'mode', equals: 'fixed' }, target: { section: 'characters', key: 'characters' }, onMissing: 'drop' },
+    { section: 'characters', path: 'slots[].charId', when: { field: 'mode', notEquals: 'fixed' }, target: { section: 'characters', key: 'characters' } },
+    { section: 'characters', path: 'slots[].candidates[].id', when: { field: 'kind', equals: 'char' }, target: { section: 'characters', key: 'characters' }, onMissing: 'drop' },
+    { section: 'characters', path: 'slots[].candidates[].id', when: { field: 'kind', equals: 'folder' }, target: { section: 'characters', key: 'folders' }, onMissing: 'drop' },
+    // 에셋 프로젝트 → 캐릭터 라이브러리·바이브·레퍼런스 (libraryId 가 없어지면 null = 프로젝트 전용 캐릭터)
+    { section: 'projects', path: 'projects[].characters[].libraryId', target: { section: 'characters', key: 'characters' } },
+    { section: 'projects', path: 'projects[].characters[].vibeIds[]', target: { section: 'vibes', key: 'vibes' } },
+    { section: 'projects', path: 'projects[].characters[].refIds[]', target: { section: 'charRefs', key: 'charRefs' } }
   ]
 }
 
 export interface PlanChange {
-  kind: 'added' | 'identical' | 'new-id' | 'renamed' | 'replaced' | 'removed' | 'dangling'
+  /** kept = 합치기에서 같은 id 라 지금 것을 유지한 항목 (addMissing) */
+  kind: 'added' | 'identical' | 'new-id' | 'renamed' | 'replaced' | 'removed' | 'dangling' | 'kept'
   collection: string
-  id: number | null
+  id: number | string | null
   name?: string
   newId?: number
   newName?: string
@@ -132,6 +158,8 @@ export interface SectionStats {
   idConflicts: number
   /** 가리키는 대상이 없어 끊은 참조 */
   dangling: number
+  /** 합치기에서 같은 id 라 지금 것을 유지한 항목 (addMissing) */
+  kept: number
 }
 
 export interface SectionPlan {
@@ -185,13 +213,24 @@ function isObj(v: unknown): v is Obj {
 
 const DROP = Symbol('drop')
 
+type When = RefSchema['when']
+
+function matchesWhen(obj: Obj, when: When): boolean {
+  if (!when) return true
+  const v = obj[when.field]
+  if ('equals' in when && v !== when.equals) return false
+  if ('notEquals' in when && v === when.notEquals) return false
+  return true
+}
+
 /** 경로의 id 들을 fn 으로 바꾼 새 값 (원본은 건드리지 않는다). fn 이 null 이면 끊는다 */
-function mapRefs(value: unknown, tokens: Token[], fn: (id: number) => number | null, drop: boolean): unknown {
+function mapRefs(value: unknown, tokens: Token[], fn: (id: number) => number | null, drop: boolean, when?: When): unknown {
   if (!isObj(value) || !tokens.length) return value
   const [t, ...rest] = tokens
   if (!(t.key in value)) return value
   const cur = value[t.key]
   if (!rest.length) {
+    if (!matchesWhen(value, when)) return value
     if (t.kind === 'array') {
       if (!Array.isArray(cur)) return value
       const next = cur.flatMap((x) => {
@@ -222,15 +261,15 @@ function mapRefs(value: unknown, tokens: Token[], fn: (id: number) => number | n
   }
   if (t.kind === 'array') {
     if (!Array.isArray(cur)) return value
-    return { ...value, [t.key]: cur.map((x) => mapRefs(x, rest, fn, drop)).filter((x) => x !== DROP) }
+    return { ...value, [t.key]: cur.map((x) => mapRefs(x, rest, fn, drop, when)).filter((x) => x !== DROP) }
   }
-  const inner = mapRefs(cur, rest, fn, drop)
+  const inner = mapRefs(cur, rest, fn, drop, when)
   return inner === DROP ? value : { ...value, [t.key]: inner }
 }
 
-function collectRefs(value: unknown, tokens: Token[]): number[] {
+function collectRefs(value: unknown, tokens: Token[], when?: When): number[] {
   const out: number[] = []
-  mapRefs(value, tokens, (id) => (out.push(id), id), false)
+  mapRefs(value, tokens, (id) => (out.push(id), id), false, when)
   return out
 }
 
@@ -257,8 +296,14 @@ function idOf(item: Obj): number | null {
   return typeof item.id === 'number' && Number.isFinite(item.id) ? item.id : null
 }
 
+/** 숫자 또는 문자열 id (addMissing 용) */
+function keyOf(item: Obj): number | string | null {
+  if (typeof item.id === 'string' && item.id) return item.id
+  return idOf(item)
+}
+
 function emptyStats(): SectionStats {
-  return { incoming: 0, current: 0, added: 0, identical: 0, replaced: 0, removed: 0, renamed: 0, reassigned: 0, idConflicts: 0, dangling: 0 }
+  return { incoming: 0, current: 0, added: 0, identical: 0, replaced: 0, removed: 0, renamed: 0, reassigned: 0, idConflicts: 0, dangling: 0, kept: 0 }
 }
 
 function resolveAction(id: SectionId, opts: PlanOptions): SectionAction {
@@ -339,7 +384,8 @@ export function planRestore(current: BackupData, incoming: BackupData, opts: Pla
             changes.push({ kind: 'dangling', collection: r.path, id: ref })
             return null
           },
-          r.onMissing === 'drop'
+          r.onMissing === 'drop',
+          r.when
         ) as Obj
       }
     }
@@ -352,21 +398,21 @@ export function planRestore(current: BackupData, incoming: BackupData, opts: Pla
       }
       applyRefs(() => true)
       result = incObj
-      for (const c of schema.collections ?? []) {
-        const before = new Map(itemsOf(curObj[c.key]).map((x) => [idOf(x), x]))
+      for (const c of [...(schema.collections ?? []), ...(schema.addMissing ?? [])]) {
+        const before = new Map(itemsOf(curObj[c.key]).map((x) => [keyOf(x), x]))
         const after = itemsOf(incObj[c.key])
-        const afterIds = new Set(after.map(idOf))
+        const afterIds = new Set(after.map(keyOf))
         for (const item of after) {
-          const prev = before.get(idOf(item))
+          const prev = before.get(keyOf(item))
           const name = typeof item[c.nameField ?? 'name'] === 'string' ? (item[c.nameField ?? 'name'] as string) : undefined
           if (!prev) {
             stats.added++
-            changes.push({ kind: 'added', collection: c.key, id: idOf(item), name })
+            changes.push({ kind: 'added', collection: c.key, id: keyOf(item), name })
           } else if (deepEqual(prev, item)) {
             stats.identical++
           } else {
             stats.replaced++
-            changes.push({ kind: 'replaced', collection: c.key, id: idOf(item), name })
+            changes.push({ kind: 'replaced', collection: c.key, id: keyOf(item), name })
           }
         }
         for (const [bid, prev] of before) {
@@ -445,6 +491,43 @@ export function planRestore(current: BackupData, incoming: BackupData, opts: Pla
     }
     applyRefs((k) => !collectionKeys.has(k))
 
+    // ── Phase 4 UI: id 로만 합치는 배열 — 지금 없는 id 만 더하고, 같은 id 는 지금 것을 유지
+    for (const c of schema.addMissing ?? []) {
+      const existing = itemsOf(curObj[c.key])
+      const byKey = new Map(existing.map((x) => [keyOf(x), x]))
+      const out: Obj[] = [...existing]
+      let noId = 0
+      for (const item of itemsOf(incObj[c.key])) {
+        const k = keyOf(item)
+        const name = c.nameField && typeof item[c.nameField] === 'string' ? (item[c.nameField] as string) : undefined
+        if (k === null) {
+          noId++
+          continue
+        }
+        const same = byKey.get(k)
+        if (same) {
+          if (deepEqual(same, item)) {
+            stats.identical++
+            changes.push({ kind: 'identical', collection: c.key, id: k, name })
+          } else {
+            stats.kept++
+            stats.idConflicts++
+            changes.push({ kind: 'kept', collection: c.key, id: k, name })
+          }
+          continue
+        }
+        byKey.set(k, item)
+        out.push(item)
+        stats.added++
+        changes.push({ kind: 'added', collection: c.key, id: k, name })
+      }
+      result[c.key] = out
+      if (noId) notes.push(`${SECTION_LABELS[id]}: id 가 없는 항목 ${noId}개는 건너뜁니다`)
+    }
+    if (stats.kept) {
+      notes.push(`${SECTION_LABELS[id]}: 같은 id 가 이미 있는 항목 ${stats.kept}개는 지금 것을 유지합니다 (덮어쓰기를 고르면 백업 것으로 바뀝니다)`)
+    }
+
     for (const m of schema.maps ?? []) {
       const a = isObj(curObj[m.key]) ? (curObj[m.key] as Obj) : {}
       const b = isObj(incObj[m.key]) ? (incObj[m.key] as Obj) : {}
@@ -481,12 +564,20 @@ export function planRestore(current: BackupData, incoming: BackupData, opts: Pla
       }
       result[key] = merged
     }
-    // 나머지 필드(출연·작업 중인 프롬프트·설정값 …): 지금 값을 유지하고, 지금 없는 것만 백업에서
-    const handled = new Set([...collectionKeys, ...(schema.maps ?? []).map((m) => m.key), ...(schema.lists ?? [])])
+    // 나머지 필드(출연·작업 중인 프롬프트·설정값 …): 지금 값을 유지하고, 지금 없는 것만 백업에서.
+    // 지금 값이 빈 배열이면(예: 출연 슬롯이 비었으면) 백업 것을 쓴다 — Phase 4 UI
+    const handled = new Set([
+      ...collectionKeys,
+      ...(schema.addMissing ?? []).map((c) => c.key),
+      ...(schema.maps ?? []).map((m) => m.key),
+      ...(schema.lists ?? [])
+    ])
     let keptCurrent = 0
     for (const key of new Set([...Object.keys(curObj), ...Object.keys(incObj)])) {
       if (handled.has(key)) continue
-      if (key in curObj) {
+      const fillEmpty =
+        Array.isArray(curObj[key]) && !(curObj[key] as unknown[]).length && Array.isArray(incObj[key]) && (incObj[key] as unknown[]).length > 0
+      if (key in curObj && !fillEmpty) {
         result[key] = curObj[key]
         if (key in incObj && !deepEqual(curObj[key], incObj[key])) keptCurrent++
       } else {
@@ -502,7 +593,7 @@ export function planRestore(current: BackupData, incoming: BackupData, opts: Pla
   for (const r of RESTORE_SCHEMA.refs) {
     if (planned.has(r.section) || !planned.has(r.target.section)) continue
     const ids = idsOfTarget(r.target)
-    const missing = collectRefs(cur[r.section], parsePath(r.path)).filter((x) => !ids.has(x)).length
+    const missing = collectRefs(cur[r.section], parsePath(r.path), r.when).filter((x) => !ids.has(x)).length
     if (missing) {
       plan.warnings.push(
         `지금 ${SECTION_LABELS[r.section]} 중 ${missing}곳이 복원 뒤에는 없는 ${SECTION_LABELS[r.target.section]} 항목을 가리킵니다 (그 연결은 무시됩니다)`
@@ -540,6 +631,8 @@ export interface SectionPreview {
   /** 충돌 예시 (최대 50개) */
   conflicts: PlanChange[]
   mergeable: boolean
+  /** 합칠 때 같은 id·다른 내용을 어떻게 하는지: new-id = 새 id 로 더함, keep-current = 지금 것 유지, none = 합치기 없음 */
+  mergePolicy: 'new-id' | 'keep-current' | 'none'
 }
 
 /** 백업 안에 무엇이 들었고 지금 데이터와 무엇이 부딪히는지 */
@@ -562,8 +655,9 @@ export function previewRestore(current: BackupData, incoming: BackupData): Secti
       nameConflicts: m?.stats.renamed ?? 0,
       newItems: o?.stats.added ?? 0,
       removedOnOverwrite: o?.stats.removed ?? 0,
-      conflicts: (m?.changes ?? []).filter((c) => c.kind === 'new-id' || c.kind === 'renamed').slice(0, 50),
-      mergeable: schema.mergeable !== false
+      conflicts: (m?.changes ?? []).filter((c) => c.kind === 'new-id' || c.kind === 'renamed' || c.kind === 'kept').slice(0, 50),
+      mergeable: schema.mergeable !== false,
+      mergePolicy: schema.mergeable === false ? 'none' : schema.addMissing ? 'keep-current' : 'new-id'
     })
   }
   return out

@@ -167,13 +167,15 @@ export function countSection(id: SectionId, payload: unknown): number {
       return p.entries && typeof p.entries === 'object' ? Object.keys(p.entries).length : 0
     case 'saveFolders':
       return len('saveFolders')
+    case 'projects':
+      return len('projects')
     default:
       return Object.keys(p).length ? 1 : 0
   }
 }
 
 /** 설정 스토어 상태 → 백업할 설정과 저장 폴더 섹션. 서버에서 받는 구독 정보는 백업하지 않는다 */
-export const TRANSIENT_SETTINGS = ['subscription', 'subscriptionAt', 'subscriptionError', 'hydrated'] as const
+export const TRANSIENT_SETTINGS = ['subscription', 'subscriptionAt', 'subscriptionError', 'hydrated', 'secretsLoaded'] as const
 export const SAVE_FOLDER_KEYS = ['saveFolders', 'saveFolder', 'nameMode', 'nameCounters'] as const
 
 export function splitSettings(state: Record<string, unknown>): Pick<BackupData, 'settings' | 'saveFolders'> {

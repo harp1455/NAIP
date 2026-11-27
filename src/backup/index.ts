@@ -13,6 +13,10 @@
  *            plan = planRestore(current, data, { mode, sections, newId: uid, hasHistory, hasOriginals })
  *            applyRestorePlan(plan)  (stores.ts) + restoreHistory(reader, historyPort, plan.history)
  * NAIS3로:  naipToNais3(data) 로 잃는 것 확인 → exportNais3(data, sink, { appVersion })
+ *
+ * ── Phase 4 UI: 앱 연결은 app.ts (화면이 동적 import), 히스토리 포트는 ports.ts (Phase 3 SQLite + 파일),
+ *    복원 전 자동 백업은 safety.ts, 스토어 모으기·넣기·캐릭터 형식 옮기기는 stores.ts.
+ *    생성 대기열은 백업 섹션이 아니다 (types.ts SECTION_IDS — 예전 백업의 'queue' 는 모르는 섹션으로 건너뜀).
  */
 import { fromUtf8 } from './bytes'
 import type { ByteSource } from './io'
@@ -38,6 +42,9 @@ export { readNaisArchive, writeNaisArchive, nais3ArchiveFromLegacyJson, type Nai
 export { importNais3, NAIP_DEFAULT_PARAMS, type Nais3ImportOptions } from './nais3/import'
 export { naipToNais3, exportNais3, DEFAULT_NAIS3_EXPORT, type Nais3ExportPlan, type Nais3ExportSection } from './nais3/export'
 export { createFile, pickFile, type ReadableFile, type WritableFile } from './files'
+// ── Phase 4 UI
+export { historyExportPort, historyImportPort, recordToMeta, restoreHistorySafely, type AppHistoryImportPort, type HistoryImportOptions, type HistoryStore, type SafeHistoryResult } from './ports'
+export { listSafetyBackups, pruneSafetyBackups, removeSafetyBackup, safetyName, safetySink, safetySource, SAFETY_DIR, SAFETY_KEEP, SAFETY_PART, type SafetyBackup } from './safety'
 
 /** 불러오기 파일 선택에서 받을 확장자 */
 export const BACKUP_ACCEPT = [BACKUP_EXTENSION, '.nais', '.json', '.zip']
