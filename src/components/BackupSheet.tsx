@@ -14,6 +14,7 @@ import {
   createBackupFile,
   estimateBackup,
   exportSafety,
+  historyLimitAfter,
   isDestructive,
   listSafety,
   nais3Plan,
@@ -563,6 +564,12 @@ function ConfirmView(props: { src: RestoreSource; plan: RestorePlan; safety: boo
           </p>
         </Group>
       )}
+      {plan.history && historyLimitAfter(plan) > 0 && (
+        <Note tone="warn">
+          히스토리 보관 한도가 {historyLimitAfter(plan).toLocaleString()}장입니다. 복원 뒤 한도를 넘으면 다음 생성 때 즐겨찾기를 뺀 오래된 그림부터
+          지워집니다 — 지우지 않으려면 설정 → 저장에서 한도를 늘리세요.
+        </Note>
+      )}
       {plan.warnings.length > 0 && (
         <Note tone="warn">
           {plan.warnings.map((w) => (
@@ -821,12 +828,17 @@ export default function BackupSheet(props: { onClose: () => void }): ReactNode {
     const ctrl = new AbortController()
     abort.current = ctrl
     setStep({ name: 'applying', phase: safety ? 'safety' : 'sections', progress: null })
+    // 어디서 멈췄는지에 따라 안내가 다르다 (자동 백업 전에 멈췄으면 아무것도 바뀌지 않았다)
+    let reached: RestorePhase = safety ? 'safety' : 'sections'
     try {
       // 확인 화면에 보여 준 계획 그대로 넣는다
       const summary = await applyRestore(src, plan, {
         safety,
         signal: ctrl.signal,
-        onPhase: (phase) => setStep({ name: 'applying', phase, progress: null }),
+        onPhase: (phase) => {
+          reached = phase
+          setStep({ name: 'applying', phase, progress: null })
+        },
         onProgress: (progress) => setStep((s) => (s.name === 'applying' ? { ...s, progress } : s))
       })
       openSrc.current = null
@@ -834,10 +846,18 @@ export default function BackupSheet(props: { onClose: () => void }): ReactNode {
       refreshSafety()
     } catch (e) {
       releaseSource()
+      refreshSafety()
+      const untouched = reached === 'safety'
       setStep({
         name: 'failed',
         title: isAbort(e) ? '복원을 취소했습니다' : '복원하지 못했습니다',
-        message: `${isAbort(e) ? '' : `${errorText(e)} — `}자동 백업을 만들지 못했거나 그 전에 멈춰서 지금 데이터는 바뀌지 않았습니다.`
+        message: `${isAbort(e) ? '' : `${errorText(e)} — `}${
+          untouched
+            ? '자동 백업을 만드는 중에 멈춰서 지금 데이터는 바뀌지 않았습니다.'
+            : safety
+              ? '일부가 이미 바뀌었을 수 있습니다. "확인"을 누른 뒤 "복원 전 자동 백업"에서 되돌릴 수 있습니다.'
+              : '일부가 이미 바뀌었을 수 있습니다 (자동 백업을 껐으므로 되돌릴 수 없습니다).'
+        }`
       })
     } finally {
       abort.current = null

@@ -12,6 +12,7 @@ import { makeThumb, pngDataUrl, toPngBase64 } from '../lib/image'
 import { uid } from '../lib/util'
 import { freeSpace, getStorage } from '../storage'
 import { useHistory } from '../stores/history'
+import { useSettings } from '../stores/settings'
 import { createFile, pickFile, type ReadableFile } from './files'
 import { countSection } from './format'
 import { BACKUP_ACCEPT, backupFileName, openAnyBackup, type OpenedBackup } from './index'
@@ -275,6 +276,12 @@ export async function planFor(src: RestoreSource, choice: RestoreChoice): Promis
 }
 
 /** 계획이 지금 데이터를 바꾸거나 지우는지 (자동 백업 경고용) */
+/** 복원 뒤의 히스토리 보관 한도 (설정을 덮어쓰거나 합치면 그 결과의 값) — 0 = 제한 없음 */
+export function historyLimitAfter(plan: RestorePlan): number {
+  const v = plan.sections.settings?.result.historyLimit
+  return typeof v === 'number' ? v : useSettings.getState().historyLimit
+}
+
 export function isDestructive(plan: RestorePlan): boolean {
   return (
     plan.history?.action === 'replace' ||
@@ -300,11 +307,15 @@ export interface RestoreSummary {
 
 export type RestorePhase = 'safety' | 'sections' | 'history' | 'finish'
 
+/** 백업에서 들어온 프로젝트(합치기면 새로 더한 것만)가 가리키는 히스토리 id */
 function projectImageIds(plan: RestorePlan): number[] {
   const out = new Set<number>()
-  const list = plan.sections.projects?.result.projects
-  if (!Array.isArray(list)) return []
-  for (const p of list as { items?: Record<string, { images?: { id?: unknown }[] }> }[]) {
+  const section = plan.sections.projects
+  const list = section?.result.projects
+  if (!section || !Array.isArray(list)) return []
+  const added = new Set(section.changes.filter((c) => c.kind === 'added' && c.collection === 'projects').map((c) => c.id))
+  const incoming = section.action === 'overwrite' ? list : list.filter((p: { id?: unknown }) => added.has(p?.id as string))
+  for (const p of incoming as { items?: Record<string, { images?: { id?: unknown }[] }> }[]) {
     for (const item of Object.values(p?.items ?? {})) {
       for (const img of item?.images ?? []) if (typeof img?.id === 'number') out.add(img.id)
     }
@@ -367,13 +378,25 @@ export async function applyRestore(
   // 4) 화면 새로 고침 + 프로젝트가 가리키는 그림 확인
   opts.onPhase?.('finish')
   await useHistory.getState().init().catch(() => {})
+  // 보관 한도를 넘으면 다음 생성 때 오래된 그림이 지워진다 — 조용히 지워지지 않게 알린다
+  const limit = useSettings.getState().historyLimit
+  const total = useHistory.getState().total
+  if (plan.history && limit > 0 && total > limit) {
+    summary.warnings.push(
+      `히스토리가 ${total.toLocaleString()}장으로 보관 한도(${limit.toLocaleString()}장)를 넘었습니다 — 다음 생성 때 즐겨찾기를 뺀 오래된 그림부터 앱에서 지워집니다. 지우지 않으려면 설정 → 저장 → 히스토리 보관 한도를 늘리세요.`
+    )
+  }
   const ids = projectImageIds(plan)
   if (ids.length) {
-    const have = await p.importPort.existingIds(ids)
-    summary.missingProjectImages = ids.length - have.size
+    try {
+      const have = await p.importPort.existingIds(ids)
+      summary.missingProjectImages = ids.length - have.size
+    } catch {
+      /* 확인만 못 했을 뿐 복원은 끝났다 */
+    }
   }
   summary.problems = dedupe(summary.problems)
-  await src.close()
+  await src.close().catch(() => {})
   return summary
 }
 
