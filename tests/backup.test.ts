@@ -471,7 +471,8 @@ describe('restore planning', () => {
     const ch = preview.find((p) => p.section === 'characters')!
     expect(ch).toMatchObject({ incoming: 2, current: 2, idConflicts: 2, nameConflicts: 1, newItems: 1, removedOnOverwrite: 1 })
     expect(ch.conflicts.map((c) => c.kind).sort()).toEqual(['new-id', 'new-id', 'renamed'])
-    expect(preview.find((p) => p.section === 'queue')!.mergeable).toBe(false)
+    expect(preview.find((p) => p.section === 'collections')!.mergeable).toBe(false)
+    expect(preview.find((p) => p.section === 'projects')!.mergePolicy).toBe('keep-current')
     expect(preview.map((p) => p.section)).toContain('vibes')
   })
 

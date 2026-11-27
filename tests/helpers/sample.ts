@@ -92,7 +92,19 @@ export function sampleData(): BackupData {
     masks: { masks: [{ id: 101, name: '얼굴', width: 8, height: 8, data: `data:image/png;base64,${PNG_1X1}`, ts: 5 }] },
     collections: { lists: [{ id: 1, name: '좋은 것', imageIds: [1001] }] },
     exportTemplates: { templates: [{ id: 1, pattern: '{scene}_{n}' }] },
-    queue: { items: [{ id: 'q1', count: 3 }] }
+    // ── Phase 4 UI: 생성 대기열(queue)은 백업 섹션에서 뺐고, 에셋 프로젝트가 들어간다 (id 는 문자열)
+    projects: {
+      projects: [
+        {
+          id: 'p-1',
+          name: '프로젝트',
+          characters: [{ id: 'pc-1', libraryId: 31, name: 'Alice', vibeIds: [81], refIds: [91, 92] }],
+          items: { 'pc-1|smile': { key: 'pc-1|smile', images: [{ id: 1_700_000_000_001, ts: 1, mark: 'adopted', slot: 1 }], queued: 0, generating: 0 } }
+        }
+      ],
+      activeId: 'p-1',
+      presets: [{ id: 'pp-1', name: '내 변환' }]
+    }
   }
 }
 

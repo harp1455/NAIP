@@ -1,12 +1,19 @@
 /**
- * 지금 스토어 ↔ BackupData 어댑터 (참고 구현). 스토어 필드를 이름으로 고르지 않고 "함수가 아닌 상태"를
+ * 지금 스토어 ↔ BackupData 어댑터. 스토어 필드를 이름으로 고르지 않고 "함수가 아닌 상태"를
  * 통째로 담으므로, Phase 2 처럼 캐릭터 스토어에 필드가 늘어도 그대로 백업·복원된다.
- * 히스토리는 여기서 다루지 않는다 — Phase 3 저장소에 HistoryExportPort / HistoryImportPort 를 구현할 것.
+ * 히스토리는 여기서 다루지 않는다 — Phase 3 저장소 위의 포트는 ports.ts.
  *
- * 주의: 바이브·레퍼런스·마스크 스토어는 IndexedDB 에서 비동기로 살아나므로, 모으기 전에
- * useRefs.getState().hydrated 를 확인한다.
+ * Phase 4 UI 에서 더한 것:
+ * - 에셋 프로젝트(useProjects, localStorage naip-projects)를 불투명한 섹션으로 담고 되살린다.
+ * - 바이브·레퍼런스·마스크 스토어는 IndexedDB 에서 비동기로 살아나므로 모으기 전에 기다린다(waitHydrated).
+ * - 들어오는 데이터는 normalizeBackupData 를 거친다: 캐릭터는 Phase 2 의 migrateCharacters 로
+ *   (예전 prompt 한 칸·cast 목록 → 3분할·고정 슬롯), 설정에서는 실행 중에만 쓰는 값을 뺀다.
+ * - 스토어에 넣을 때 그 스토어의 함수(동작) 이름과 겹치는 키는 버린다 (조작된 백업이 앱을 깨지 않게).
  */
-import { useCharacters } from '../stores/characters'
+import * as projectModel from '../project/model'
+import { useProjects } from '../project/store'
+import type { Project } from '../project/types'
+import { migrateCharacters, useCharacters } from '../stores/characters'
 import { useFragments } from '../stores/fragments'
 import { useMasks } from '../stores/masks'
 import { usePrompt } from '../stores/prompt'
@@ -15,18 +22,60 @@ import { useScenes } from '../stores/scenes'
 import { useSettings } from '../stores/settings'
 import { useTagUsage } from '../stores/tagUsage'
 import { stripCredentials } from './credentials'
-import { splitSettings } from './format'
+import { splitSettings, TRANSIENT_SETTINGS } from './format'
 import type { RestorePlan } from './plan'
 import type { BackupData, BackupItem, DataSectionId } from './types'
 
+type Obj = Record<string, unknown>
+
+function isObj(v: unknown): v is Obj {
+  return !!v && typeof v === 'object' && !Array.isArray(v)
+}
+
 /** 함수와 빼라는 키를 뺀 상태 */
-function dataOf(state: object, omit: readonly string[] = []): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
+function dataOf(state: object, omit: readonly string[] = []): Obj {
+  const out: Obj = {}
   for (const [k, v] of Object.entries(state)) {
     if (typeof v === 'function' || omit.includes(k)) continue
     out[k] = v
   }
   return out
+}
+
+/** 스토어의 동작(함수) 이름과 겹치는 키를 뺀다 — setState 로 함수를 덮어쓰면 앱이 깨진다 */
+function safePatch(state: object, patch: Obj): Obj {
+  const out: Obj = {}
+  for (const [k, v] of Object.entries(patch)) {
+    if (typeof (state as Obj)[k] === 'function') continue
+    out[k] = v
+  }
+  return out
+}
+
+/** 바이브·레퍼런스·마스크(IndexedDB)가 살아날 때까지 기다린다 (최대 timeoutMs) */
+export async function waitHydrated(timeoutMs = 5000): Promise<void> {
+  const wait = (ready: () => boolean, subscribe: (fn: () => void) => () => void): Promise<void> =>
+    ready()
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+          const timer = setTimeout(done, timeoutMs)
+          const off = subscribe(() => ready() && done())
+          function done(): void {
+            clearTimeout(timer)
+            off()
+            resolve()
+          }
+        })
+  await Promise.all([
+    wait(
+      () => useRefs.getState().hydrated,
+      (fn) => useRefs.subscribe(fn)
+    ),
+    wait(
+      () => useMasks.persist?.hasHydrated?.() ?? true,
+      (fn) => useMasks.persist?.onFinishHydration?.(fn) ?? (() => {})
+    )
+  ])
 }
 
 export function collectStoreData(): BackupData {
@@ -45,8 +94,80 @@ export function collectStoreData(): BackupData {
     vibes: { vibes: refs.vibes as unknown as BackupItem[] },
     charRefs: { charRefs: refs.charRefs as unknown as BackupItem[] },
     tagUsage: dataOf(useTagUsage.getState()) as BackupData['tagUsage'],
-    masks: dataOf(useMasks.getState()) as BackupData['masks']
+    masks: dataOf(useMasks.getState()) as BackupData['masks'],
+    // ── Phase 4 UI: 에셋 프로젝트 (불투명 — projects·activeId·presets 와 앞으로 늘어날 필드)
+    projects: dataOf(useProjects.getState()) as BackupData['projects']
   }
+}
+
+// ── 들어오는 데이터 다듬기 ──────────────────────────────────────────────
+
+const CHARACTER_KEYS = ['folders', 'characters', 'slots', 'options']
+
+/**
+ * 캐릭터 섹션을 지금 형식(Phase 2)으로 — migrateCharacters 를 거친다(잃는 내용 없음):
+ * 예전 prompt 한 칸 → 고정(base), 예전 출연 목록 cast → 같은 순서의 고정 슬롯.
+ * 캐릭터와 섹션에 있던 모르는 필드(더 새로운 앱이 더한 것)는 그대로 둔다. version·cast 는 뺀다.
+ */
+export function normalizeCharactersSection(raw: unknown): Obj {
+  const r = isObj(raw) ? raw : {}
+  const m = migrateCharacters(r)
+  const rawById = new Map<unknown, Obj>()
+  if (Array.isArray(r.characters)) for (const c of r.characters) if (isObj(c)) rawById.set(c.id, c)
+  const characters = m.characters.map((c) => {
+    const src = rawById.get(c.id)
+    if (!src) return c
+    const extra: Obj = {}
+    for (const [k, v] of Object.entries(src)) if (!(k in c) && k !== 'prompt' && v !== undefined) extra[k] = v
+    return { ...extra, ...c }
+  })
+  const rest: Obj = {}
+  for (const [k, v] of Object.entries(r)) if (![...CHARACTER_KEYS, 'cast', 'version'].includes(k)) rest[k] = v
+  return { ...rest, folders: m.folders, characters, slots: m.slots, options: m.options }
+}
+
+/** 프로젝트 섹션 — 문자열 id 가 있는 객체만 남긴다 (나머지 모양은 스토어의 normalizeProject 가 채운다) */
+function normalizeProjectsSection(raw: unknown): Obj {
+  const r = isObj(raw) ? raw : {}
+  const keep = (list: unknown): Obj[] =>
+    Array.isArray(list) ? list.filter((p): p is Obj => isObj(p) && typeof p.id === 'string' && p.id !== '') : []
+  return {
+    ...r,
+    projects: keep(r.projects),
+    ...(Array.isArray(r.presets) ? { presets: keep(r.presets) } : {}),
+    activeId: typeof r.activeId === 'string' ? r.activeId : null
+  }
+}
+
+function withoutTransient(v: unknown): Obj {
+  const out: Obj = { ...(isObj(v) ? v : {}) }
+  for (const k of TRANSIENT_SETTINGS) delete out[k]
+  return out
+}
+
+/**
+ * 백업·.nais·예전 JSON 에서 읽은 데이터를 복원 계획 전에 다듬는다 (어느 형식에서 왔든 같은 길).
+ * 계획(planRestore)이 Phase 2 슬롯의 캐릭터 id 를 고치려면 캐릭터가 먼저 지금 형식이어야 한다.
+ */
+export function normalizeBackupData(data: BackupData): BackupData {
+  const out: BackupData = { ...data }
+  if (data.characters != null) out.characters = normalizeCharactersSection(data.characters) as BackupData['characters']
+  if (data.projects != null) out.projects = normalizeProjectsSection(data.projects) as BackupData['projects']
+  if (data.settings != null) out.settings = withoutTransient(stripCredentials(data.settings).value)
+  if (data.saveFolders != null) out.saveFolders = stripCredentials(data.saveFolders).value
+  return out
+}
+
+// ── 스토어에 넣기 ──────────────────────────────────────────────────────
+
+function applyProjects(r: Obj): void {
+  const projects = (Array.isArray(r.projects) ? r.projects : [])
+    .filter((p): p is Obj => isObj(p) && typeof p.id === 'string')
+    // 스토어가 앱을 열 때 하는 것과 같게: 빠진 칸 채우기 + 대기·생성 중 장수 0 (대기열은 백업하지 않는다)
+    .map((p) => projectModel.resetRuntime(projectModel.normalizeProject({ ...(p as unknown as Project), name: typeof p.name === 'string' ? p.name : '프로젝트' })))
+  const activeId = typeof r.activeId === 'string' && projects.some((p) => p.id === r.activeId) ? r.activeId : null
+  const state = useProjects.getState()
+  useProjects.setState(safePatch(state, { ...r, projects, activeId }) as never)
 }
 
 /** 복원 계획의 섹션 결과를 스토어에 넣는다 (부분 setState — 결과에 없는 키는 그대로) */
@@ -57,23 +178,24 @@ export function applyRestorePlan(plan: RestorePlan): DataSectionId[] {
     switch (id) {
       case 'settings':
       case 'saveFolders':
-        // 토큰·비밀값은 백업에서 오지 않는다 (읽을 때 이미 지웠지만 한 번 더)
-        useSettings.setState(stripCredentials(r).value as never)
+        // 토큰·비밀값은 백업에서 오지 않는다 (읽을 때 이미 지웠지만 한 번 더). 실행 중 상태(구독 정보 등)도 넣지 않는다
+        useSettings.setState(safePatch(useSettings.getState(), withoutTransient(stripCredentials(r).value)) as never)
         break
       case 'prompt':
-        usePrompt.setState(r as never)
+        usePrompt.setState(safePatch(usePrompt.getState(), r) as never)
         break
       case 'presets':
         usePrompt.setState({ presets: r.presets as never })
         break
       case 'characters':
-        useCharacters.setState(r as never)
+        // 계획의 결과도 한 번 더 지금 형식으로 (모르는 키·깨진 항목이 스토어에 들어가지 않게)
+        useCharacters.setState(safePatch(useCharacters.getState(), normalizeCharactersSection(r)) as never)
         break
       case 'scenes':
-        useScenes.setState(r as never)
+        useScenes.setState(safePatch(useScenes.getState(), r) as never)
         break
       case 'fragments':
-        useFragments.setState(r as never)
+        useFragments.setState(safePatch(useFragments.getState(), r) as never)
         break
       case 'vibes':
         useRefs.setState({ vibes: r.vibes as never })
@@ -82,13 +204,16 @@ export function applyRestorePlan(plan: RestorePlan): DataSectionId[] {
         useRefs.setState({ charRefs: r.charRefs as never })
         break
       case 'tagUsage':
-        useTagUsage.setState(r as never)
+        useTagUsage.setState(safePatch(useTagUsage.getState(), r) as never)
         break
       case 'masks':
-        useMasks.setState(r as never)
+        useMasks.setState(safePatch(useMasks.getState(), r) as never)
+        break
+      case 'projects':
+        applyProjects(r)
         break
       default:
-        // collections·exportTemplates·queue: 아직 스토어가 없다 (Phase 3·5 에서 연결)
+        // collections·exportTemplates: 아직 스토어가 없다
         continue
     }
     applied.push(id)

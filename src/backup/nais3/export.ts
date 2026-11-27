@@ -91,8 +91,19 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
       return { id: i + 1, name: s(f.name) || '폴더', sort_order: i, collapsed: 0, color: null }
     })
     const cast = new Map<number, { enabled: boolean; center: { x: number; y: number } | null; order: number }>()
-    items(ch.cast).forEach((e, order) => {
-      if (typeof e.charId !== 'number') return
+    // ── Phase 4 UI: Phase 2 출연 슬롯(slots)도 받는다 — 고정 슬롯만 NAIS3 카드 켜기로 옮기고 나머지는 잃는 것으로
+    const legacyCast = Array.isArray(ch.cast)
+    const castEntries = legacyCast
+      ? items(ch.cast)
+      : items(ch.slots).flatMap((slot) => {
+          if (slot.mode !== undefined && slot.mode !== 'fixed') {
+            lost.add('캐릭터', '무작위·순차·확률 출연 슬롯 — NAIS3 에 없음')
+            return []
+          }
+          return [{ charId: slot.charId, enabled: slot.enabled, center: slot.center }]
+        })
+    castEntries.forEach((e, order) => {
+      if (typeof e.charId !== 'number' || cast.has(e.charId)) return
       const center = isObj(e.center) ? { x: n(e.center.x, 0.5), y: n(e.center.y, 0.5) } : null
       cast.set(e.charId, { enabled: e.enabled !== false, center, order })
     })
@@ -105,13 +116,31 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
       if (e && !e.enabled) lost.add('캐릭터', '출연 목록에 넣고 꺼 둔 상태 — NAIS3 에는 카드 켜기/끄기만 있음', name)
       if (e?.enabled && !e.center) lost.add('캐릭터', '캐릭터별 AI 선택 위치 — NAIS3 는 위치 사용을 전체 설정 하나로만 정함', name)
       if (e?.enabled && e.center) anyCenter = true
-      const extra = extraKeys(c, ['id', 'name', 'folderId', 'prompt', 'negative'])
+      // Phase 2 캐릭터: 고정·(고정으로 고른 변형)·가변·디테일을 NAIS3 프롬프트 한 칸으로 (보내는 캡션과 같은 순서)
+      const split = typeof c.prompt !== 'string' && (typeof c.base === 'string' || typeof c.additional === 'string' || typeof c.detail === 'string')
+      const picked: string[] = []
+      const groups = Array.isArray(c.variations) ? items(c.variations) : []
+      if (groups.length) {
+        for (const g of groups) {
+          const list = items(g.items)
+          if (g.mode === 'fixed') {
+            const item = list.find((x) => x.id === g.fixedId) ?? list[0]
+            if (item && s(item.prompt).trim()) picked.push(s(item.prompt))
+          }
+        }
+        lost.add('캐릭터', '변형 그룹(복장·표정 등) — NAIS3 에 없어 고정으로 고른 항목만 프롬프트에 넣음', name)
+      }
+      if (split && (s(c.additional).trim() || s(c.detail).trim())) {
+        lost.add('캐릭터', '고정·가변·디테일 3분할 — NAIS3 에서는 프롬프트 한 칸으로 합침', name)
+      }
+      const prompt = split ? joinPrompt(s(c.base), ...picked, s(c.additional), s(c.detail)) : s(c.prompt)
+      const extra = extraKeys(c, ['id', 'name', 'folderId', 'prompt', 'negative', 'base', 'additional', 'detail', 'variations'])
       if (extra.length) lost.add('캐릭터', `NAIP 전용 캐릭터 항목(${extra.join(', ')})`, name)
       const folderId = typeof c.folderId === 'number' ? (folderIds.get(c.folderId) ?? null) : null
       return {
         id,
         name,
-        prompt: s(c.prompt),
+        prompt,
         negative_prompt: s(c.negative),
         settings_json: '{}',
         sort_order: i,
@@ -125,8 +154,13 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
     const castOrder = [...cast.entries()].filter(([, e]) => e.enabled).sort((a, b) => a[1].order - b[1].order).map(([id]) => id)
     const listOrder = chars.map((c) => n(c.id, NaN)).filter((id) => castOrder.includes(id))
     if (castOrder.join(',') !== listOrder.join(',')) lost.add('캐릭터', '출연 순서 — NAIS3 는 캐릭터 목록 순서대로 보냄')
-    const extraSection = Object.keys(ch).filter((k) => !['folders', 'characters', 'cast'].includes(k))
+    const known = ['folders', 'characters', 'cast', 'version', ...(Array.isArray(ch.slots) ? ['slots', 'options'] : [])]
+    const extraSection = Object.keys(ch).filter((k) => !known.includes(k))
     if (extraSection.length) lost.add('캐릭터', `NAIP 전용 캐릭터 데이터(${extraSection.join(', ')})`)
+    const opts = isObj(ch.options) ? ch.options : null
+    if (Array.isArray(ch.slots) && opts && (opts.allowDuplicates || opts.perScene || opts.autoCountTags || (opts.scope && opts.scope !== 'image'))) {
+      lost.add('캐릭터', '출연 옵션(중복 허용·뽑기 범위·씬마다 뽑기·인원 태그 고치기) — NAIS3 에 없음')
+    }
     use('character_folders', folderRows)
     use('character_prompts', rows)
     exported.push({ section: 'characters', label: SECTION_LABELS.characters, count: rows.length })

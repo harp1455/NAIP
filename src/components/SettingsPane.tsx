@@ -1,18 +1,16 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
-import { shareImage as shareFile } from '../lib/native'
-import { exportCharacters, importCharacters } from '../stores/characters'
-import { useFragments } from '../stores/fragments'
-import { useScenes } from '../stores/scenes'
 import { useTagUsage } from '../stores/tagUsage'
 import { useHistory } from '../stores/history'
-import { usePrompt } from '../stores/prompt'
 import { anlasOf, DELAY_MAX, DELAY_MIN, useSettings } from '../stores/settings'
 import { CURRENT_BUILD, useUpdate } from '../stores/update'
 import { useGeneration } from '../stores/generation'
 import { V5Gauge } from './V5Gauge'
 import { StorageGroup } from './StorageSettings'
 import { Button, IconButton, Row, Select, SliderRow, TextInput, Toggle } from './ui'
+
+// ── Phase 4: 백업·복원 화면은 열 때만 불러온다 (src/backup 이 첫 화면 번들에 들어가지 않게)
+const BackupSheet = lazy(() => import('./BackupSheet'))
 
 const LIMITS = [0, 200, 500, 1000, 3000].map((value) => ({
   value,
@@ -164,64 +162,6 @@ function UpdateGroup(): ReactNode {
   )
 }
 
-function exportBackup(): void {
-  const p = usePrompt.getState()
-  const f = useFragments.getState()
-  const sc = useScenes.getState()
-  const data = {
-    app: 'naip',
-    version: 2,
-    fragments: { folders: f.folders, fragments: f.fragments },
-    scenes: { folders: sc.folders, scenes: sc.scenes },
-    prompt: {
-      base: p.base,
-      additional: p.additional,
-      detail: p.detail,
-      negative: p.negative,
-      params: p.params,
-      presets: p.presets
-    },
-    // 캐릭터는 형식 버전을 함께 남긴다 (불러올 때 예전 형식(prompt 한 칸·cast)도 받는다)
-    characters: exportCharacters()
-  }
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-  const stamp = new Date().toISOString().slice(0, 10)
-  void shareFile(blob, `naip-backup-${stamp}.json`).catch((e: Error) => window.alert(e.message))
-}
-
-function importBackup(): void {
-  const input = document.createElement('input')
-  input.type = 'file'
-  input.accept = 'application/json,.json'
-  input.onchange = () => {
-    const file = input.files?.[0]
-    if (!file) return
-    void file.text().then((text) => {
-      try {
-        const data = JSON.parse(text) as {
-          app?: string
-          prompt?: Record<string, unknown>
-          characters?: Record<string, unknown>
-          fragments?: Record<string, unknown>
-          scenes?: Record<string, unknown>
-        }
-        if (data.app !== 'naip' || !data.prompt || !data.characters) {
-          throw new Error('NAIP 백업 파일이 아닙니다')
-        }
-        if (!window.confirm('현재 프롬프트·프리셋·캐릭터·조각·씬을 백업 내용으로 덮어쓸까요?')) return
-        usePrompt.setState(data.prompt)
-        importCharacters(data.characters)
-        if (data.fragments) useFragments.setState(data.fragments)
-        if (data.scenes) useScenes.setState(data.scenes)
-        window.alert('백업을 불러왔습니다')
-      } catch (e) {
-        window.alert(`불러오기 실패: ${(e as Error).message}`)
-      }
-    })
-  }
-  input.click()
-}
-
 export function SettingsPane(): ReactNode {
   const s = useSettings()
   const history = useHistory()
@@ -232,6 +172,7 @@ export function SettingsPane(): ReactNode {
   }, [s.secretsLoaded, s.token]) // eslint-disable-line react-hooks/exhaustive-deps
   const [show, setShow] = useState(false)
   const [checking, setChecking] = useState(false)
+  const [backupOpen, setBackupOpen] = useState(false) // ── Phase 4
   const anlas = anlasOf(s.subscription)
 
   const verify = (): void => {
@@ -382,11 +323,12 @@ export function SettingsPane(): ReactNode {
         <UpdateGroup />
 
         <Group title="데이터">
-          <Row label="백업" hint="프롬프트·프리셋·캐릭터·조각·씬을 JSON 파일로 내보내거나 불러옵니다">
-            <div className="flex gap-1.5">
-              <Button onClick={exportBackup}>내보내기</Button>
-              <Button onClick={importBackup}>불러오기</Button>
-            </div>
+          {/* ── Phase 4: 예전 JSON 백업 줄 대신 백업·복원 화면 (예전 JSON 백업·NAIS3 .nais 도 거기서 연다) */}
+          <Row
+            label="백업·복원"
+            hint="설정·라이브러리·프로젝트·히스토리를 백업 파일로 만들고 복원합니다. NAIS3(.nais)·예전 JSON 백업도 엽니다. 토큰은 넣지 않습니다"
+          >
+            <Button onClick={() => setBackupOpen(true)}>열기</Button>
           </Row>
           <Row label="히스토리 비우기" hint={`앱 안에 보관 중인 이미지 ${history.total}장 (갤러리에 저장한 파일은 남습니다)`}>
             <Button
@@ -408,6 +350,11 @@ export function SettingsPane(): ReactNode {
           클라이언트입니다.
         </p>
       </div>
+      {backupOpen && (
+        <Suspense fallback={null}>
+          <BackupSheet onClose={() => setBackupOpen(false)} />
+        </Suspense>
+      )}
     </div>
   )
 }

@@ -358,11 +358,11 @@ describe('NAIS3 .nais export', () => {
   it('lists the NAIP-only data that will be lost', async () => {
     const { result } = await exported()
     const lost = result.lost.map((l) => `[${l.scope}] ${l.text}`)
-    for (const label of ['앱 설정', '자주 쓴 태그', '보관한 마스크', '저장 폴더·이름 번호', '즐겨찾기·모음', '내보내기 템플릿', '생성 대기열']) {
+    for (const label of ['앱 설정', '자주 쓴 태그', '보관한 마스크', '저장 폴더·이름 번호', '즐겨찾기·모음', '내보내기 템플릿', '에셋 프로젝트']) {
       expect(lost.some((l) => l.startsWith(`[${label}]`))).toBe(true)
     }
     const has = (scope: string, text: string): boolean => result.lost.some((l) => l.scope === scope && l.text.includes(text))
-    expect(has('캐릭터', 'NAIP 전용 캐릭터 항목(variations)')).toBe(true)
+    expect(has('캐릭터', '변형 그룹')).toBe(true)
     expect(has('캐릭터', 'NAIP 전용 캐릭터 데이터(slots)')).toBe(true)
     expect(has('캐릭터', 'AI 선택 위치')).toBe(true)
     expect(has('캐릭터', '출연 순서')).toBe(true)
