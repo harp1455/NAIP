@@ -5,10 +5,12 @@ import android.app.NotificationManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ContentResolver;
+import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.os.Build;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
@@ -23,6 +25,7 @@ import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.HapticFeedbackConstants;
 import android.view.WindowManager;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -40,6 +43,10 @@ import java.nio.charset.StandardCharsets;
 /**
  * 웹뷰에서 할 수 없는 일을 맡는다 (src/lib/native.ts 와 짝):
  * - saveToGallery: MediaStore로 Pictures/NAIP[/하위폴더] 에 저장 (Android 10+ 는 권한 불필요)
+ *   (Phase 5) path로 여러 단계 하위 폴더, overwrite로 이 앱이 만든 같은 파일을 덮어쓰기
+ * - saveTextFile (Phase 5): 글 파일(내보내기 목록)을 Download/NAIP[/하위폴더] 에 저장
+ *   — 안드로이드는 Pictures 아래에 사진이 아닌 파일을 넣지 못하게 하므로 다운로드 모음(MediaStore.Downloads)을 쓴다
+ * - listSaved (Phase 5): 이 앱이 Pictures/NAIP 아래에 저장한 파일 경로 (내보내기 충돌 미리보기용)
  * - setKeepAwake: 대량 생성 중 화면 꺼짐 방지
  * - httpGet / installUpdate: GitHub 릴리스에서 새 APK를 확인·다운로드하고 설치 화면을 띄운다
  * - delay: 백그라운드에서도 늦어지지 않는 타이머 (장 사이 간격)
@@ -153,38 +160,233 @@ public class NaipNativePlugin extends Plugin {
         String fileName = call.getString("fileName");
         String mimeType = call.getString("mimeType", "image/png");
         String folder = call.getString("folder");
+        // ── Phase 5: path = "a/b" 여러 단계 하위 폴더 (단계마다 정리), overwrite = 이 앱이 만든 같은 파일을 새로 씀
+        String path = call.getString("path");
+        boolean overwrite = Boolean.TRUE.equals(call.getBoolean("overwrite", false));
         if (base64 == null || fileName == null) {
             call.reject("base64 and fileName are required");
             return;
         }
-
-        ContentResolver resolver = getContext().getContentResolver();
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
-        values.put(MediaStore.Images.Media.MIME_TYPE, mimeType);
-        values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/NAIP" + (folder != null && !folder.isEmpty() ? "/" + folder : ""));
-        values.put(MediaStore.Images.Media.IS_PENDING, 1);
-
-        Uri uri = resolver.insert(MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values);
-        if (uri == null) {
-            call.reject("MediaStore insert failed");
-            return;
+        String sub = path != null ? cleanPath(path) : (folder != null ? folder : "");
+        String relative = Environment.DIRECTORY_PICTURES + "/NAIP" + (sub.isEmpty() ? "" : "/" + sub);
+        try {
+            JSObject result = writeMedia(
+                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                relative,
+                path != null ? cleanSegment(fileName) : fileName,
+                mimeType,
+                Base64.decode(base64, Base64.DEFAULT),
+                overwrite
+            );
+            call.resolve(result);
+        } catch (OverwriteDenied e) {
+            call.reject(e.getMessage(), "OVERWRITE_DENIED", e);
+        } catch (Exception e) {
+            call.reject("save failed: " + e.getMessage(), e);
         }
+    }
+
+    // ── Phase 5: 내보내기 저장 도우미 ─────────────────────────────────────────
+
+    /** 덮어쓰기를 바랐지만 같은 이름의 파일이 이 앱 것이 아니라(다른 앱·앱 재설치) 덮어쓸 수 없을 때 */
+    static class OverwriteDenied extends Exception {
+        OverwriteDenied(String msg) {
+            super(msg);
+        }
+    }
+
+    private static final java.util.regex.Pattern FORBIDDEN = java.util.regex.Pattern.compile("[\\\\/:*?\"<>|\\u0000-\\u001f]");
+    private static final java.util.regex.Pattern EDGES = java.util.regex.Pattern.compile("^[.\\s]+|[.\\s]+$");
+
+    /** 파일·폴더 이름 한 단계 정리 — src/lib/native.ts cleanFileName과 같은 규칙 (금지 문자 → _, 앞뒤 점·공백, 80자). 비면 "" */
+    static String cleanSegment(String name) {
+        if (name == null) return "";
+        String s = EDGES.matcher(FORBIDDEN.matcher(name).replaceAll("_")).replaceAll("");
+        if (s.codePointCount(0, s.length()) > 80) s = EDGES.matcher(s.substring(0, s.offsetByCodePoints(0, 80))).replaceAll("");
+        return s;
+    }
+
+    /** "a/b/c" → 단계마다 정리하고 빈 단계(.. 포함)는 뺀다 */
+    static String cleanPath(String path) {
+        StringBuilder out = new StringBuilder();
+        for (String seg : path.split("/")) {
+            String c = cleanSegment(seg);
+            if (c.isEmpty()) continue;
+            if (out.length() > 0) out.append('/');
+            out.append(c);
+        }
+        return out.toString();
+    }
+
+    /** 이 앱이 만든 (relative 폴더, 이름) 항목 — 이름은 대소문자 무시. 없으면 null (권한 없이 보이는 것은 이 앱 것뿐) */
+    private Uri findOwn(ContentResolver resolver, Uri collection, String relative, String fileName) {
+        String rel = relative.endsWith("/") ? relative : relative + "/";
+        try (
+            Cursor c = resolver.query(
+                collection,
+                new String[] { MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME },
+                MediaStore.MediaColumns.RELATIVE_PATH + "=?",
+                new String[] { rel },
+                null
+            )
+        ) {
+            if (c == null) return null;
+            while (c.moveToNext()) {
+                if (fileName.equalsIgnoreCase(c.getString(1))) return ContentUris.withAppendedId(collection, c.getLong(0));
+            }
+        }
+        return null;
+    }
+
+    private static String queryName(ContentResolver resolver, Uri uri) {
+        try (Cursor c = resolver.query(uri, new String[] { MediaStore.MediaColumns.DISPLAY_NAME }, null, null, null)) {
+            if (c != null && c.moveToFirst()) return c.getString(0);
+        } catch (Exception ignored) {
+            // 이름을 못 읽으면 바란 이름으로 본다
+        }
+        return null;
+    }
+
+    private static JSObject savedResult(Uri uri, String rel, String root, String name, boolean overwritten, boolean renamed) {
+        JSObject r = new JSObject();
+        r.put("uri", uri.toString());
+        r.put("name", name);
+        r.put("path", rel.substring(root.length()) + name);
+        r.put("overwritten", overwritten);
+        r.put("renamed", renamed);
+        return r;
+    }
+
+    /**
+     * MediaStore에 쓴다. overwrite면 이 앱이 만든 같은 항목을 새로 쓰고(교체한 새 버전), 없으면 새로 만든다.
+     * 새로 만들 때 같은 이름이 이미 있으면(이 앱 것이 아님) MediaStore가 "이름 (1)"로 바꾸는데 —
+     * overwrite를 바랐으면 몰래 다른 이름으로 두지 않고 지운 뒤 OverwriteDenied, 아니면 바뀐 이름을 돌려준다(renamed).
+     */
+    private JSObject writeMedia(Uri collection, String relative, String fileName, String mimeType, byte[] data, boolean overwrite)
+        throws Exception {
+        if (fileName.isEmpty()) throw new IllegalArgumentException("empty file name");
+        ContentResolver resolver = getContext().getContentResolver();
+        String rel = relative.endsWith("/") ? relative : relative + "/";
+        String pictures = Environment.DIRECTORY_PICTURES + "/NAIP/";
+        String downloads = Environment.DIRECTORY_DOWNLOADS + "/NAIP/";
+        String root = rel.startsWith(pictures) ? pictures : rel.startsWith(downloads) ? downloads : "";
+        if (overwrite) {
+            Uri existing = findOwn(resolver, collection, rel, fileName);
+            if (existing != null) {
+                ContentValues pending = new ContentValues();
+                pending.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                try {
+                    resolver.update(existing, pending, null, null);
+                } catch (Exception ignored) {
+                    // 일부 기기는 이미 공개된 항목의 IS_PENDING을 바꾸지 못한다 — 그대로 쓴다
+                }
+                try (OutputStream out = resolver.openOutputStream(existing, "wt")) {
+                    if (out == null) throw new IllegalStateException("cannot open output stream");
+                    out.write(data);
+                }
+                ContentValues done = new ContentValues();
+                done.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                done.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
+                try {
+                    resolver.update(existing, done, null, null);
+                } catch (Exception ignored) {
+                    // 내용은 이미 썼다
+                }
+                String actual = queryName(resolver, existing);
+                return savedResult(existing, rel, root, actual != null ? actual : fileName, true, false);
+            }
+        }
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+        values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
+        values.put(MediaStore.MediaColumns.RELATIVE_PATH, relative);
+        values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+        Uri uri = resolver.insert(collection, values);
+        if (uri == null) throw new IllegalStateException("MediaStore insert failed");
         try (OutputStream out = resolver.openOutputStream(uri)) {
             if (out == null) throw new IllegalStateException("cannot open output stream");
-            out.write(Base64.decode(base64, Base64.DEFAULT));
+            out.write(data);
         } catch (Exception e) {
             resolver.delete(uri, null, null);
-            call.reject("save failed: " + e.getMessage(), e);
-            return;
+            throw e;
         }
         values.clear();
-        values.put(MediaStore.Images.Media.IS_PENDING, 0);
+        values.put(MediaStore.MediaColumns.IS_PENDING, 0);
         resolver.update(uri, values, null, null);
+        String actual = queryName(resolver, uri);
+        boolean renamed = actual != null && !actual.equals(fileName);
+        if (overwrite && renamed) {
+            resolver.delete(uri, null, null);
+            throw new OverwriteDenied("cannot overwrite " + fileName + ": the existing file belongs to another app or an earlier install");
+        }
+        return savedResult(uri, rel, root, actual != null ? actual : fileName, false, renamed);
+    }
 
-        JSObject result = new JSObject();
-        result.put("uri", uri.toString());
-        call.resolve(result);
+    /** ── Phase 5: 글 파일(내보내기 목록 CSV·JSON·TXT·MD)을 Download/NAIP[/path] 에 UTF-8로 저장 */
+    @PluginMethod
+    public void saveTextFile(PluginCall call) {
+        String text = call.getString("text");
+        String fileName = call.getString("fileName");
+        String mimeType = call.getString("mimeType", "text/plain");
+        String path = call.getString("path", "");
+        boolean overwrite = Boolean.TRUE.equals(call.getBoolean("overwrite", false));
+        if (text == null || fileName == null) {
+            call.reject("text and fileName are required");
+            return;
+        }
+        String sub = cleanPath(path);
+        String relative = Environment.DIRECTORY_DOWNLOADS + "/NAIP" + (sub.isEmpty() ? "" : "/" + sub);
+        try {
+            call.resolve(
+                writeMedia(
+                    MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                    relative,
+                    cleanSegment(fileName),
+                    mimeType,
+                    text.getBytes(StandardCharsets.UTF_8),
+                    overwrite
+                )
+            );
+        } catch (OverwriteDenied e) {
+            call.reject(e.getMessage(), "OVERWRITE_DENIED", e);
+        } catch (Exception e) {
+            call.reject("save failed: " + e.getMessage(), e);
+        }
+    }
+
+    /** ── Phase 5: 이 앱이 Pictures/NAIP[/path] 아래에 저장한 파일의 상대 경로 (권한 없이 보이는 것은 이 앱 것뿐) */
+    @PluginMethod
+    public void listSaved(PluginCall call) {
+        String sub = cleanPath(call.getString("path", ""));
+        String root = Environment.DIRECTORY_PICTURES + "/NAIP/";
+        String prefix = root + (sub.isEmpty() ? "" : sub + "/");
+        JSArray paths = new JSArray();
+        try (
+            Cursor c = getContext()
+                .getContentResolver()
+                .query(
+                    MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                    new String[] { MediaStore.MediaColumns.RELATIVE_PATH, MediaStore.MediaColumns.DISPLAY_NAME },
+                    MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?",
+                    new String[] { root + "%" },
+                    null
+                )
+        ) {
+            while (c != null && c.moveToNext()) {
+                String rel = c.getString(0);
+                String name = c.getString(1);
+                if (rel == null || name == null) continue;
+                if (!rel.endsWith("/")) rel = rel + "/";
+                // LIKE의 _ 는 한 글자 와일드카드라 앞부분을 다시 확인한다
+                if (!rel.regionMatches(true, 0, prefix, 0, prefix.length())) continue;
+                paths.put(rel.substring(root.length()) + name);
+            }
+            JSObject result = new JSObject();
+            result.put("paths", paths);
+            call.resolve(result);
+        } catch (Exception e) {
+            call.reject("list failed: " + e.getMessage(), e);
+        }
     }
 
     @PluginMethod

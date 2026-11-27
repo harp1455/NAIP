@@ -2,6 +2,7 @@
 import type { CastSent, CastSnapshot } from '../nai/cast'
 import { getStorage } from '../storage'
 import { matchesSearch, searchTerms, searchText, type HistoryRepo } from '../storage/history-repo'
+import type { ProjectImageTag } from '../project/types' // ── Phase 5
 
 /** 생성 당시의 설정 원본(조각 치환 전) — "설정 적용"으로 그대로 되돌리기 위해 보관 */
 export interface SettingsSnapshot {
@@ -52,6 +53,8 @@ export interface HistoryMeta {
   unsaved?: 1
   /** 이 그림을 만든 생성 요청의 id (앱이 죽은 뒤 대기열을 되살릴 때 이미 받은 결과인지 확인) */
   requestId?: string
+  /** ── Phase 5: 에셋 프로젝트 분류 표시 (프로젝트 id·조합 키·좌표) */
+  project?: ProjectImageTag
 }
 
 export type HistoryFilter = { fav: true } | { sceneId: number } | { unsaved: true } | { search: string } | null

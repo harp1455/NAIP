@@ -4,6 +4,7 @@ import { makeThumb } from '../lib/image'
 import { getStorage } from '../storage'
 import { filterToQuery, matchesSearch, searchTerms, searchText, thumbPathFor } from '../storage/history-repo'
 import { useSettings } from './settings'
+import { forgetAllProjectImages, useProjects } from '../project/store' // ── Phase 5
 
 /** 한 번에 읽는 장수 (최신순 커서 페이지) */
 const PAGE = 90
@@ -141,6 +142,7 @@ export const useHistory = create<HistoryState>()((set, get) => ({
   },
   remove: async (ids) => {
     await (await getStorage()).history.remove(ids)
+    useProjects.getState().forgetImages(ids) // ── Phase 5: 지운 그림을 프로젝트 조합에서도 뺀다
     const gone = new Set(ids)
     set((s) => {
       const removed = s.items.filter((m) => gone.has(m.id)).length
@@ -154,6 +156,7 @@ export const useHistory = create<HistoryState>()((set, get) => ({
   },
   clear: async () => {
     await (await getStorage()).history.clear()
+    forgetAllProjectImages() // ── Phase 5
     set({ items: [], total: 0, hasMore: false, viewing: null, matchCount: get().filter ? 0 : null })
   },
   view: (id) => set({ viewing: id }),

@@ -11,7 +11,13 @@ interface NaipNativePlugin extends Plugin {
     fileName: string
     mimeType: string
     folder?: string
-  }): Promise<{ uri: string }>
+    /** ── Phase 5: "a/b" 여러 단계 하위 폴더 (folder 대신) + 이 앱이 만든 같은 파일 덮어쓰기 */
+    path?: string
+    overwrite?: boolean
+  }): Promise<{ uri: string } & Partial<NativeSaved>>
+  // ── Phase 5: 내보내기 목록 파일(Download/NAIP/…)과 이미 저장한 파일 목록
+  saveTextFile(opts: { text: string; fileName: string; mimeType: string; path?: string; overwrite?: boolean }): Promise<NativeSaved>
+  listSaved(opts: { path?: string }): Promise<{ paths: string[] }>
   setKeepAwake(opts: { on: boolean }): Promise<void>
   readClipboard(): Promise<{ text: string }>
   delay(opts: { ms: number }): Promise<void>
@@ -227,4 +233,75 @@ export function onStopRequested(handler: () => void): () => void {
 export async function copyText(text: string, label = 'NAIP'): Promise<void> {
   if (isNative) await NaipNative.copyText({ text, label })
   else await navigator.clipboard.writeText(text)
+}
+
+// ── Phase 5: 에셋 내보내기 — 여러 단계 하위 폴더(Pictures/NAIP/a/b)·덮어쓰기·목록 파일(Download/NAIP/…) ──────
+
+/** 네이티브 저장 결과 — path는 Pictures/NAIP(또는 Download/NAIP) 아래의 실제 경로 */
+export interface NativeSaved {
+  uri: string
+  name: string
+  path: string
+  /** 이 앱이 만든 같은 파일을 새로 썼다 */
+  overwritten: boolean
+  /** 같은 이름(이 앱 것이 아닌 파일)이 있어 기기가 이름을 바꿨다 ("이름 (1).png") */
+  renamed: boolean
+}
+
+/** 덮어쓰기를 바랐지만 같은 이름의 파일이 다른 앱(또는 앱을 다시 설치하기 전) 것이라 덮어쓸 수 없음 */
+export class OverwriteDeniedError extends Error {}
+
+/** "a/b" 하위 폴더를 단계마다 정리 (빈 단계·..는 뺀다) */
+export function cleanFolderPath(path: string): string {
+  return path
+    .split('/')
+    .map(cleanFileName)
+    .filter(Boolean)
+    .join('/')
+}
+
+function nativeSaveError(e: unknown): Error {
+  const err = e as { code?: string; message?: string }
+  if (err?.code === 'OVERWRITE_DENIED') return new OverwriteDeniedError(err.message ?? 'overwrite denied')
+  return e instanceof Error ? e : new Error(String(err?.message ?? e))
+}
+
+/** 이미지를 Pictures/NAIP/폴더/이름 으로 (휴대폰 전용 — 웹은 내보내기에서 zip으로 받는다) */
+export async function saveImageAt(blob: Blob, folderPath: string, fileName: string, overwrite = false): Promise<NativeSaved> {
+  if (!isNative) throw new Error('휴대폰 앱에서만 저장할 수 있습니다')
+  const path = cleanFolderPath(folderPath)
+  try {
+    const r = await NaipNative.saveToGallery({
+      base64: await blobToBase64(blob),
+      fileName: cleanFileName(fileName),
+      mimeType: blob.type || 'image/png',
+      path,
+      overwrite
+    })
+    return {
+      uri: r.uri,
+      name: r.name ?? fileName,
+      path: r.path ?? `${path ? `${path}/` : ''}${fileName}`,
+      overwritten: !!r.overwritten,
+      renamed: !!r.renamed
+    }
+  } catch (e) {
+    throw nativeSaveError(e)
+  }
+}
+
+/** 글 파일을 Download/NAIP/폴더/이름 으로 (안드로이드는 사진 폴더에 글 파일을 넣지 못하게 한다) */
+export async function saveTextAt(text: string, mimeType: string, folderPath: string, fileName: string, overwrite = false): Promise<NativeSaved> {
+  if (!isNative) throw new Error('휴대폰 앱에서만 저장할 수 있습니다')
+  try {
+    return await NaipNative.saveTextFile({ text, fileName: cleanFileName(fileName), mimeType, path: cleanFolderPath(folderPath), overwrite })
+  } catch (e) {
+    throw nativeSaveError(e)
+  }
+}
+
+/** 이 앱이 Pictures/NAIP 아래에 저장해 둔 파일 경로 (웹은 빈 목록) */
+export async function listSavedImages(folderPath = ''): Promise<string[]> {
+  if (!isNative) return []
+  return (await NaipNative.listSaved({ path: cleanFolderPath(folderPath) })).paths
 }

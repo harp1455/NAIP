@@ -40,6 +40,7 @@ interface ProjectsState {
   addCharacter: (projectId: string, c: Partial<Omit<ProjectCharacter, 'id'>> & { name: string }) => string | null
   patchCharacter: (projectId: string, charId: string, p: Partial<Omit<ProjectCharacter, 'id'>>) => void
   removeCharacter: (projectId: string, charId: string) => void
+  moveCharacter: (projectId: string, charId: string, dir: -1 | 1) => void
 
   addAxis: (projectId: string, kind: AxisKind, name?: string) => string | null
   patchAxis: (projectId: string, axisId: string, p: Partial<Omit<Axis, 'id' | 'values'>>) => void
@@ -48,12 +49,16 @@ interface ProjectsState {
   addValue: (projectId: string, axisId: string, v: Partial<Omit<AxisValue, 'id'>> & { label: string }) => string | null
   patchValue: (projectId: string, axisId: string, valueId: string, p: Partial<Omit<AxisValue, 'id'>>) => void
   removeValue: (projectId: string, axisId: string, valueId: string) => void
+  moveValue: (projectId: string, axisId: string, valueId: string, dir: -1 | 1) => void
 
   // ── 생성 진행 (대기열 연결)
   markQueued: (projectId: string, jobs: readonly { key: string; count: number }[]) => void
   releaseQueued: (projectId: string, key: string, count: number) => void
   markStarted: (projectId: string, key: string) => void
-  addImage: (projectId: string, key: string, image: cur.NewAssetImage) => void
+  /** 시작했지만 멈춰서 끝내지 못한 장 (생성 중 장수만 되돌린다 — 실패로 세지 않는다) */
+  cancelStarted: (projectId: string, key: string) => void
+  /** fromQueue: false = 대기열과 무관한 그림 (분류로 배정·멈춘 뒤 늦게 도착) — 대기·생성 중 장수를 건드리지 않는다 */
+  addImage: (projectId: string, key: string, image: cur.NewAssetImage, opts?: { fromQueue?: boolean }) => void
   markFailed: (projectId: string, key: string) => void
 
   // ── 선별
@@ -152,6 +157,7 @@ export const useProjects = create<ProjectsState>()(
             characters: p.characters.map((c) => (c.id === charId ? { ...c, ...patch } : c))
           })),
         removeCharacter: (projectId, charId) => update(projectId, (p) => model.removeCharacter(p, charId)),
+        moveCharacter: (projectId, charId, dir) => update(projectId, (p) => model.moveCharacter(p, charId, dir)),
 
         addAxis: (projectId, kind, name) => {
           let id: string | null = null
@@ -183,6 +189,7 @@ export const useProjects = create<ProjectsState>()(
             )
           })),
         removeValue: (projectId, axisId, valueId) => update(projectId, (p) => model.removeValue(p, axisId, valueId)),
+        moveValue: (projectId, axisId, valueId, dir) => update(projectId, (p) => model.moveValue(p, axisId, valueId, dir)),
 
         markQueued: (projectId, jobs) =>
           update(projectId, (p) =>
@@ -191,7 +198,8 @@ export const useProjects = create<ProjectsState>()(
         releaseQueued: (projectId, key, count) => item(projectId, key, (i) => cur.bumpRuntime(i, { queued: -count })),
         markStarted: (projectId, key) =>
           item(projectId, key, (i) => cur.bumpRuntime(i, { queued: i.queued > 0 ? -1 : 0, generating: 1 })),
-        addImage: (projectId, key, image) => item(projectId, key, (i) => cur.addImage(i, image)),
+        cancelStarted: (projectId, key) => item(projectId, key, (i) => cur.bumpRuntime(i, { generating: -1 })),
+        addImage: (projectId, key, image, opts) => item(projectId, key, (i) => cur.addImage(i, image, opts)),
         markFailed: (projectId, key) =>
           item(projectId, key, (i) =>
             cur.bumpRuntime(i, i.generating > 0 ? { generating: -1, failed: 1 } : { queued: -1, failed: 1 })
@@ -282,4 +290,11 @@ export const useProjects = create<ProjectsState>()(
 /** 지금 고른 프로젝트 */
 export function activeProject(s: Pick<ProjectsState, 'projects' | 'activeId'> = useProjects.getState()): Project | null {
   return s.projects.find((p) => p.id === s.activeId) ?? null
+}
+
+/** 히스토리를 모두 지웠을 때 — 모든 프로젝트에서 그림을 뺀다 (선별·코드 기록은 칸에 남는다) */
+export function forgetAllProjectImages(): void {
+  const s = useProjects.getState()
+  const ids = s.projects.flatMap((p) => Object.values(p.items).flatMap((i) => i.images.map((img) => img.id)))
+  if (ids.length) s.forgetImages(ids)
 }

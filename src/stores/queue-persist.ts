@@ -3,6 +3,7 @@ import type { QueueBatchRow, QueueItemRow } from '../storage/queue-repo'
 import { fragmentSourceFrom, type FragmentLibrary } from './fragments'
 import type { Batch, PlanItem } from './generation'
 import { useScenes } from './scenes'
+import { adoptTaggedImages } from '../project/queue' // ── Phase 5
 
 /**
  * 생성 대기열을 앱이 죽어도 남게 한다.
@@ -160,6 +161,8 @@ export async function loadResume(): Promise<ResumeEntry[]> {
   const found = await queue.imagesByRequest(items.filter((i) => i.state === 'sending').map((i) => i.req_id))
   const { entries, resolved, dropped } = planResume(batches, items, found)
   for (const r of resolved) await queue.mark(r.batchId, r.idx, 'done', r.reqId, { imageId: r.imageId })
+  // ── Phase 5: 히스토리에는 들어갔는데 프로젝트 기록 전에 죽은 장 — 분류 표시로 프로젝트에 넣는다
+  if (resolved.length) adoptTaggedImages(await (await getStorage()).history.getMany(resolved.map((r) => r.imageId)))
   for (const id of dropped) await queue.dropBatch(id)
   return entries
 }
