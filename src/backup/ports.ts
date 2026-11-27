@@ -176,6 +176,8 @@ export interface SafeHistoryResult extends HistoryRestoreResult {
   problems: EntryProblem[]
   /** 바꾸기에서 지운 지금 기록 (백업에 없던 것) */
   removed: number
+  /** 지운 기록의 id — 프로젝트 조합에서도 빼야 한다 */
+  removedIds?: number[]
   /** 바꾸기였지만 문제가 있어 지금 기록을 지우지 않고 남겨 둔 수 */
   keptBecauseOfProblems: number
 }
@@ -207,5 +209,5 @@ export async function restoreHistorySafely(
   const stale = before.filter((id) => !seen.has(id))
   if (result.failed || result.problems.length) return { ...result, removed: 0, keptBecauseOfProblems: stale.length }
   await port.remove(stale)
-  return { ...result, removed: stale.length, keptBecauseOfProblems: 0 }
+  return { ...result, removed: stale.length, removedIds: stale, keptBecauseOfProblems: 0 }
 }

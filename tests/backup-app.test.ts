@@ -198,7 +198,7 @@ describe('history ports on the Phase 3 storage', () => {
 
     // 온전한 백업 → 백업 기록으로 바꾸고, 백업에 없던 지금 기록만 지운다
     const r3 = await restoreHistorySafely(await openNaipBackup(bytesSource(bytes)), port, { mode: 'replace', originals: true })
-    expect(r3).toMatchObject({ added: 5, failed: 0, removed: 1 })
+    expect(r3).toMatchObject({ added: 5, failed: 0, removed: 1, removedIds: [H + 99] })
     expect(await dst.repo.get(H + 99)).toBeNull()
     expect(dst.files.files.has(`images/${H + 99}.png`)).toBe(false)
     expect((await dst.repo.get(H + 1))!.prompt).toBe(`1girl, prompt ${H + 1}`)

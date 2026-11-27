@@ -11,6 +11,7 @@
 import { makeThumb, pngDataUrl, toPngBase64 } from '../lib/image'
 import { uid } from '../lib/util'
 import { freeSpace, getStorage } from '../storage'
+import { useProjects } from '../project/store'
 import { useHistory } from '../stores/history'
 import { useSettings } from '../stores/settings'
 import { createFile, pickFile, type ReadableFile } from './files'
@@ -367,6 +368,8 @@ export async function applyRestore(
         signal: opts.signal
       })
       summary.problems.push(...summary.history.problems)
+      // 바꾸기로 지운 그림은 프로젝트 조합에서도 뺀다 (히스토리 화면에서 지울 때와 같게)
+      if (summary.history.removedIds?.length) useProjects.getState().forgetImages(summary.history.removedIds)
     } catch (error) {
       summary.historyError =
         error instanceof BackupError && error.code === 'aborted'
