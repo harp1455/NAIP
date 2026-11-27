@@ -2,7 +2,7 @@ import type { SettingsSnapshot } from './db'
 import type { ImportedSettings, MetadataVibe } from './metadata'
 import { MODELS, NOISE_SCHEDULES, SAMPLERS } from '../nai/constants'
 import { fitNaiGenerationResolution } from '../nai/resolution'
-import { joinPromptParts } from '../nai/cast'
+import { composeCaption, joinPromptParts } from '../nai/cast'
 import { useCharacters } from '../stores/characters'
 import { usePrompt, type Params } from '../stores/prompt'
 import { useRefs } from '../stores/refs'
@@ -88,9 +88,9 @@ export function availableParts(data: Importable): ImportPart[] {
 }
 
 /**
- * 캐릭터 프롬프트들을 출연 슬롯으로 (모두 고정 슬롯, 위치 유지). 라이브러리에 같은 캐릭터가 있으면 그것을 쓰고
- * (고정 칸, 또는 고정·가변·디테일을 합친 것이 같으면), 없으면 "가져온 캐릭터" 폴더에 새로 만든다 — 프롬프트는 고정 칸으로.
- * 변형이 섞여 뽑힌 캐릭터는 그 캡션 그대로 새 캐릭터가 되므로 그 장의 출연을 똑같이 되살린다.
+ * 캐릭터 프롬프트들을 출연 슬롯으로 (모두 고정 슬롯, 위치 유지). 라이브러리 캐릭터가 지금 그대로 보내도 그 장과 똑같으면
+ * (고정·가변·디테일을 합친 캡션과 네거티브가 같고, 뽑을 변형 그룹이 없으면) 그것을 쓰고, 아니면 "가져온 캐릭터" 폴더에
+ * 새로 만든다 — 프롬프트는 고정 칸으로. 변형이 섞여 뽑힌 캐릭터도 그 캡션 그대로 새 캐릭터가 되므로 그 장의 출연을 똑같이 되살린다.
  */
 function applyCast(chars: Importable['chars']): void {
   const store = useCharacters.getState()
@@ -100,8 +100,12 @@ function applyCast(chars: Importable['chars']): void {
     const text = joinPromptParts([c.prompt])
     if (!text) return
     const { characters, folders } = useCharacters.getState()
+    const negative = joinPromptParts([c.negative])
     let id = characters.find(
-      (x) => x.base.trim() === c.prompt.trim() || joinPromptParts([x.base, x.additional, x.detail]) === text
+      (x) =>
+        composeCaption(x, []) === text &&
+        joinPromptParts([x.negative]) === negative &&
+        !x.variations.some((g) => g.mode !== 'off' && g.items.length > 0)
     )?.id
     if (id === undefined) {
       folderId ??= folders.find((f) => f.name === IMPORT_FOLDER)?.id ?? store.addFolder(IMPORT_FOLDER)
