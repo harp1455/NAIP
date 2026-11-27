@@ -47,7 +47,7 @@ NovelAI 이미지 대량 출력용 안드로이드 앱. [NAIS3](https://github.c
 
 ## 설치 · 업데이트
 
-`Build APK` GitHub Actions 워크플로가 푸시마다 디버그 APK를 만들어 **릴리스**(`build-번호`)에 올립니다.
+`Build APK` GitHub Actions 워크플로가 푸시마다 디버그 APK를 빌드하고, 커밋 메시지에 `[release]`가 있을 때만 **릴리스**(`build-번호`)로 올립니다.
 처음 한 번만 [Releases](../../releases/latest)에서 APK를 내려받아 설치하세요 (Android 10 이상).
 
 그다음부터는 앱이 열릴 때마다 최신 릴리스를 확인하고, 새 빌드가 있으면 화면 위에 "업데이트" 버튼을 띄웁니다.
