@@ -52,8 +52,8 @@ function safePatch(state: object, patch: Obj): Obj {
   return out
 }
 
-/** 바이브·레퍼런스·마스크(IndexedDB)가 살아날 때까지 기다린다 (최대 timeoutMs) */
-export async function waitHydrated(timeoutMs = 5000): Promise<void> {
+/** 바이브·레퍼런스·마스크(IndexedDB)가 살아날 때까지 기다린다 (최대 timeoutMs). 모두 살아났으면 true */
+export async function waitHydrated(timeoutMs = 5000): Promise<boolean> {
   const wait = (ready: () => boolean, subscribe: (fn: () => void) => () => void): Promise<void> =>
     ready()
       ? Promise.resolve()
@@ -76,6 +76,7 @@ export async function waitHydrated(timeoutMs = 5000): Promise<void> {
       (fn) => useMasks.persist?.onFinishHydration?.(fn) ?? (() => {})
     )
   ])
+  return useRefs.getState().hydrated && (useMasks.persist?.hasHydrated?.() ?? true)
 }
 
 export function collectStoreData(): BackupData {

@@ -43,9 +43,15 @@ import { estimateBackupSize, writeNaipBackup, type SizeEstimate, type WriteBacku
 
 export const APP_VERSION: string = __APP_VERSION__
 
-/** 지금 앱의 데이터 (IndexedDB 에서 살아나는 스토어를 기다린 뒤) */
-export async function currentData(): Promise<BackupData> {
-  await waitHydrated()
+/**
+ * 지금 앱의 데이터 (IndexedDB 에서 살아나는 스토어를 기다린 뒤).
+ * 다 살아나지 않았으면 멈춘다 — 그대로 모으면 바이브·레퍼런스·마스크가 빈 채로 백업(자동 백업 포함)되고,
+ * 복원 계획도 빈 목록을 지금 데이터로 보고 세워져 복원이 지금 것을 덮어쓴다.
+ */
+export async function currentData(timeoutMs = 15_000): Promise<BackupData> {
+  if (!(await waitHydrated(timeoutMs))) {
+    throw new Error('바이브·레퍼런스·마스크를 아직 불러오는 중입니다 — 잠시 뒤 다시 시도하세요')
+  }
   return collectStoreData()
 }
 

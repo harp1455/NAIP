@@ -14,6 +14,7 @@ import { chunk, marks, type SqlDriver } from '../storage/driver'
 import { dataUrlMime, type FileStore } from '../storage/files'
 import { createHistoryRepo, insertStatements, originalPath, rowToMeta, thumbPathFor, type ImageRow } from '../storage/history-repo'
 import { sniffImage, toBase64 } from './bytes'
+import { HISTORY_PAGE_RE } from './format'
 import type { HistoryExportPort, HistoryImportPort, HistoryRecord, HistoryRestoreResult } from './history'
 import { restoreHistory, type RestoreHistoryOptions } from './history-restore'
 import type { NaipBackupReader } from './read'
@@ -207,7 +208,14 @@ export async function restoreHistorySafely(
   }
   const result = await restoreHistory(reader, deferred, opts)
   const stale = before.filter((id) => !seen.has(id))
-  if (result.failed || result.problems.length) return { ...result, removed: 0, keptBecauseOfProblems: stale.length }
+  // 기록 페이지가 통째로 없으면 읽기에서는 문제로 드러나지 않는다 (없는 항목은 돌지 않으므로) —
+  // 체크섬 목록에만 있는 페이지, 또는 manifest 에 적힌 기록 수보다 적게 읽은 경우도 문제로 보고 지우지 않는다
+  const problems = [...result.problems, ...reader.structuralProblems.filter((p) => p.kind === 'missing' && HISTORY_PAGE_RE.test(p.path))]
+  const expected = reader.manifest.counts.history
+  if (typeof expected === 'number' && seen.size + result.failed < expected) {
+    problems.push({ path: 'history', kind: 'missing', detail: `백업에 적힌 기록 ${expected}장 중 ${seen.size + result.failed}장만 읽었습니다` })
+  }
+  if (result.failed || problems.length) return { ...result, problems, removed: 0, keptBecauseOfProblems: stale.length }
   await port.remove(stale)
   return { ...result, removed: stale.length, removedIds: stale, keptBecauseOfProblems: 0 }
 }

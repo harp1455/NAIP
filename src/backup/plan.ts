@@ -129,7 +129,10 @@ export const RESTORE_SCHEMA: { sections: Record<DataSectionId, SectionSchema>; r
     // 에셋 프로젝트 → 캐릭터 라이브러리·바이브·레퍼런스 (libraryId 가 없어지면 null = 프로젝트 전용 캐릭터)
     { section: 'projects', path: 'projects[].characters[].libraryId', target: { section: 'characters', key: 'characters' } },
     { section: 'projects', path: 'projects[].characters[].vibeIds[]', target: { section: 'vibes', key: 'vibes' } },
-    { section: 'projects', path: 'projects[].characters[].refIds[]', target: { section: 'charRefs', key: 'charRefs' } }
+    { section: 'projects', path: 'projects[].characters[].refIds[]', target: { section: 'charRefs', key: 'charRefs' } },
+    // 프로젝트 전체에 쓰는 바이브·레퍼런스 (project/run.ts 가 캐릭터별 것과 함께 쓴다)
+    { section: 'projects', path: 'projects[].vibeIds[]', target: { section: 'vibes', key: 'vibes' } },
+    { section: 'projects', path: 'projects[].refIds[]', target: { section: 'charRefs', key: 'charRefs' } }
   ]
 }
 

@@ -205,6 +205,42 @@ describe('history ports on the Phase 3 storage', () => {
     expect(dst.files.files.get(`images/${H + 1}.png`)).toEqual(src.files.files.get(`images/${H + 1}.png`))
   })
 
+  it('does not delete current history when a whole record page is missing from the backup', async () => {
+    const src = await seeded()
+    // 2장씩 3페이지: H+1·H+2 / H+3·H+4 / H+5
+    const bytes = await fullBackup(src)
+    const page2 = 'history/meta-000002.jsonl'
+    const setup = async () => {
+      const dst = await fresh()
+      // H+3 은 빠진 페이지에 있던 기록 — 백업에 있었으므로 지우면 안 된다
+      await dst.repo.add(meta(H + 3, { prompt: 'here too' }), new Blob([png(300, 9) as BlobPart]))
+      await dst.repo.add(meta(H + 99, { prompt: 'only here' }), new Blob([png(300, 8) as BlobPart]))
+      return dst
+    }
+
+    // 페이지만 빠짐 (체크섬 목록에는 남음)
+    const noPage = await rewriteZip(bytes, (path, data) => (path === page2 ? null : data))
+    const d1 = await setup()
+    const r1 = await restoreHistorySafely(await openNaipBackup(bytesSource(noPage)), historyImportPort(d1), { mode: 'replace', originals: true })
+    expect(r1.removed).toBe(0)
+    expect(r1.problems.some((p) => p.path === page2)).toBe(true)
+    expect(await d1.repo.get(H + 3)).not.toBeNull()
+    expect(await d1.repo.get(H + 99)).not.toBeNull()
+
+    // 체크섬 목록에서도 지운 경우 — manifest 의 기록 수로 알아챈다
+    const noTrace = await rewriteZip(noPage, (path, data) => {
+      if (path !== 'checksums.json') return data
+      const sums = JSON.parse(fromUtf8(data)) as Record<string, unknown>
+      delete sums[page2]
+      return utf8(JSON.stringify(sums))
+    })
+    const d2 = await setup()
+    const r2 = await restoreHistorySafely(await openNaipBackup(bytesSource(noTrace)), historyImportPort(d2), { mode: 'replace', originals: true })
+    expect(r2).toMatchObject({ added: 3, removed: 0, keptBecauseOfProblems: 2 })
+    expect(await d2.repo.get(H + 3)).not.toBeNull()
+    expect(await d2.repo.get(H + 99)).not.toBeNull()
+  })
+
   it('keeps the current original when a record-only backup replaces a record', async () => {
     const src = await seeded()
     const bytes = await fullBackup(src, {}, { mode: 'custom', sections: ['history'] })
@@ -448,6 +484,27 @@ describe('asset projects section', () => {
     expect(pr.result.presets).toEqual([{ id: 'cp', name: '변환' }])
   })
 
+  it('remaps project-wide vibe and reference ids too (not only per-character ones)', () => {
+    const vibe = (id: number, name: string) => ({ id, name, image: '', thumb: '', strength: 0.6, infoExtracted: 1, enabled: true, encodings: { [`m|1`]: name } })
+    const ref = (id: number, name: string) => ({ id, name, image: name, thumb: '', type: 'character', strength: 1, fidelity: 1, enabled: true })
+    // 이 기기에도 id 81 바이브·91 레퍼런스가 있지만 내용이 다르다 → 합치면 백업 것은 새 id 를 받는다
+    const current: BackupData = { vibes: { vibes: [vibe(81, 'mine')] }, charRefs: { charRefs: [ref(91, 'mine')] }, projects: { projects: [], activeId: null } }
+    const inc: BackupData = {
+      vibes: { vibes: [vibe(81, 'theirs')] },
+      charRefs: { charRefs: [ref(91, 'theirs')] },
+      projects: { projects: [proj('p2', 'New', { vibeIds: [81, 999], refIds: [91] })], activeId: null }
+    }
+    let next = 500
+    const plan = planRestore(current, normalizeBackupData(inc), { mode: 'merge', newId: () => ++next })
+    const newVibe = (plan.sections.vibes!.result.vibes as { id: number; name: string }[]).find((v) => v.name === 'theirs')!.id
+    const newRef = (plan.sections.charRefs!.result.charRefs as { id: number; name: string }[]).find((r) => r.name === 'theirs')!.id
+    expect(newVibe).not.toBe(81)
+    const p = (plan.sections.projects!.result.projects as { vibeIds: number[]; refIds: number[] }[])[0]
+    // 이 기기의 다른 바이브(81 'mine')를 가리키지 않고, 없는 999 는 빠진다
+    expect(p.vibeIds).toEqual([newVibe])
+    expect(p.refIds).toEqual([newRef])
+  })
+
   it('takes the backup active project (and cast slots) on merge only when nothing is chosen now', () => {
     const inc: BackupData = { projects: { projects: [proj('p9', 'Backup')], activeId: 'p9' } }
     const empty = planRestore({ projects: { projects: [], activeId: null } }, inc, { mode: 'merge' })
@@ -593,6 +650,23 @@ describe('safety backups in app-private storage', () => {
     await sink.abort()
     expect(files.files.size).toBe(0)
     expect(await listSafetyBackups(files)).toEqual([])
+  })
+})
+
+describe('app data collection waits for IndexedDB stores', () => {
+  it('refuses to collect (backup, safety backup, restore plan) while vibes and references are not loaded', async () => {
+    const app = await import('../src/backup/app')
+    const { useRefs } = await import('../src/stores/refs')
+    const was = useRefs.getState().hydrated
+    useRefs.setState({ hydrated: false })
+    try {
+      // 빈 바이브 목록으로 백업·계획을 세우지 않고 멈춘다
+      await expect(app.currentData(20)).rejects.toThrow('불러오는 중')
+    } finally {
+      useRefs.setState({ hydrated: was })
+    }
+    useRefs.setState({ hydrated: true })
+    await expect(app.currentData(20)).resolves.toHaveProperty('vibes')
   })
 })
 
