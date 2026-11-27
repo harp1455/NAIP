@@ -2,6 +2,7 @@ import type { SettingsSnapshot } from './db'
 import type { ImportedSettings, MetadataVibe } from './metadata'
 import { MODELS, NOISE_SCHEDULES, SAMPLERS } from '../nai/constants'
 import { fitNaiGenerationResolution } from '../nai/resolution'
+import { joinPromptParts } from '../nai/cast'
 import { useCharacters } from '../stores/characters'
 import { usePrompt, type Params } from '../stores/prompt'
 import { useRefs } from '../stores/refs'
@@ -86,26 +87,34 @@ export function availableParts(data: Importable): ImportPart[] {
   return parts
 }
 
-/** 캐릭터 프롬프트들을 출연 목록으로 — 같은 프롬프트의 캐릭터가 라이브러리에 있으면 그것을 쓰고, 없으면 새로 만든다 */
+/**
+ * 캐릭터 프롬프트들을 출연 슬롯으로 (모두 고정 슬롯, 위치 유지). 라이브러리에 같은 캐릭터가 있으면 그것을 쓰고
+ * (고정 칸, 또는 고정·가변·디테일을 합친 것이 같으면), 없으면 "가져온 캐릭터" 폴더에 새로 만든다 — 프롬프트는 고정 칸으로.
+ * 변형이 섞여 뽑힌 캐릭터는 그 캡션 그대로 새 캐릭터가 되므로 그 장의 출연을 똑같이 되살린다.
+ */
 function applyCast(chars: Importable['chars']): void {
   const store = useCharacters.getState()
-  store.clearCast()
+  store.clearSlots()
   let folderId: number | null = null
   chars.forEach((c, i) => {
-    if (!c.prompt.trim()) return
+    const text = joinPromptParts([c.prompt])
+    if (!text) return
     const { characters, folders } = useCharacters.getState()
-    let id = characters.find((x) => x.prompt.trim() === c.prompt.trim())?.id
+    let id = characters.find(
+      (x) => x.base.trim() === c.prompt.trim() || joinPromptParts([x.base, x.additional, x.detail]) === text
+    )?.id
     if (id === undefined) {
       folderId ??= folders.find((f) => f.name === IMPORT_FOLDER)?.id ?? store.addFolder(IMPORT_FOLDER)
       id = store.saveCharacter({
         name: c.name?.trim() || `가져온 캐릭터 ${i + 1}`,
         folderId,
-        prompt: c.prompt,
+        base: c.prompt,
+        additional: '',
+        detail: '',
         negative: c.negative
       })
     }
-    store.toggleCast(id)
-    if (c.center) store.patchCast(id, { center: c.center })
+    store.addSlot({ mode: 'fixed', charId: id, center: c.center ?? null })
   })
 }
 

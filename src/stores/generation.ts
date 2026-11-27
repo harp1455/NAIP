@@ -19,7 +19,20 @@ import { processWildcards, resetSequentialCounters } from '../nai/fragments'
 import { cleanFileName, fileNameFor, job, saveToGallery, setKeepAwake, wait } from '../lib/native'
 import { randomSeed, uid } from '../lib/util'
 import { positionFor } from '../lib/position'
-import { useCharacters } from './characters'
+// ── Phase 2: 캐릭터 슬롯·변형 뽑기
+import {
+  castSent,
+  checkPeopleCount,
+  createDrawState,
+  fixedSlots,
+  fixPeopleCount,
+  resolveCast,
+  type CastPlan,
+  type CastResolution,
+  type CastSent,
+  type DrawState
+} from '../nai/cast'
+import { snapshotCastPlan, useCharacters } from './characters'
 import { fragmentSource } from './fragments'
 import { appendPrompt, useScenes } from './scenes'
 import { primeImageUrl, useHistory } from './history'
@@ -72,7 +85,7 @@ interface GenerationState {
    * scenes를 주면 그 씬들의 예약분을, regenerate를 주면 그 이미지를 같은 설정·새 시드로 한 장 더,
    * 아무것도 없으면 메인 프롬프트를 장수만큼 생성. 이미 생성 중이면 누른 시점의 설정으로 대기열에 넣는다
    */
-  start: (opts?: { scenes?: number[]; regenerate?: HistoryMeta }) => Promise<void>
+  start: (opts?: { scenes?: number[]; regenerate?: HistoryMeta; redraw?: boolean }) => Promise<void>
   /** 지금 배치를 멈추고 대기열도 비운다 */
   stop: () => void
   removeQueued: (id: number) => void
@@ -100,8 +113,8 @@ const pendingBatches: Batch[] = []
 interface PlanItem {
   /** reserved: 씬 예약에서 가져온 장이라, 못 뽑으면 예약으로 돌려준다 (다시 생성은 씬 표시만 물려받는다) */
   scene?: { id: number; name: string; prompt: string; negative: string; reserved: boolean }
-  /** 씬에 따로 정한 출연 캐릭터 — 있으면 화면에서 켜 둔 출연 대신 쓴다 */
-  chars?: CharacterPromptInput[]
+  /** 씬에 따로 정한 출연 캐릭터(고정 슬롯으로 바꾼 것) — 있으면 화면의 출연 슬롯 대신 쓴다 */
+  cast?: CastPlan
   size?: { width: number; height: number }
   /** 고정 시드일 때 더할 오프셋 (씬마다 0부터) */
   offset: number
@@ -121,6 +134,13 @@ interface Batch {
   plan: PlanItem[]
   /** 다시 생성: 이미 치환이 끝난 문장을 그대로 보낸다 */
   verbatim: boolean
+  /**
+   * 출연 슬롯 스냅샷 (Phase 2) — 장마다 여기서 캐릭터·변형을 뽑는다. 누른 순간의 라이브러리 내용을 복사해 두어
+   * 대기 중에 캐릭터를 고쳐도 영향받지 않는다. null = base.characterPrompts를 그대로 (다시 생성)
+   */
+  cast: CastPlan | null
+  /** 다시 생성: 원본의 뽑기 결과 기록을 그대로 물려준다 */
+  castSent?: CastSent
 }
 
 type BatchOutcome = 'done' | 'stopped' | 'fatal'
@@ -129,28 +149,32 @@ function isAbort(e: unknown): boolean {
   return e instanceof DOMException && e.name === 'AbortError'
 }
 
-/** 출연 목록 → payload용 캐릭터 프롬프트 */
-export function castPrompts(): CharacterPromptInput[] {
-  const { cast, characters } = useCharacters.getState()
-  const out: CharacterPromptInput[] = []
-  for (const e of cast) {
-    const c = characters.find((x) => x.id === e.charId)
-    if (!c) continue
-    out.push({
-      prompt: c.prompt,
-      negativePrompt: c.negative,
-      enabled: e.enabled,
-      name: c.name,
-      ...(e.center ? { center: e.center } : {})
-    })
-  }
-  return out
+/** 뽑기 결과 → payload용 캐릭터 프롬프트 (text로 조각 치환, 위치는 이 모델이 받는 형태로) */
+export function resolvedPrompts(
+  res: CastResolution,
+  model: string,
+  text: (s: string) => string = (s) => s
+): CharacterPromptInput[] {
+  return res.chars.map((c) => ({
+    prompt: text(c.prompt),
+    negativePrompt: text(c.negative),
+    enabled: true,
+    name: c.name,
+    ...(c.center ? { center: positionFor(c.center, model) } : {})
+  }))
+}
+
+/** 출연 슬롯 → payload용 캐릭터 프롬프트 (한 번 뽑아 본 결과 — 실제 생성은 장마다 runBatch에서 다시 뽑는다) */
+export function castPrompts(rng: () => number = Math.random): CharacterPromptInput[] {
+  const model = usePrompt.getState().params.model
+  const res = resolveCast(snapshotCastPlan(), createDrawState(), rng, modelCapabilities(model).maxCharacters)
+  return resolvedPrompts(res, model)
 }
 
 export function buildRequest(seed: number): GenerationRequest {
   const p = usePrompt.getState()
   // 위치는 지금 모델이 받는 형태로 (V5 자유 위치 0.1%, V4·V4.5는 5×5 격자로 맞춤)
-  const chars = castPrompts().map((c) => (c.center ? { ...c, center: positionFor(c.center, p.params.model) } : c))
+  const chars = castPrompts()
   return {
     ...p.params,
     prompt: mergePromptParts(p),
@@ -208,9 +232,12 @@ export const useGeneration = create<GenerationState>()((set, get) => {
     set({ queue: pendingBatches.map((b) => ({ id: b.id, label: b.label, count: b.plan.length })) })
 
   /** 지금 화면의 설정으로 배치를 만든다 (씬 배치는 이 순간 예약을 가져간다). 만들 수 없으면 이유 */
-  const buildBatch = (opts?: { scenes?: number[]; regenerate?: HistoryMeta }): Batch | string => {
+  const buildBatch = (opts?: { scenes?: number[]; regenerate?: HistoryMeta; redraw?: boolean }): Batch | string => {
     const sceneIds = opts?.scenes
     const regen = opts?.regenerate
+    // 재추첨 생성: 그 이미지의 슬롯·변형 원본으로 다시 뽑는다 (조각도 새로)
+    const redraw = opts?.redraw ? regen?.snap?.cast : undefined
+    if (opts?.redraw && !redraw) return '이 이미지에는 재추첨에 필요한 출연 슬롯 정보가 없습니다'
     const prompt = usePrompt.getState()
     let fixedSeed = prompt.seed.trim() === '' ? null : Number(prompt.seed)
     let base = buildRequest(0)
@@ -252,6 +279,9 @@ export const useGeneration = create<GenerationState>()((set, get) => {
       }
       fixedSeed = null
       source = { image: null, mask: null, strength: 0.7, noise: 0, originId: null }
+      if (redraw) {
+        base = { ...base, prompt: mergePromptParts(regen.snap), negativePrompt: regen.snap.negative, characterPrompts: [] }
+      }
     }
 
     const plan: PlanItem[] = []
@@ -261,35 +291,37 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         offset: 0,
         size: { width: regen.width, height: regen.height },
         ...(regen.sceneId !== undefined
-          ? { scene: { id: regen.sceneId, name: regen.sceneName ?? '', prompt: '', negative: '', reserved: false } }
+          ? {
+              scene: {
+                id: regen.sceneId,
+                name: regen.sceneName ?? '',
+                // 재추첨은 씬 프롬프트 원본을 다시 붙인다 (다시 생성은 보낸 문장에 이미 들어 있다)
+                prompt: redraw?.scene?.prompt ?? '',
+                negative: redraw?.scene?.negative ?? '',
+                reserved: false
+              }
+            }
           : {})
       })
-      label = `다시 생성 · seed ${regen.seed}`
+      label = `${redraw ? '재추첨 생성' : '다시 생성'} · seed ${regen.seed}`
     } else if (sceneIds) {
       const want = new Set(sceneIds)
-      // 씬별 출연: 라이브러리에서 지워진 캐릭터는 건너뛴다
+      // 씬별 출연: 고정 슬롯으로 바꿔 같은 뽑기 엔진을 거친다 (변형도 적용). 라이브러리에서 지워진 캐릭터는 건너뛴다
       const library = useCharacters.getState().characters
       const picked = useScenes.getState().scenes.filter((sc) => want.has(sc.id) && sc.reserve > 0)
       for (const sc of picked) {
-        const chars = sc.cast?.flatMap((id) => {
-          const c = library.find((x) => x.id === id)
-          const center = sc.castCenters?.[id]
-          return c
-            ? [
-                {
-                  prompt: c.prompt,
-                  negativePrompt: c.negative,
-                  enabled: true,
-                  name: c.name,
-                  ...(center ? { center: positionFor(center, base.model) } : {})
-                }
-              ]
-            : []
-        })
+        const cast = sc.cast
+          ? snapshotCastPlan({
+              slots: fixedSlots(
+                sc.cast.filter((id) => library.some((c) => c.id === id)),
+                sc.castCenters
+              )
+            })
+          : undefined
         for (let i = 0; i < sc.reserve; i++) {
           plan.push({
             scene: { id: sc.id, name: sc.name, prompt: sc.prompt, negative: sc.negative, reserved: true },
-            ...(chars ? { chars } : {}),
+            ...(cast ? { cast } : {}),
             // i2i 소스가 있으면 소스에 맞춘 메인 해상도를 유지한다
             ...(sc.size && !source.image ? { size: sc.size } : {}),
             offset: i
@@ -324,7 +356,9 @@ export const useGeneration = create<GenerationState>()((set, get) => {
       charRefs: regen ? [] : refs.charRefs.filter((r) => r.enabled),
       fragments: fragmentSource(),
       plan,
-      verbatim: !!regen?.sent
+      verbatim: !!regen?.sent && !redraw,
+      cast: regen ? (redraw?.plan ?? null) : snapshotCastPlan(),
+      ...(regen?.sent?.cast && !redraw ? { castSent: regen.sent.cast } : {})
     }
   }
 
@@ -339,6 +373,9 @@ export const useGeneration = create<GenerationState>()((set, get) => {
     if (settings.background) job.update(`${batch.label} · 준비 중`, 0, count)
     resetSequentialCounters()
     const timing = { count: 0, gaps: 0, waitMs: 0, downloadMs: 0, processMs: 0, gapMs: 0, sentBytes: 0, receivedBytes: 0 }
+    // ── Phase 2: 배치(씬마다 따로 뽑기면 씬)마다 이어지는 뽑기 상태와, 이 배치에서 이미 알린 참고 문구
+    const drawStates = new Map<string, DrawState>()
+    const castNotes = new Set<string>()
     let loopStarted = 0
     let outcome: BatchOutcome = 'done'
 
@@ -400,20 +437,46 @@ export const useGeneration = create<GenerationState>()((set, get) => {
             : (fixedSeed + item.offset) % 4294967296
         // 조각(와일드카드)은 장마다 새로 뽑는다. 다시 생성은 이미 치환이 끝난 문장을 그대로 보낸다
         const wild = (text: string): string => (batch.verbatim ? text : processWildcards(text, batch.fragments))
+        // ── Phase 2: 출연 슬롯·변형을 장마다 뽑는다 (캡션을 합친 뒤 조각 치환). 씬 출연은 그 씬의 고정 슬롯
+        const castPlan = item.cast ?? batch.cast
+        let castRes: CastResolution | null = null
+        if (castPlan) {
+          const key = castPlan.options.perScene && item.scene ? `scene:${item.scene.id}` : 'batch'
+          let state = drawStates.get(key)
+          if (!state) drawStates.set(key, (state = createDrawState()))
+          castRes = resolveCast(castPlan, state, Math.random, caps.maxCharacters)
+        }
+        const characterPrompts = castRes
+          ? resolvedPrompts(castRes, base.model, wild)
+          : base.characterPrompts.map((c) => ({ ...c, prompt: wild(c.prompt), negativePrompt: wild(c.negativePrompt) }))
+        let mainPrompt = wild(appendPrompt(base.prompt, item.scene?.prompt ?? ''))
+        let countFix: CastSent['countFix']
+        if (castRes && castPlan) {
+          // 인원 태그(2girls 등)가 실제 캐릭터 수와 다르면 고쳐 보내거나(설정) 배치마다 한 번 알린다
+          const fix = castPlan.options.autoCountTags ? fixPeopleCount(mainPrompt, characterPrompts) : null
+          if (fix) {
+            mainPrompt = fix.prompt
+            countFix = { from: fix.from, to: fix.to }
+          }
+          const check = fix ? null : checkPeopleCount(mainPrompt, characterPrompts.length)
+          const notes = [
+            ...castRes.notes,
+            ...(check?.conflict ? [`인원 태그(${check.tags.join(', ')})와 캐릭터 ${check.actual}명이 맞지 않습니다`] : [])
+          ]
+          // 같은 문구는 배치에 한 번만 (알림이 한 줄이라 이번 장의 새 문구를 합쳐 띄운다)
+          const fresh = notes.filter((n) => !castNotes.has(n) && castNotes.size < 8 && castNotes.add(n))
+          if (fresh.length) toast(fresh.join(' · '), true)
+        }
         const request: GenerationRequest = {
           ...base,
           ...(item.size ?? {}),
           model,
           seed,
-          prompt: wild(appendPrompt(base.prompt, item.scene?.prompt ?? '')),
+          prompt: mainPrompt,
           negativePrompt: wild(appendPrompt(base.negativePrompt, item.scene?.negative ?? '')),
-          characterPrompts: (item.chars ?? base.characterPrompts).map((c) => ({
-            ...c,
-            prompt: wild(c.prompt),
-            negativePrompt: wild(c.negativePrompt)
-          })),
-          // 씬 출연은 그 씬에 정한 위치를 쓴다 (정하지 않았으면 AI 선택)
-          ...(item.chars ? { useCoords: item.chars.some((c) => c.center) } : {})
+          characterPrompts,
+          // 위치를 하나라도 정했으면 좌표 사용 (씬 출연은 그 씬에 정한 위치, 정하지 않았으면 AI 선택)
+          useCoords: characterPrompts.some((c) => c.enabled && c.center)
         }
         const buildOpts: BuildOptions = {
           ...(vibes.length ? { vibes } : {}),
@@ -512,18 +575,24 @@ export const useGeneration = create<GenerationState>()((set, get) => {
                 prompt: payload.input,
                 negative: String(payload.parameters.negative_prompt ?? ''),
                 mime: image.type,
-                // 씬에 따로 정한 출연이 있으면 그 캐릭터들로 기록해야 "설정 적용"이 같은 출연을 되살린다
-                  snap: item.chars
-                  ? {
-                      ...snap,
-                      chars: item.chars.map((c) => ({
-                        name: c.name ?? '',
-                        prompt: c.prompt,
-                        negative: c.negativePrompt,
-                        ...(c.center ? { center: c.center } : {})
-                      }))
-                    }
-                  : snap,
+                // 이번 장에 뽑힌 캐릭터(조각 치환 전)로 기록해야 "설정 적용"이 같은 출연을 되살린다.
+                // 슬롯 설정·캐릭터 원문(씬이면 씬 프롬프트 원문)도 남겨 "재추첨 생성"이 같은 조건으로 다시 뽑게 한다
+                snap:
+                  castRes && castPlan
+                    ? {
+                        ...snap,
+                        chars: castRes.chars.map((c) => ({
+                          name: c.name,
+                          prompt: c.prompt,
+                          negative: c.negative,
+                          ...(c.center ? { center: c.center } : {})
+                        })),
+                        cast: {
+                          plan: castPlan,
+                          ...(item.scene ? { scene: { prompt: item.scene.prompt, negative: item.scene.negative } } : {})
+                        }
+                      }
+                    : snap,
                 sent: {
                   prompt: request.prompt,
                   negative: request.negativePrompt,
@@ -534,7 +603,8 @@ export const useGeneration = create<GenerationState>()((set, get) => {
                       prompt: c.prompt,
                       negative: c.negativePrompt,
                       ...(c.center ? { center: c.center } : {})
-                    }))
+                    })),
+                  ...(castRes ? { cast: castSent(castRes, countFix) } : batch.castSent ? { cast: batch.castSent } : {})
                 },
                 ...(item.scene ? { sceneId: item.scene.id, sceneName: item.scene.name } : {}),
                 ...(kind !== 't2i' && source.originId !== null ? { parentId: source.originId } : {})

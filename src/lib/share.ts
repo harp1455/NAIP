@@ -57,7 +57,10 @@ export function describeImage(meta: HistoryMeta): string {
   const lines = [`프롬프트: ${meta.prompt}`]
   if (meta.negative) lines.push(`네거티브: ${meta.negative}`)
   for (const [i, c] of (meta.sent?.chars ?? []).entries()) {
-    lines.push(`캐릭터${i + 1}${c.name ? ` (${c.name})` : ''}: ${c.prompt}`)
+    // 슬롯 뽑기로 고른 변형 (복장 교복, 표정 웃음 …)
+    const vars = (meta.sent?.cast?.chars[i]?.variations ?? []).map((v) => `${v.group} ${v.label}`)
+    const tag = [c.name, ...vars].filter(Boolean).join(' · ')
+    lines.push(`캐릭터${i + 1}${tag ? ` (${tag})` : ''}: ${c.prompt}`)
     if (c.negative) lines.push(`캐릭터${i + 1} 네거티브: ${c.negative}`)
   }
   lines.push(
