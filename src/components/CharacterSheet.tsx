@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import {
   ArrowDown,
   ArrowUp,
@@ -18,9 +18,9 @@ import {
   checkPeopleCount,
   createDrawState,
   fixPeopleCount,
+  mulberry32,
   resolveCast,
-  type CastResolution,
-  type DrawState
+  type CastResolution
 } from '../nai/cast'
 import { cx } from '../lib/util'
 import { snapshotCastPlan, useCharacters, type Character } from '../stores/characters'
@@ -33,17 +33,26 @@ import { Button, Empty, IconButton, Row, Sheet, Toggle } from './ui'
 let positionPanelOpen = false
 let optionsPanelOpen = false
 
-/** "이번 장 예시" — 지금 슬롯 설정으로 한 장씩 뽑아 본다 (순차·배치에 한 번은 이어서) */
+/** 시드 난수로 한 배치를 처음부터 n장째까지 뽑아 n장째 결과 (같은 시드면 늘 같은 결과 — 렌더가 두 번 돌아도 안전) */
+function previewDraw(seed: number, n: number, max: number): CastResolution {
+  const plan = snapshotCastPlan()
+  const state = createDrawState()
+  const rng = mulberry32(seed)
+  let res = resolveCast(plan, state, rng, max)
+  for (let i = 1; i < n; i++) res = resolveCast(plan, state, rng, max)
+  return res
+}
+
+/** "이번 장 예시" — 지금 슬롯 설정으로 한 장씩 뽑아 본다 (순차·배치에 한 번은 배치 안에서처럼 이어서) */
 function CastPreview(props: { max: number }): ReactNode {
   const s = useCharacters()
   const p = usePrompt()
-  const state = useRef<DrawState>(createDrawState())
   const [n, setN] = useState(1)
-  const [nonce, setNonce] = useState(0)
-  // 슬롯·라이브러리·한도가 바뀌거나 "다음 장"을 누르면 다시 뽑는다
+  const [seed, setSeed] = useState(() => Math.floor(Math.random() * 2 ** 32))
+  // 슬롯·라이브러리·한도가 바뀌면 같은 시드로 다시, "다음 장"은 같은 배치의 다음 장, "처음부터"는 새 배치
   const res: CastResolution = useMemo(
-    () => resolveCast(snapshotCastPlan(), state.current, Math.random, props.max),
-    [s.slots, s.characters, s.options, props.max, nonce] // eslint-disable-line react-hooks/exhaustive-deps
+    () => previewDraw(seed, n, props.max),
+    [s.slots, s.characters, s.options, props.max, seed, n] // eslint-disable-line react-hooks/exhaustive-deps
   )
   const main = mergePromptParts(p)
   const check = checkPeopleCount(main, res.chars.length)
@@ -59,9 +68,8 @@ function CastPreview(props: { max: number }): ReactNode {
           type="button"
           className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-dim active:bg-raised"
           onClick={() => {
-            state.current = createDrawState()
             setN(1)
-            setNonce(nonce + 1)
+            setSeed(Math.floor(Math.random() * 2 ** 32))
           }}
         >
           <RotateCcw size={13} />
@@ -70,10 +78,7 @@ function CastPreview(props: { max: number }): ReactNode {
         <button
           type="button"
           className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-accent active:bg-raised"
-          onClick={() => {
-            setN(n + 1)
-            setNonce(nonce + 1)
-          }}
+          onClick={() => setN(n + 1)}
         >
           <Dices size={14} />
           다음 장
@@ -251,7 +256,7 @@ export function CharacterSheet(props: { onClose: () => void }): ReactNode {
                       onClick={() => setSlotOpen(slot.id)}
                     >
                       <span className={cx('truncate', !slot.enabled && 'text-dim')}>{sum.title}</span>
-                      <span className={cx('truncate text-[11px]', slot.mode === 'fixed' ? 'text-dim' : 'text-accent')}>
+                      <span className={cx('truncate text-[11px]', slot.mode === 'fixed' || !slot.enabled ? 'text-dim' : 'text-accent')}>
                         {i + 1}번 · {slot.enabled ? sum.sub : '비활성'}
                       </span>
                     </button>

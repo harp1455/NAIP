@@ -4,6 +4,7 @@ import {
   composeCaption,
   createDrawState,
   DEFAULT_CAST_OPTIONS,
+  drawStateFor,
   fixedSlots,
   fixPeopleCount,
   joinPromptParts,
@@ -212,6 +213,22 @@ describe('cast: slots', () => {
       const d = drawMany(plan([slot({ mode: 'chance', chance: 50, candidates: [cand(2)] })], LIB, { scope: 'batch' }), 10, seed)
       expect(new Set(d.map((x) => x.length)).size).toBe(1)
     }
+  })
+
+  it('per-scene draw restarts sequences and batch draws for each scene; otherwise they continue across scenes', () => {
+    const seq = [slot({ mode: 'sequential', candidates: [cand(1), cand(2), cand(3)] })]
+    // 씬 10 → 2장, 씬 20 → 2장 (생성 순서대로)
+    const run = (perScene: boolean): string[] => {
+      const p = plan(seq, LIB, { perScene })
+      const states = new Map()
+      return [10, 10, 20, 20].map((scene) => resolveCast(p, drawStateFor(states, p.options, scene)).chars[0].name)
+    }
+    expect(run(false)).toEqual(['A', 'B', 'C', 'A'])
+    expect(run(true)).toEqual(['A', 'B', 'A', 'B'])
+    // 씬이 없는 배치는 항상 하나의 상태
+    const states = new Map()
+    const p = plan(seq, LIB, { perScene: true })
+    expect(drawStateFor(states, p.options)).toBe(drawStateFor(states, p.options))
   })
 
   it('folder candidates share their weight among members; sequential expands folders in library order', () => {

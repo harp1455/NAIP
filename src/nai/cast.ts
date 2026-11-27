@@ -155,6 +155,17 @@ export function createDrawState(): DrawState {
   return { seq: {}, slots: {}, vars: {} }
 }
 
+/**
+ * 이번 장이 쓸 뽑기 상태 — 배치 전체가 하나를 이어 쓰고, "씬마다 따로 뽑기"면 씬마다 따로 둔다
+ * (씬이 바뀌면 순차는 처음부터, 배치에 한 번 뽑기도 새로).
+ */
+export function drawStateFor(states: Map<string, DrawState>, options: CastOptions, sceneId?: number): DrawState {
+  const key = options.perScene && sceneId !== undefined ? `scene:${sceneId}` : 'batch'
+  let state = states.get(key)
+  if (!state) states.set(key, (state = createDrawState()))
+  return state
+}
+
 export interface ResolvedVariation {
   groupId: number
   /** 그룹 표시 이름 (복장·표정 …) */

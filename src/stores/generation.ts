@@ -24,6 +24,7 @@ import {
   castSent,
   checkPeopleCount,
   createDrawState,
+  drawStateFor,
   fixedSlots,
   fixPeopleCount,
   resolveCast,
@@ -439,13 +440,9 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         const wild = (text: string): string => (batch.verbatim ? text : processWildcards(text, batch.fragments))
         // ── Phase 2: 출연 슬롯·변형을 장마다 뽑는다 (캡션을 합친 뒤 조각 치환). 씬 출연은 그 씬의 고정 슬롯
         const castPlan = item.cast ?? batch.cast
-        let castRes: CastResolution | null = null
-        if (castPlan) {
-          const key = castPlan.options.perScene && item.scene ? `scene:${item.scene.id}` : 'batch'
-          let state = drawStates.get(key)
-          if (!state) drawStates.set(key, (state = createDrawState()))
-          castRes = resolveCast(castPlan, state, Math.random, caps.maxCharacters)
-        }
+        const castRes: CastResolution | null = castPlan
+          ? resolveCast(castPlan, drawStateFor(drawStates, castPlan.options, item.scene?.id), Math.random, caps.maxCharacters)
+          : null
         const characterPrompts = castRes
           ? resolvedPrompts(castRes, base.model, wild)
           : base.characterPrompts.map((c) => ({ ...c, prompt: wild(c.prompt), negativePrompt: wild(c.negativePrompt) }))
