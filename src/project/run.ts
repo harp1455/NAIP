@@ -5,7 +5,7 @@
  */
 import { referencesForModel } from '../nai/reference'
 import { useCharacters } from '../stores/characters'
-import { fragmentSource } from '../stores/fragments'
+import { fragmentLibrary, fragmentSourceFrom } from '../stores/fragments'
 import { useGeneration } from '../stores/generation'
 import { useRefs, vibeKey } from '../stores/refs'
 import { useSettings } from '../stores/settings'
@@ -34,11 +34,13 @@ export function enqueueJobs(project: Project, jobs: readonly GenerationJob[]): E
   if (!live.length) return '생성할 장이 없습니다'
   if (!useSettings.getState().token) return 'API 토큰을 먼저 설정해 주세요 (설정 탭)'
   const refs = useRefs.getState()
+  const fragmentLib = fragmentLibrary()
   const built = jobsToBatches(project.slug?.trim() || project.name, live, {
     library: useCharacters.getState().characters,
     vibes: refs.vibes,
     charRefs: refs.charRefs,
-    fragments: fragmentSource()
+    fragmentLib,
+    fragments: fragmentSourceFrom(fragmentLib)
   })
   // 대기 장수를 먼저 — 대기열은 넣자마자 첫 장을 시작할 수 있다
   useProjects.getState().markQueued(

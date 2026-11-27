@@ -11,6 +11,7 @@
 import type { SettingsSnapshot } from '../lib/db'
 import { composeCaption, type CastCharacter } from '../nai/cast'
 import type { FragmentSource } from '../nai/fragments'
+import type { FragmentLibrary } from '../stores/fragments'
 import { modelCapabilities } from '../nai/models'
 import type { GenerationRequest } from '../nai/types'
 import type { CharRef, Vibe } from '../stores/refs'
@@ -23,6 +24,8 @@ export interface BatchContext {
   library: readonly CastCharacter[]
   vibes: readonly Vibe[]
   charRefs: readonly CharRef[]
+  /** 조각 라이브러리 사본 (대기열 저장용)과 그것으로 만든 치환 함수 */
+  fragmentLib: FragmentLibrary
   fragments: FragmentSource
   /** 배치 id (기본: 1부터) */
   newId?: () => number
@@ -136,6 +139,7 @@ export function jobsToBatches(projectName: string, jobs: readonly GenerationJob[
       source: { image: null, mask: null, strength: 0.7, noise: 0, originId: null },
       vibes,
       charRefs,
+      fragmentLib: ctx.fragmentLib,
       fragments: ctx.fragments,
       plan,
       verbatim: false,

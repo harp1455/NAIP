@@ -7,7 +7,7 @@
  * 칸마다 지금 상태를 WeakMap에 기억해 같은 장을 두 번 세지 않는다 — 배치·계획 칸은 순수 JSON 그대로 둔다
  * (대기열 저장이 직렬화할 수 있게). 다시 불러온 칸은 상태가 없으니 "아직 시작 안 함"으로 본다.
  */
-import type { SettingsSnapshot } from '../lib/db'
+import type { HistoryMeta, SettingsSnapshot } from '../lib/db'
 import type { CharacterPromptInput, GenerationRequest } from '../nai/types'
 import type { NewAssetImage } from './curation'
 import { useProjects } from './store'
@@ -99,4 +99,40 @@ export function releaseProjectItems(items: readonly Carrier[]): void {
       useProjects.getState().cancelStarted(p.tag.projectId, p.tag.key)
     }
   }
+}
+
+/**
+ * 다시 돌릴 장을 대기로 센다 — 앱을 다시 열면 대기 장수가 0으로 돌아가므로 이어서 돌릴 때(resume) 부른다.
+ * 다시 보내지 않기로 한 "확인 필요" 장은 넘기지 않는다 (그래야 두 번 세지 않는다)
+ */
+export function projectItemsQueued(items: readonly Carrier[]): void {
+  const byProject = new Map<string, Map<string, number>>()
+  for (const item of items) {
+    const p = item.project
+    if (!p || states.has(item)) continue
+    const keys = byProject.get(p.tag.projectId) ?? new Map<string, number>()
+    keys.set(p.tag.key, (keys.get(p.tag.key) ?? 0) + 1)
+    byProject.set(p.tag.projectId, keys)
+  }
+  for (const [projectId, keys] of byProject) {
+    useProjects.getState().markQueued(projectId, [...keys].map(([key, count]) => ({ key, count })))
+  }
+}
+
+/**
+ * 히스토리에 분류 표시와 함께 들어갔는데 프로젝트에는 아직 없는 그림을 넣는다 (같은 id는 그대로).
+ * 앱이 히스토리에 저장한 직후 죽어 프로젝트 기록이 빠진 경우 — 대기열을 다시 열 때(loadResume) 부른다
+ */
+export function adoptTaggedImages(metas: readonly HistoryMeta[]): number {
+  let added = 0
+  const s = useProjects.getState()
+  for (const m of metas) {
+    const tag = m.project
+    if (!tag) continue
+    const project = s.projects.find((p) => p.id === tag.projectId)
+    if (!project || project.items[tag.key]?.images.some((i) => i.id === m.id)) continue
+    s.addImage(tag.projectId, tag.key, { id: m.id, ts: m.ts, seed: m.seed, width: m.width, height: m.height, mime: m.mime }, { fromQueue: false })
+    added++
+  }
+  return added
 }

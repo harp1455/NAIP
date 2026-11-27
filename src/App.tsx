@@ -31,6 +31,8 @@ import { SettingsPane } from './components/SettingsPane'
 import { SourceSheet } from './components/SourceSheet'
 import { V5Gauge } from './components/V5Gauge'
 import { Toast } from './components/Toast'
+import { StorageScreens } from './components/StorageScreens'
+import { useStorageBoot } from './stores/storage'
 
 type Tab = 'prompt' | 'scenes' | 'result' | 'history' | 'settings'
 
@@ -129,7 +131,8 @@ export default function App(): ReactNode {
   const shown: Tab = wide && tab === 'prompt' ? 'result' : tab
 
   useEffect(() => {
-    void useHistory.getState().init()
+    // 저장소 열기 → (처음 한 번) 예전 히스토리 옮기기 → 히스토리 불러오기 → 끝나지 않은 생성 묻기
+    void useStorageBoot.getState().boot()
     // 토큰을 암호화 저장소에서 읽은 뒤에 계정 정보와 새 빌드를 확인한다 (비공개 저장소면 GitHub 토큰이 필요)
     void useSettings
       .getState()
@@ -266,6 +269,7 @@ export default function App(): ReactNode {
         />
       )}
       {saving && <SaveSheet />}
+      <StorageScreens />
       <Toast />
     </div>
   )

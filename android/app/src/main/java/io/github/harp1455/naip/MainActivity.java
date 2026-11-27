@@ -15,6 +15,8 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(NaipNativePlugin.class);
         registerPlugin(NaipSecurePlugin.class);
+        registerPlugin(NaipFilesPlugin.class);
+        registerPlugin(NaipStoragePlugin.class);
         super.onCreate(savedInstanceState);
 
         // 시스템 바와 키보드만큼 웹뷰를 직접 줄인다. Capacitor 기본 처리는 키보드 높이를 무시해서

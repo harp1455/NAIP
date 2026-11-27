@@ -10,6 +10,7 @@ import {
   releaseProjectItems
 } from '../src/project/queue'
 import type { CastCharacter } from '../src/nai/cast'
+import { fragmentSourceFrom } from '../src/stores/fragments'
 import type { CharRef, Vibe } from '../src/stores/refs'
 import type { GenerationRequest } from '../src/nai/types'
 import type { SettingsSnapshot } from '../src/lib/db'
@@ -63,7 +64,8 @@ const ctx = () => ({
   library: LIBRARY,
   vibes: [vibe(1), vibe(2)],
   charRefs: [ref(11)],
-  fragments: { fragments: [], folders: [] } as never
+  fragmentLib: { folders: [], fragments: [] },
+  fragments: fragmentSourceFrom({ folders: [], fragments: [] })
 })
 
 describe('project jobs → queue batches', () => {
@@ -103,8 +105,9 @@ describe('project jobs → queue batches', () => {
     // 계획 칸마다 따로 된 객체 (진행 상태를 칸마다 센다)
     expect(a.plan[0]).not.toBe(a.plan[1])
     expect(a.plan[0].project).not.toBe(a.plan[1].project)
-    // 순수 JSON (대기열 저장이 직렬화할 수 있게)
-    expect(JSON.parse(JSON.stringify(built.batches))).toEqual(built.batches)
+    // 대기열 저장(serializeBatch)이 옮길 수 있는 값 — fragments(함수)만 빼면 순수 JSON
+    const plain = built.batches.map(({ fragments: _f, ...rest }) => rest)
+    expect(JSON.parse(JSON.stringify(plain))).toEqual(plain)
   })
 
   it('notes a character removed from the library and sends only project fragments', () => {

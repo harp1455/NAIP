@@ -1,0 +1,183 @@
+import { getStorage } from '../storage'
+import type { QueueBatchRow, QueueItemRow } from '../storage/queue-repo'
+import { fragmentSourceFrom, type FragmentLibrary } from './fragments'
+import type { Batch, PlanItem } from './generation'
+import { useScenes } from './scenes'
+import { adoptTaggedImages } from '../project/queue' // ── Phase 5
+
+/**
+ * 생성 대기열을 앱이 죽어도 남게 한다.
+ * - 배치는 누른 순간의 내용 그대로 JSON으로 저장한다 (조각 치환 함수 대신 조각 라이브러리 사본).
+ *   Batch에 새 필드가 생겨도 JSON으로 옮겨지는 값이면 따로 손대지 않아도 함께 저장된다.
+ * - 장마다 요청을 보내기 직전에 "보냄"(sending)을 먼저 기록하고, 히스토리에 넣은 뒤 "끝남"(done)으로 바꾼다.
+ * - 다시 열었을 때 "보냄"으로 남은 장은 이미 과금됐을 수 있어 자동으로 다시 보내지 않는다 — "확인 필요"로 보여 주고
+ *   사용자가 정한다. 그 요청 id로 히스토리에 그림이 있으면 끝난 것으로 본다.
+ */
+
+/** 요청마다 새로 만드는 고유 id */
+export function newRequestId(): string {
+  const c = globalThis.crypto as Crypto | undefined
+  if (c?.randomUUID) return c.randomUUID()
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`
+}
+
+export function serializeBatch(batch: Batch): string {
+  // fragments는 함수라 JSON에 담기지 않는다 — fragmentLib에서 다시 만든다
+  const { fragments: _closure, ...rest } = batch
+  void _closure
+  return JSON.stringify(rest)
+}
+
+export function deserializeBatch(data: string): Batch {
+  const raw = JSON.parse(data) as Omit<Batch, 'fragments'> & { fragmentLib?: FragmentLibrary }
+  const lib = raw.fragmentLib ?? { folders: [], fragments: [] }
+  return { ...raw, fragmentLib: lib, fragments: fragmentSourceFrom(lib) } as Batch
+}
+
+const warn = (e: unknown): void => console.warn('대기열 기록 실패', e)
+/** 배치 내용을 쓰는 중인 것 — 그 배치의 첫 "보냄" 기록은 이것이 끝난 뒤에 쓴다 */
+const saving = new Map<number, Promise<void>>()
+
+/** 대기열 기록 — 기록이 실패해도 생성은 멈추지 않는다 (sending만 기다린다) */
+export const queueStore = {
+  save(batch: Batch): Promise<void> {
+    const p = getStorage()
+      .then((s) => s.queue.saveBatch(batch.id, batch.label, serializeBatch(batch)))
+      .catch(warn)
+      .finally(() => saving.delete(batch.id))
+    saving.set(batch.id, p)
+    return p
+  },
+  /**
+   * 요청을 보내기 직전 — 이 기록이 디스크에 닿은 뒤에 보낸다.
+   * 배치 내용(수 MB일 수 있다)을 다 쓰기 전이면 기다린다: 진행 기록만 있고 배치가 없으면 이어서 할 수 없다
+   */
+  async sending(batchId: number, key: number, reqId: string, seed: number): Promise<void> {
+    await saving.get(batchId)
+    return getStorage()
+      .then((s) => s.queue.mark(batchId, key, 'sending', reqId, { seed }))
+      .catch(warn)
+  },
+  done(batchId: number, key: number, reqId: string, imageId: number): void {
+    void getStorage()
+      .then((s) => s.queue.mark(batchId, key, 'done', reqId, { imageId }))
+      .catch(warn)
+  },
+  failed(batchId: number, key: number, reqId: string): void {
+    void getStorage()
+      .then((s) => s.queue.mark(batchId, key, 'failed', reqId))
+      .catch(warn)
+  },
+  skip(batchId: number, keys: number[]): Promise<void> {
+    return getStorage()
+      .then((s) => s.queue.setState(batchId, keys, 'skipped'))
+      .catch(warn)
+  },
+  drop(batchId: number): void {
+    void getStorage()
+      .then((s) => s.queue.dropBatch(batchId))
+      .catch(warn)
+  }
+}
+
+export interface UncertainItem {
+  key: number
+  reqId: string
+  seed: number | null
+  item: PlanItem
+}
+
+/** 다시 열었을 때 이어서 돌릴 수 있는 배치 하나 */
+export interface ResumeEntry {
+  /** 저장된 배치 (plan은 원래 전체, 각 칸에 key = 원래 위치) */
+  batch: Batch
+  total: number
+  done: number
+  failed: number
+  /** 아직 보내지 않은 장 */
+  remaining: PlanItem[]
+  /** 보냈는데 결과를 모르는 장 — 이미 과금됐을 수 있다 */
+  uncertain: UncertainItem[]
+}
+
+/**
+ * 저장된 배치·진행 행 → 이어서 할 목록.
+ * found: 요청 id → 히스토리 이미지 id (결과를 받아 저장까지 했는데 "끝남" 기록 전에 죽은 장)
+ */
+export function planResume(
+  batches: QueueBatchRow[],
+  items: QueueItemRow[],
+  found: Map<string, number>
+): { entries: ResumeEntry[]; resolved: { batchId: number; idx: number; reqId: string; imageId: number }[]; dropped: number[] } {
+  const entries: ResumeEntry[] = []
+  const resolved: { batchId: number; idx: number; reqId: string; imageId: number }[] = []
+  const dropped: number[] = []
+  for (const row of batches) {
+    let batch: Batch
+    try {
+      if (!row.data) throw new Error('no data')
+      batch = deserializeBatch(row.data)
+      if (!Array.isArray(batch.plan)) throw new Error('no plan')
+    } catch {
+      // 내용을 읽을 수 없는 배치는 이어서 할 수 없다
+      dropped.push(row.id)
+      continue
+    }
+    const plan = batch.plan.map((item, idx) => ({ ...item, key: item.key ?? idx }))
+    const state = new Map(items.filter((i) => i.batch_id === row.id).map((i) => [i.idx, i]))
+    let done = 0
+    let failed = 0
+    const remaining: PlanItem[] = []
+    const uncertain: UncertainItem[] = []
+    for (const item of plan) {
+      const s = state.get(item.key)
+      if (!s) remaining.push(item)
+      else if (s.state === 'done') done++
+      else if (s.state === 'sending') {
+        const imageId = found.get(s.req_id)
+        if (imageId !== undefined) {
+          done++
+          resolved.push({ batchId: row.id, idx: item.key, reqId: s.req_id, imageId })
+        } else uncertain.push({ key: item.key, reqId: s.req_id, seed: s.seed, item })
+      } else failed++ // failed·skipped: 다시 보내지 않는다 (앱이 살아 있을 때와 같은 규칙)
+    }
+    if (!remaining.length && !uncertain.length) {
+      dropped.push(row.id)
+      continue
+    }
+    entries.push({ batch: { ...batch, plan }, total: plan.length, done, failed, remaining, uncertain })
+  }
+  return { entries, resolved, dropped }
+}
+
+/** 지난 실행에서 끝나지 않은 대기열 */
+export async function loadResume(): Promise<ResumeEntry[]> {
+  const { queue } = await getStorage()
+  const { batches, items } = await queue.load()
+  // 배치 없이 남은 진행 기록(배치를 쓰기 전에 꺼진 경우)은 이어서 할 수 없다
+  const known = new Set(batches.map((b) => b.id))
+  for (const id of new Set(items.filter((i) => !known.has(i.batch_id)).map((i) => i.batch_id))) await queue.dropBatch(id)
+  if (!batches.length) return []
+  const found = await queue.imagesByRequest(items.filter((i) => i.state === 'sending').map((i) => i.req_id))
+  const { entries, resolved, dropped } = planResume(batches, items, found)
+  for (const r of resolved) await queue.mark(r.batchId, r.idx, 'done', r.reqId, { imageId: r.imageId })
+  // ── Phase 5: 히스토리에는 들어갔는데 프로젝트 기록 전에 죽은 장 — 분류 표시로 프로젝트에 넣는다
+  if (resolved.length) adoptTaggedImages(await (await getStorage()).history.getMany(resolved.map((r) => r.imageId)))
+  for (const id of dropped) await queue.dropBatch(id)
+  return entries
+}
+
+/**
+ * 이어서 하지 않고 버린다. 보내지 않은 씬 장은 씬 예약으로 돌려준다.
+ * 확인 필요 장은 이미 그려졌을 수 있어 예약으로 돌려주지 않는다 (돌려주면 같은 장을 또 뽑게 될 수 있다).
+ */
+export async function discardResume(entries: ResumeEntry[]): Promise<void> {
+  const { queue } = await getStorage()
+  const scenes = new Set(useScenes.getState().scenes.map((s) => s.id))
+  for (const e of entries) {
+    for (const item of e.remaining) {
+      if (item.scene?.reserved && scenes.has(item.scene.id)) useScenes.getState().bumpReserve([item.scene.id], 1)
+    }
+    await queue.dropBatch(e.batch.id)
+  }
+}
