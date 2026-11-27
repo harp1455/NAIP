@@ -352,10 +352,16 @@ public class NaipFilesPlugin extends Plugin {
             call.reject("열린 파일이 없습니다");
             return;
         }
-        Double offsetValue = call.getDouble("offset");
-        Integer lengthValue = call.getInt("length");
-        long offset = offsetValue == null ? 0 : offsetValue.longValue();
-        int length = lengthValue == null ? 0 : Math.max(0, Math.min(lengthValue, MAX_READ));
+        // 2GB 를 넘는 값은 org.json 이 Long 으로 주는데 getDouble·getInt 는 Long 을 null 로 돌려준다
+        // (그러면 0 에서 읽어 엉뚱한 바이트를 준다). 숫자면 무엇이든 받고, 없거나 숫자가 아니면 거부한다
+        Object offsetValue = call.getData().opt("offset");
+        Object lengthValue = call.getData().opt("length");
+        if (!(offsetValue instanceof Number) || !(lengthValue instanceof Number)) {
+            call.reject("읽을 위치·길이가 잘못됐습니다");
+            return;
+        }
+        long offset = ((Number) offsetValue).longValue();
+        int length = (int) Math.max(0, Math.min(((Number) lengthValue).longValue(), MAX_READ));
         if (offset < 0 || offset > r.size) {
             call.reject("파일 범위를 벗어난 읽기입니다");
             return;
