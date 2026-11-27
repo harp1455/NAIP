@@ -120,6 +120,26 @@ describe('project runs through the generation queue', () => {
     expect(planJobs(project(id), 'missing').jobs.reduce((n, j) => n + j.count, 0)).toBe(4)
   }, 20000)
 
+  it('two quick enqueues never run two batches at once', async () => {
+    const id = makeProject()
+    let inFlight = 0
+    let peak = 0
+    hold = async () => {
+      inFlight++
+      peak = Math.max(peak, inFlight)
+      await new Promise((r) => setTimeout(r, 5))
+      inFlight--
+    }
+    const jobs = planJobs(project(id), 'all').jobs
+    enqueueJobs(project(id), jobs.slice(0, 2))
+    enqueueJobs(project(id), jobs.slice(2))
+    await new Promise((res) => setTimeout(res, 0))
+    await idle()
+    expect(calls).toHaveLength(8)
+    expect(peak).toBe(1)
+    expect(counts(id)).toEqual({ queued: 0, generating: 0, failed: 0, images: 8 })
+  }, 20000)
+
   it('stop mid-run releases the queued and in-flight counts', async () => {
     const id = makeProject()
     let started!: () => void

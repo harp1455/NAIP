@@ -808,22 +808,30 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         return
       }
       const images = batches.reduce((n, b) => n + b.plan.length, 0)
-      // start와 같이: 저장 공간을 묻고, 앱이 죽어도 이어서 할 수 있게 배치를 저장한다
-      const warning = await lowSpaceWarning(images)
-      if (warning && !window.confirm(warning)) {
-        for (const b of batches) release(b.plan)
-        return
+      // start와 같이: 저장 공간을 묻고, 앱이 죽어도 이어서 할 수 있게 배치를 저장한다.
+      // 공간 확인을 기다리는 사이 다른 "생성"이 시작될 수 있어, 대기열에 넣은 뒤 아무도 돌리지 않을 때만 직접 돌린다
+      const fresh = !get().running && !preparingFresh
+      if (fresh) preparingFresh = true
+      let warning: string | null = null
+      try {
+        warning = await lowSpaceWarning(images)
+      } catch {
+        warning = null
       }
-      for (const b of batches) void queueStore.save(b)
-      if (get().running) {
+      const declined = !!warning && !window.confirm(warning)
+      if (fresh) preparingFresh = false
+      if (declined) for (const b of batches) release(b.plan)
+      else {
+        for (const b of batches) void queueStore.save(b)
         pendingBatches.push(...batches)
         syncQueue()
-        toast(`대기열에 추가했습니다 — 배치 ${batches.length}개 · ${images}장`)
+      }
+      if (get().running || preparingFresh) {
+        if (!declined) toast(`대기열에 추가했습니다 — 배치 ${batches.length}개 · ${images}장`)
         return
       }
-      const [first, ...rest] = batches
-      pendingBatches.push(...rest)
-      await runQueue(first, token)
+      const first = pendingBatches.shift()
+      if (first) await runQueue(first, token)
     },
     start: async (opts) => {
       const token = useSettings.getState().token
