@@ -6,6 +6,8 @@ import { composeCaption } from '../../nai/cast'
 import { cx } from '../../lib/util'
 import {
   AXIS_KIND_LABEL,
+  characterCode,
+  keyedAxes,
   newId,
   parseValueLines,
   projectAxes,
@@ -20,7 +22,23 @@ import {
 import { useCharacters } from '../../stores/characters'
 import { useRefs } from '../../stores/refs'
 import { Button, Empty, IconButton, Row, Select, Sheet, TextArea, TextInput, Toggle } from '../ui'
-import { Chip, DraftArea, DraftInput, Field } from './common'
+import { Chip, DraftArea, DraftInput, Field, patchLatest } from './common'
+
+/**
+ * 켜고 끄기로 조합 키에 들어가는 축이 바뀌면(마지막 켠 값을 끄거나, 다 꺼진 축의 값을 켬) 지금까지의 그림이
+ * 모두 "행렬에서 빠진 조합"으로 옮겨진다 — 그림은 남고 되돌리면 돌아오지만, 모르고 누르지 않게 먼저 묻는다.
+ * (값·캐릭터를 더하거나 지울 때는 model.carryItemKeys가 키를 옮겨 준다)
+ */
+function confirmKeyChange(p: Project, next: Pick<Project, 'characters' | 'axes'>, what: string): boolean {
+  const images = Object.values(p.items).reduce((n, i) => n + i.images.length, 0)
+  if (!images) return true
+  const before = [...keyedAxes(p).keys()].sort().join('|')
+  const after = [...keyedAxes(next).keys()].sort().join('|')
+  if (before === after) return true
+  return window.confirm(
+    `${what} 행렬의 축이 바뀌어 지금까지 만든 그림 ${images}장이 모두 "행렬에서 빠진 조합"으로 옮겨집니다. 그림은 지워지지 않고, 다시 되돌리면 돌아옵니다. 계속할까요?`
+  )
+}
 
 // ── 바이브 · 정밀 레퍼런스 고르기 ────────────────────────────────────────────
 
@@ -165,7 +183,6 @@ export function CharacterEditSheet(props: { project: Project; charId: string; on
   const library = useCharacters((s) => s.characters)
   const s = useProjects.getState()
   if (!c) return null
-  const index = p.characters.indexOf(c)
   const patch = (x: Partial<Omit<ProjectCharacter, 'id'>>): void => s.patchCharacter(p.id, c.id, x)
   const lib = c.libraryId !== null ? library.find((x) => x.id === c.libraryId) : undefined
   return (
@@ -200,7 +217,7 @@ export function CharacterEditSheet(props: { project: Project; charId: string; on
             <DraftInput label="캐릭터 slug" value={c.slug ?? ''} placeholder={c.name} onCommit={(slug) => patch({ slug: slug.trim() || undefined })} />
           </Field>
           <Field label="코드">
-            <DraftInput label="코드 글자" value={c.code ?? ''} placeholder={String.fromCharCode(65 + (index % 26))} onCommit={(code) => patch({ code: code.trim() || undefined })} />
+            <DraftInput label="코드 글자" value={c.code ?? ''} placeholder={characterCode(p, c)} onCommit={(code) => patch({ code: code.trim() || undefined })} />
           </Field>
         </div>
         <Field label="라이브러리 캐릭터" hint="생성할 때 라이브러리의 고정·가변·디테일 칸을 읽어 앞에 붙입니다 (변형 그룹은 쓰지 않음 — 의상·표정은 축으로)">
@@ -224,7 +241,15 @@ export function CharacterEditSheet(props: { project: Project; charId: string; on
         </Field>
         <div className="rounded-lg border border-line bg-field px-3">
           <Row label="행렬에 넣기" hint="끄면 이 캐릭터의 조합을 잠시 뺍니다 (기록은 그대로)">
-            <Toggle label="행렬에 넣기" checked={c.enabled !== false} onChange={(on) => patch({ enabled: on ? undefined : false })} />
+            <Toggle
+              label="행렬에 넣기"
+              checked={c.enabled !== false}
+              onChange={(on) => {
+                const next = { ...p, characters: p.characters.map((x) => (x.id === c.id ? { ...x, enabled: on ? undefined : false } : x)) }
+                if (!confirmKeyChange(p, next, on ? `"${c.name}"을(를) 다시 넣으면` : `"${c.name}"을(를) 빼면`)) return
+                patch({ enabled: on ? undefined : false })
+              }}
+            />
           </Row>
         </div>
         <Field label="이 캐릭터 조합에만 쓸 바이브·정밀 레퍼런스">
@@ -321,7 +346,22 @@ export function AxisEditSheet(props: { project: Project; axisId: string; onClose
         {bulk !== null && (
           <div className="flex flex-col gap-2 rounded-lg border border-line bg-field p-2">
             <TextArea label="여러 값 붙여넣기" rows={5} value={bulk} onChange={setBulk} placeholder={'웃음: smile, open mouth\n울음 (cry): crying, tears\nangry, frown'} />
-            <p className="text-[11px] text-dim">한 줄에 하나 — "이름: 프롬프트", 괄호 안은 파일 이름용, 이름이 없으면 첫 조각을 이름으로</p>
+            <p className="text-[11px] text-dim">
+              한 줄에 하나 — "이름: 프롬프트"(콜론 뒤 띄어쓰기), 괄호 안은 파일 이름용, 이름이 없으면 첫 조각을 이름으로. artist:이름 같은 태그는
+              프롬프트로 둡니다
+            </p>
+            {parsed.length > 0 && (
+              <ul className="flex max-h-40 flex-col gap-0.5 overflow-y-auto text-[11px]" aria-label="추가할 값 미리보기">
+                {parsed.slice(0, 50).map((v, i) => (
+                  <li key={i} className="truncate">
+                    <span className="font-semibold">{v.label}</span>
+                    {v.slug ? <span className="text-dim"> ({v.slug})</span> : null}
+                    <span className="font-mono text-dim"> — {v.prompt || '(빈 프롬프트)'}</span>
+                  </li>
+                ))}
+                {parsed.length > 50 && <li className="text-dim">외 {parsed.length - 50}개</li>}
+              </ul>
+            )}
             <Button
               variant="primary"
               disabled={!parsed.length}
@@ -335,12 +375,27 @@ export function AxisEditSheet(props: { project: Project; axisId: string; onClose
           </div>
         )}
         {axis.values.length === 0 ? (
-          <p className="py-4 text-center text-xs text-dim">값이 없으면 이 축은 행렬에서 빠집니다</p>
+          <p className="py-4 text-center text-xs text-dim">
+            값이 없으면 이 축은 행렬에서 빠집니다. 첫 값을 넣으면 지금까지 만든 그림은 그 값의 조합으로 들어갑니다
+          </p>
         ) : (
           <ul className="flex flex-col gap-1.5" aria-label={`${axis.name} 값`}>
             {axis.values.map((v, i) => (
               <li key={v.id} className={cx('flex items-center gap-1 rounded-lg border border-line bg-field py-1 pl-2', v.enabled === false && 'opacity-50')}>
-                <Toggle label={`${v.label} 켜기`} checked={v.enabled !== false} onChange={(on) => s.patchValue(p.id, axis.id, v.id, { enabled: on ? undefined : false })} />
+                <Toggle
+                  label={`${v.label} 켜기`}
+                  checked={v.enabled !== false}
+                  onChange={(on) => {
+                    const next = {
+                      ...p,
+                      axes: p.axes.map((a) =>
+                        a.id === axis.id ? { ...a, values: a.values.map((x) => (x.id === v.id ? { ...x, enabled: on ? undefined : false } : x)) } : a
+                      )
+                    }
+                    if (!confirmKeyChange(p, next, on ? `"${v.label}"을(를) 켜면` : `"${v.label}"을(를) 끄면`)) return
+                    s.patchValue(p.id, axis.id, v.id, { enabled: on ? undefined : false })
+                  }}
+                />
                 <button type="button" onClick={() => setValueId(v.id)} className="min-w-0 flex-1 px-1.5 text-left" aria-label={`${v.label} 편집`}>
                   <span className="block truncate text-sm">
                     {v.label}
@@ -453,8 +508,9 @@ export function ExclusionSheet(props: { project: Project; rule: ExclusionRule | 
   const save = (): void => {
     const clean = Object.fromEntries(Object.entries(when).filter(([, v]) => v.length))
     const rule: ExclusionRule = { id: props.rule?.id ?? newId(), when: clean, ...(note.trim() ? { note: note.trim() } : {}) }
-    const list = props.rule ? p.exclusions.map((r) => (r.id === rule.id ? rule : r)) : [...p.exclusions, rule]
-    useProjects.getState().patch(p.id, { exclusions: list })
+    patchLatest(p.id, (latest) => ({
+      exclusions: props.rule ? latest.exclusions.map((r) => (r.id === rule.id ? rule : r)) : [...latest.exclusions, rule]
+    }))
     props.onClose()
   }
   const count = Object.values(when).filter((v) => v.length).length
@@ -520,8 +576,7 @@ export function OverrideSheet(props: { project: Project; override: ComboOverride
       ...(count && Number(count) >= 0 ? { count: Math.floor(Number(count)) } : {}),
       ...(target && Number(target) >= 1 ? { target: Math.floor(Number(target)) } : {})
     }
-    const list = init ? p.overrides.map((x) => (x.id === o.id ? o : x)) : [...p.overrides, o]
-    useProjects.getState().patch(p.id, { overrides: list })
+    patchLatest(p.id, (latest) => ({ overrides: init ? latest.overrides.map((x) => (x.id === o.id ? o : x)) : [...latest.overrides, o] }))
     props.onClose()
   }
   const sizes = [{ value: '', label: '기본 해상도' }, ...RESOLUTIONS.map((r) => ({ value: `${r.width}x${r.height}`, label: `${r.label} (${r.width}×${r.height})` }))]
@@ -579,6 +634,7 @@ export function OverrideSheet(props: { project: Project; override: ComboOverride
 
 // ── 목록 줄 ──────────────────────────────────────────────────────────────────
 
+/** 목록 한 줄 — 오른쪽 끝은 늘 편집(연필). 삭제가 있으면 그 앞에 두고, 누르는 쪽에서 먼저 확인한다 */
 export function ListRow(props: {
   title: ReactNode
   sub?: ReactNode
@@ -587,6 +643,7 @@ export function ListRow(props: {
   onUp?: () => void
   onDown?: () => void
   onDelete?: () => void
+  deleteLabel?: string
   dim?: boolean
   leading?: ReactNode
 }): ReactNode {
@@ -607,15 +664,14 @@ export function ListRow(props: {
           <ArrowDown size={15} />
         </IconButton>
       )}
-      {props.onDelete ? (
-        <IconButton label="삭제" onClick={props.onDelete}>
+      {props.onDelete && (
+        <IconButton label={props.deleteLabel ?? '삭제'} onClick={props.onDelete}>
           <Trash2 size={15} className="text-danger" />
         </IconButton>
-      ) : (
-        <IconButton label={props.editLabel} onClick={props.onEdit}>
-          <Pencil size={15} />
-        </IconButton>
       )}
+      <IconButton label={props.editLabel} onClick={props.onEdit}>
+        <Pencil size={15} />
+      </IconButton>
     </li>
   )
 }

@@ -3,8 +3,23 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ImageOff } from 'lucide-react'
 import * as db from '../../lib/db'
 import { cx } from '../../lib/util'
-import { ASSET_STATUS_LABEL, type AssetStatus } from '../../project'
+import { ASSET_STATUS_LABEL, useProjects, type AssetStatus, type Project } from '../../project'
 import { TextArea, TextInput } from '../ui'
+
+type ProjectPatch = Parameters<ReturnType<typeof useProjects.getState>['patch']>[1]
+
+/**
+ * 저장소에 있는 지금의 프로젝트로 고칠 내용을 만든다 (null이면 그대로). 렌더할 때의 프로젝트로 배열·객체를 통째로
+ * 덮어쓰면, 그 사이에 바뀐 것(방금 지운 규칙 등)이 되살아나거나 다른 칸의 수정이 사라진다 — 특히 DraftInput이
+ * 화면을 떠나며 남은 글을 늦게 저장할 때
+ */
+export function patchLatest(projectId: string, fn: (latest: Project) => ProjectPatch | null): void {
+  const s = useProjects.getState()
+  const latest = s.projects.find((x) => x.id === projectId)
+  if (!latest) return
+  const patch = fn(latest)
+  if (patch) s.patch(projectId, patch)
+}
 
 export const STATUS_STYLE: Record<AssetStatus, string> = {
   pending: 'bg-raised text-dim',

@@ -568,9 +568,11 @@ export function matrixTotals(project: Project, matrix: MatrixResult): MatrixTota
   }
 }
 
-/** 행렬에 더는 없는 조합(축·값을 지웠거나 껐거나 제외한 것)의 에셋 항목 — 그림은 남아 있으니 따로 보여 준다 */
-export function orphanItems(project: Project): AssetItem[] {
-  const matrix = expandMatrix(project)
+/**
+ * 행렬에 더는 없는 조합(축·값을 지웠거나 껐거나 제외한 것)의 에셋 항목 — 그림은 남아 있으니 따로 보여 준다.
+ * 이미 펼친 행렬이 있으면 넘겨서 다시 펼치지 않게 (선택 없이 펼친 것이어야 한다)
+ */
+export function orphanItems(project: Project, matrix: MatrixResult = expandMatrix(project)): AssetItem[] {
   if (matrix.tooMany) return []
   const live = new Set(matrix.combos.map((c) => c.key))
   return Object.values(project.items).filter((i) => !live.has(i.key) && i.images.length > 0)

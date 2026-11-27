@@ -21,7 +21,7 @@ import { usePrompt } from '../../stores/prompt'
 import { toast } from '../../stores/toast'
 import { ResolutionSelect } from '../ResolutionSelect'
 import { Button, Row, Section, Select, SliderRow, Stepper, TextInput, Toggle } from '../ui'
-import { DraftArea, DraftInput, Field, NumberInput, Segmented } from './common'
+import { DraftArea, DraftInput, Field, NumberInput, patchLatest, Segmented } from './common'
 import {
   AxisEditSheet,
   CharacterEditSheet,
@@ -214,7 +214,11 @@ export function ProjectEditor(props: { project: Project }): ReactNode {
                 sub={r.note}
                 editLabel="제외 규칙 편집"
                 onEdit={() => setExclusion(r)}
-                onDelete={() => patch({ exclusions: p.exclusions.filter((x) => x.id !== r.id) })}
+                deleteLabel="제외 규칙 삭제"
+                onDelete={() => {
+                  if (!window.confirm(`제외 규칙 "${describeMatch(p, r.when)}"을(를) 지울까요? 빠져 있던 조합이 행렬에 다시 들어옵니다.`)) return
+                  patchLatest(p.id, (latest) => ({ exclusions: latest.exclusions.filter((x) => x.id !== r.id) }))
+                }}
               />
             ))}
             {!p.exclusions.length && <p className="text-xs text-dim">예: 이 캐릭터는 수영복 조합을 만들지 않음</p>}
@@ -248,7 +252,11 @@ export function ProjectEditor(props: { project: Project }): ReactNode {
                   .join(' · ')}
                 editLabel="덮어쓰기 편집"
                 onEdit={() => setOverride(o)}
-                onDelete={() => patch({ overrides: p.overrides.filter((x) => x.id !== o.id) })}
+                deleteLabel="덮어쓰기 삭제"
+                onDelete={() => {
+                  if (!window.confirm(`"${describeMatch(p, o.match)}" 덮어쓰기를 지울까요? 이 조합들의 프롬프트·해상도·장수·목표가 기본값으로 돌아갑니다.`)) return
+                  patchLatest(p.id, (latest) => ({ overrides: latest.overrides.filter((x) => x.id !== o.id) }))
+                }}
               />
             ))}
             {!p.overrides.length && <p className="text-xs text-dim">특정 조합만 프롬프트·해상도·장수·목표를 바꿉니다</p>}
@@ -411,12 +419,13 @@ function ParamsEditor(props: { project: Project }): ReactNode {
 function LimitsEditor(props: { project: Project }): ReactNode {
   const p = props.project
   const set = (x: Partial<PlanLimits>): void => useProjects.getState().patch(p.id, { limits: { ...p.limits, ...x } })
-  const rows: { label: string; hint: string; key: keyof PlanLimits; scale?: number }[] = [
+  const rows: { label: string; hint: string; key: keyof PlanLimits; scale?: number; max?: number }[] = [
     { label: '조합 수', hint: '넘으면 경고', key: 'combos' },
     { label: '생성 장수', hint: '한 번 계획에서', key: 'images' },
     { label: 'Anlas', hint: '예상 사용량', key: 'anlas' },
     { label: '예상 시간 (시간)', hint: '장당 시간은 지난 배치 기준', key: 'seconds', scale: 3600 },
-    { label: '펼치지 않을 조합 수', hint: '이보다 많으면 화면이 멈추지 않게 펼치지 않음', key: 'hardLimit' }
+    // 위로 열어 두면 행렬을 펼치다 웹뷰 메모리가 바닥날 수 있어 상한을 둔다 (기본 20,000의 5배)
+    { label: '펼치지 않을 조합 수', hint: '이보다 많으면 화면이 멈추지 않게 펼치지 않음 (최대 100,000)', key: 'hardLimit', max: 100000 }
   ]
   return (
     <div className="flex flex-col divide-y divide-line pb-2">
@@ -426,6 +435,7 @@ function LimitsEditor(props: { project: Project }): ReactNode {
             label={r.label}
             value={p.limits[r.key] / (r.scale ?? 1)}
             min={r.scale ? 0.1 : 1}
+            max={r.max}
             onCommit={(v) => set({ [r.key]: Math.round(v * (r.scale ?? 1)) } as Partial<PlanLimits>)}
           />
         </Row>
