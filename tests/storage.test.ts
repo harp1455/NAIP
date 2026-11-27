@@ -7,7 +7,7 @@ import { createHistoryRepo, originalPath } from '../src/storage/history-repo'
 import { setStorageForTests, type Storage } from '../src/storage'
 import { idbLegacySource, migrateLegacy, MIGRATION_KEY } from '../src/storage/legacy'
 import { createSqlJsDriver } from '../src/storage/sqljs'
-import { checkStorage } from '../src/storage/check'
+import { checkStorage, recoverOrphans } from '../src/storage/check'
 import { MIGRATIONS, migrate, userVersion } from '../src/storage/schema'
 
 const THUMB = 'data:image/jpeg;base64,/9j/AAAA'
@@ -375,5 +375,226 @@ describe('history store on the repository', () => {
     await useHistory.getState().remove([199])
     expect(useHistory.getState().total).toBe(199)
     expect(s.files.files.has('images/199.png')).toBe(false)
+  })
+})
+
+describe('review fixes: interrupted moves, orphans and deletes', () => {
+  beforeEach(clearLegacy)
+
+  const describeStub = async (): Promise<{ width: number; height: number; seed: number; model: string; prompt: string; negative: string; thumb: string }> => ({
+    width: 1,
+    height: 1,
+    seed: 0,
+    model: 'unknown',
+    prompt: '',
+    negative: '',
+    thumb: THUMB
+  })
+
+  /** 예전 판에서만 있던 정보(즐겨찾기·저장·씬·계보·설정 사본)를 가진 기록 */
+  function rich(id: number): HistoryMeta {
+    return meta(id, {
+      kind: 'i2i',
+      fav: 1,
+      unsaved: undefined,
+      saved: `NAIP/${id}.png`,
+      sceneId: 7,
+      sceneName: 'beach',
+      parentId: id - 1,
+      snap: { base: 'b', additional: '', detail: '', negative: 'n', params: { steps: 28 }, chars: [] }
+    })
+  }
+
+  it('keeps the old record of an orphan original that is still waiting to be moved', async () => {
+    const metas = Array.from({ length: 30 }, (_, i) => rich(6000 + i))
+    await seedLegacy(metas, metas.map(() => 64))
+    const s = await fresh()
+    // 두 번째 묶음의 한 장이 짧게 써진다 (기록 없는 원본이 남는다)
+    const short = {
+      ...s.files,
+      write: async (path: string, data: Blob | string): Promise<number> => {
+        if (path === 'images/6026.png') {
+          s.files.files.set(path, new Uint8Array(10))
+          return 10
+        }
+        return s.files.write(path, data)
+      }
+    }
+    const r1 = await migrateLegacy({ storage: { driver: s.driver, files: short }, source: idbLegacySource(), freeSpace: async () => 1e12 })
+    expect(r1.status).toBe('failed')
+    const report = await checkStorage(s)
+    expect(report.orphanOriginals.map((o) => o.path)).toContain('images/6026.png')
+    // 아직 옮기지 않은 장은 되살리지 않는다 — 옮기기가 예전 기록 그대로 옮긴다
+    const rec = await recoverOrphans(s, report.orphanOriginals, describeStub, idbLegacySource())
+    expect(rec).toEqual({ recovered: 0, waiting: report.orphanOriginals.length })
+    const r2 = await migrateLegacy({ storage: s, source: idbLegacySource(), freeSpace: async () => 1e12 })
+    expect(r2).toMatchObject({ status: 'done', count: 30 })
+    for (const m of metas) {
+      const got = (await s.history.get(m.id))!
+      expect(got).toMatchObject({ kind: 'i2i', fav: 1, saved: m.saved, sceneId: 7, parentId: m.id - 1 })
+      expect(got.snap?.params).toEqual({ steps: 28 })
+    }
+    expect(s.files.files.get('images/6026.png')?.byteLength).toBe(64)
+  })
+
+  it('records the images a failed batch finished, so only the failed one is left without a record', async () => {
+    const metas = Array.from({ length: 30 }, (_, i) => meta(6300 + i))
+    await seedLegacy(metas, metas.map(() => 64))
+    const s = await fresh()
+    const failing = {
+      ...s.files,
+      write: async (path: string, data: Blob | string): Promise<number> => {
+        if (path === 'images/6326.png') throw new Error('write failed: No space left on device')
+        return s.files.write(path, data)
+      }
+    }
+    const r = await migrateLegacy({ storage: { driver: s.driver, files: failing }, source: idbLegacySource(), freeSpace: async () => 1e12 })
+    expect(r.status).toBe('failed')
+    // 실패한 묶음에서 다 쓴 장(6024·6025 등)도 기록이 있다 — 첫 묶음 24장보다 많다
+    const rows = await s.history.count()
+    expect(rows).toBeGreaterThan(24)
+    expect(r.status === 'failed' && r.done).toBe(rows)
+    expect((await checkStorage(s)).orphanOriginals).toEqual([])
+    expect((await legacyCounts()).meta).toBe(30)
+    const r2 = await migrateLegacy({ storage: s, source: idbLegacySource(), freeSpace: async () => 1e12 })
+    expect(r2).toMatchObject({ status: 'done', count: 30 })
+  })
+
+  it('still recovers orphan originals that the old history does not have', async () => {
+    await seedLegacy([rich(6100)], [64])
+    const s = await fresh()
+    await s.files.write('images/6200.png', png(9))
+    const report = await checkStorage(s)
+    expect(await recoverOrphans(s, report.orphanOriginals, describeStub, idbLegacySource())).toEqual({ recovered: 1, waiting: 0 })
+    expect((await s.history.get(6200))!.unsaved).toBe(1)
+  })
+
+  it('copies every readable image when one old record cannot be read, and keeps the old data', async () => {
+    const metas = Array.from({ length: 60 }, (_, i) => meta(7000 + i))
+    await seedLegacy(metas, metas.map(() => 32))
+    const s = await fresh()
+    const source = idbLegacySource()
+    let flaky = 0
+    const broken = {
+      ...source,
+      blob: async (id: number): Promise<ArrayBuffer | null> => {
+        if (id === 7001) throw new Error('Failed to read large IndexedDB value')
+        // 한 번만 실패하는 장은 다시 읽어서 옮긴다
+        if (id === 7031 && ++flaky === 1) throw new Error('busy')
+        return source.blob(id)
+      }
+    }
+    const r = await migrateLegacy({ storage: s, source: broken, freeSpace: async () => 1e12 })
+    expect(r).toMatchObject({ status: 'failed', done: 59, total: 60 })
+    if (r.status === 'failed') expect(r.error).toContain('7001')
+    expect(await s.history.count()).toBe(59)
+    expect(await s.history.get(7059)).not.toBeNull()
+    expect(await s.history.get(7031)).not.toBeNull()
+    expect(flaky).toBe(2)
+    expect((await legacyCounts()).meta).toBe(60)
+    // 다시 읽히게 되면 그 장만 옮기고 끝낸다
+    const r2 = await migrateLegacy({ storage: s, source, freeSpace: async () => 1e12 })
+    expect(r2).toMatchObject({ status: 'done', count: 60 })
+    expect((await legacyCounts()).meta).toBe(0)
+  })
+
+  it('does not give up before copying when a sampled record cannot be read', async () => {
+    const metas = Array.from({ length: 5 }, (_, i) => meta(7100 + i))
+    await seedLegacy(metas, metas.map(() => 32))
+    const s = await fresh()
+    const source = idbLegacySource()
+    const broken = {
+      ...source,
+      blob: async (id: number): Promise<ArrayBuffer | null> => {
+        if (id === 7100) throw new Error('unreadable')
+        return source.blob(id)
+      }
+    }
+    const r = await migrateLegacy({ storage: s, source: broken, freeSpace: async () => 1e12 })
+    expect(r).toMatchObject({ status: 'failed', done: 4, total: 5 })
+    expect(await s.history.count()).toBe(4)
+    expect((await legacyCounts()).meta).toBe(5)
+  })
+
+  it('does not bring back images deleted while the move was unfinished', async () => {
+    const metas = Array.from({ length: 60 }, (_, i) => meta(8000 + i))
+    await seedLegacy(metas, metas.map(() => 16))
+    const s = await fresh()
+    let calls = 0
+    // 처음에는 공간이 넉넉하다가 48장을 옮긴 뒤 모자라 멈춘다
+    const r1 = await migrateLegacy({ storage: s, source: idbLegacySource(), freeSpace: async () => (++calls === 1 ? 1e12 : 0) })
+    expect(r1.status).toBe('nospace')
+    expect(await s.history.count()).toBe(48)
+    const { useHistory } = await import('../src/stores/history')
+    await useHistory.getState().init()
+    await useHistory.getState().remove([8000, 8001])
+    expect((await legacyCounts()).meta).toBe(58)
+    const r2 = await migrateLegacy({ storage: s, source: idbLegacySource(), freeSpace: async () => 1e12 })
+    expect(r2).toMatchObject({ status: 'done', count: 58 })
+    expect(await s.history.get(8000)).toBeNull()
+    expect(await s.history.count()).toBe(58)
+  })
+
+  it('does not bring back cleared images, and keeps the ones not moved yet', async () => {
+    const metas = Array.from({ length: 60 }, (_, i) => meta(8100 + i))
+    await seedLegacy(metas, metas.map(() => 16))
+    const s = await fresh()
+    let calls = 0
+    const r1 = await migrateLegacy({ storage: s, source: idbLegacySource(), freeSpace: async () => (++calls === 1 ? 1e12 : 0) })
+    expect(r1.status).toBe('nospace')
+    const { useHistory } = await import('../src/stores/history')
+    await useHistory.getState().init()
+    await useHistory.getState().clear()
+    // 화면에 보이던(옮겨진) 48장만 지운다. 아직 옮기지 않은 12장은 확인 없이 지우지 않는다
+    expect((await legacyCounts()).meta).toBe(12)
+    const r2 = await migrateLegacy({ storage: s, source: idbLegacySource(), freeSpace: async () => 1e12 })
+    expect(r2).toMatchObject({ status: 'done', count: 12 })
+    expect(await s.history.get(8100)).toBeNull()
+    expect((await s.history.ids({})).sort()).toEqual(metas.slice(48).map((m) => m.id))
+  })
+
+  it('does not leave search text behind when a deleted image is updated', async () => {
+    const s = await fresh()
+    await s.history.add(meta(1, { prompt: 'cat' }), png(2))
+    await s.history.add(meta(2, { prompt: 'cat' }), png(2))
+    const stale = (await s.history.get(2))!
+    await s.history.remove([2])
+    // 지우는 사이에 끝난 갤러리 저장이 화면에 남은 meta로 기록을 고친다
+    await s.history.put({ ...stale, saved: 'NAIP/2.png' })
+    expect(await s.history.get(2)).toBeNull()
+    expect(await s.history.count({ search: 'cat' })).toBe(1)
+  })
+
+  it('keeps the files of an image saved while history is being cleared', async () => {
+    const s = await fresh()
+    await s.history.add(meta(1), png(3))
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let reached!: () => void
+    const atGate = new Promise<void>((r) => (reached = r))
+    // 새 그림의 파일을 다 쓰고 행을 넣기 직전에 "모두 삭제"가 끼어든다
+    const files = {
+      ...s.files,
+      write: async (path: string, data: Blob | string): Promise<number> => {
+        const n = await s.files.write(path, data)
+        if (path === 'thumbs/2.jpg') {
+          reached()
+          await gate
+        }
+        return n
+      }
+    }
+    const repo = createHistoryRepo(s.driver, files)
+    const adding = repo.add(meta(2), png(5))
+    await atGate
+    await repo.clear()
+    release()
+    await adding
+    expect(s.files.files.has('images/1.png')).toBe(false)
+    expect(s.files.files.has('thumbs/1.jpg')).toBe(false)
+    const r = await checkStorage(s)
+    expect(r.rows).toBe(1)
+    expect(r.missingOriginals).toEqual([])
+    expect(r.missingThumbs).toEqual([])
   })
 })

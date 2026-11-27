@@ -3,6 +3,7 @@ import type { HistoryFilter, HistoryMeta } from '../lib/db'
 import { makeThumb } from '../lib/image'
 import { getStorage } from '../storage'
 import { filterToQuery, matchesSearch, searchTerms, searchText, thumbPathFor } from '../storage/history-repo'
+import { forgetLegacy, legacyPending } from '../storage/legacy'
 import { useSettings } from './settings'
 import { forgetAllProjectImages, useProjects } from '../project/store' // ── Phase 5
 
@@ -142,6 +143,8 @@ export const useHistory = create<HistoryState>()((set, get) => ({
   },
   remove: async (ids) => {
     await (await getStorage()).history.remove(ids)
+    // 이전 히스토리 옮기기가 끝나기 전이면 예전 저장소에서도 지운다 — 다음 옮기기에서 되살아나지 않게
+    await forgetLegacy(ids).catch((e: unknown) => console.warn('이전 히스토리에서 지우지 못했습니다', e))
     useProjects.getState().forgetImages(ids) // ── Phase 5: 지운 그림을 프로젝트 조합에서도 뺀다
     const gone = new Set(ids)
     set((s) => {
@@ -155,7 +158,11 @@ export const useHistory = create<HistoryState>()((set, get) => ({
     })
   },
   clear: async () => {
-    await (await getStorage()).history.clear()
+    const { history } = await getStorage()
+    // 옮기기가 끝나기 전이면 지금 히스토리에 있는(옮겨진) 장만 예전 저장소에서도 지운다. 아직 옮기지 않은 장은 남긴다
+    const moved = (await legacyPending()) ? await history.ids({}) : []
+    await history.clear()
+    if (moved.length) await forgetLegacy(moved).catch((e: unknown) => console.warn('이전 히스토리에서 지우지 못했습니다', e))
     forgetAllProjectImages() // ── Phase 5
     set({ items: [], total: 0, hasMore: false, viewing: null, matchCount: get().filter ? 0 : null })
   },

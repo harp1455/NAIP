@@ -12,6 +12,9 @@ import type { Storage } from './index'
  * - id로 이어서 한다 — 이미 옮겨진 장(행이 있고 파일 크기가 맞음)은 건너뛰므로 중간에 앱이 죽어도 다시 시작하면 된다.
  * - 파일을 먼저 쓰고(임시 파일 → 이름 바꾸기) 크기를 확인한 뒤에 행을 넣는다. 행만 있고 파일이 없는 상태는 생기지 않는다.
  * - 시작 전에 남은 공간을 확인하고, 옮기는 중에도 공간이 떨어지면 멈춘다 (옛 데이터는 그대로).
+ * - 한 장이 실패해도 그 묶음에서 다 옮긴 장의 행은 남긴다 (행 없는 원본 파일이 생기지 않게).
+ * - 읽히지 않는 장은 건너뛰고 나머지를 옮긴다. 그런 장이 있으면 실패로 알리고 옛 데이터는 비우지 않는다.
+ * - 옮긴 뒤 지운 장은 forgetLegacy로 옛 데이터에서도 지운다 (다음 옮기기에서 되살아나지 않게).
  */
 export interface LegacySource {
   count(): Promise<number>
@@ -114,7 +117,8 @@ export async function migrateLegacy(opts: {
     const step = Math.max(1, Math.floor(todo.length / 16))
     const sample: number[] = []
     for (let i = 0; i < todo.length && sample.length < 16; i += step) {
-      const b = await source.blob(todo[i])
+      // 읽지 못하는 장은 추정에서 빼고, 옮기기에서 따로 다룬다
+      const b = await source.blob(todo[i]).catch(() => null)
       if (b) sample.push(b.byteLength)
     }
     const avg = sample.length ? sample.reduce((a, b) => a + b, 0) / sample.length : 0
@@ -125,6 +129,21 @@ export async function migrateLegacy(opts: {
 
   // ── 옮기기
   const want = new Set(todo)
+  /** 두 번 읽어도 읽히지 않은 장 — 건너뛰고 나머지를 옮긴다. 하나라도 있으면 옛 데이터를 비우지 않는다 */
+  const unreadable: number[] = []
+  let unreadableError = ''
+  const readBlob = async (id: number): Promise<ArrayBuffer | null | undefined> => {
+    try {
+      return await source.blob(id)
+    } catch {
+      try {
+        return await source.blob(id)
+      } catch (e) {
+        unreadableError ||= (e as Error)?.message ?? String(e)
+        return undefined
+      }
+    }
+  }
   let after: number | null = null
   let sinceCheck = 0
   try {
@@ -136,36 +155,49 @@ export async function migrateLegacy(opts: {
       if (!batch.length) continue
       const statements: { sql: string; params?: (string | number | null)[] }[] = []
       let next = 0
+      let failure = null as Error | null
       const lane = async (): Promise<void> => {
-        while (next < batch.length) {
+        // 한 장이 실패하면 새 장은 시작하지 않고 쓰던 장만 마저 끝낸다
+        while (next < batch.length && !failure) {
           const meta = batch[next++]
-          const buf = await source.blob(meta.id)
-          let file: string | null = null
-          let size = 0
-          if (buf) {
-            file = originalPath(meta.id, meta.mime)
-            size = await files.write(file, new Blob([buf], { type: meta.mime }))
-            if (size !== buf.byteLength) throw new Error(`${meta.id}: 원본 크기가 맞지 않습니다 (${size}/${buf.byteLength})`)
-          } else missing++
-          let thumb: string | null = null
-          if (typeof meta.thumb === 'string' && meta.thumb.startsWith('data:')) {
-            const path = thumbPathFor(meta.id, dataUrlMime(meta.thumb) ?? 'image/jpeg')
-            thumb = await files.write(path, meta.thumb).then(
-              () => path,
-              () => null
-            )
+          try {
+            const buf = await readBlob(meta.id)
+            if (buf === undefined) {
+              unreadable.push(meta.id)
+              continue
+            }
+            let file: string | null = null
+            let size = 0
+            if (buf) {
+              file = originalPath(meta.id, meta.mime)
+              size = await files.write(file, new Blob([buf], { type: meta.mime }))
+              if (size !== buf.byteLength) throw new Error(`${meta.id}: 원본 크기가 맞지 않습니다 (${size}/${buf.byteLength})`)
+            }
+            let thumb: string | null = null
+            if (typeof meta.thumb === 'string' && meta.thumb.startsWith('data:')) {
+              const path = thumbPathFor(meta.id, dataUrlMime(meta.thumb) ?? 'image/jpeg')
+              thumb = await files.write(path, meta.thumb).then(
+                () => path,
+                () => null
+              )
+            }
+            // 예전 판에서는 저장 기록이 없으면 미저장으로 표시했다 (v3 인덱스와 같은 규칙)
+            const normalized: HistoryMeta = { ...meta, ...(meta.saved || meta.unsaved ? {} : { unsaved: 1 }) }
+            statements.push(...insertStatements(normalized, file, size, thumb))
+            if (!buf) missing++
+            bytes += size
+            doneCount++
+            sinceCheck++
+          } catch (e) {
+            failure ??= e instanceof Error ? e : new Error(String(e))
           }
-          // 예전 판에서는 저장 기록이 없으면 미저장으로 표시했다 (v3 인덱스와 같은 규칙)
-          const normalized: HistoryMeta = { ...meta, ...(meta.saved || meta.unsaved ? {} : { unsaved: 1 }) }
-          statements.push(...insertStatements(normalized, file, size, thumb))
-          bytes += size
-          doneCount++
-          sinceCheck++
         }
       }
       await Promise.all(Array.from({ length: Math.min(LANES, batch.length) }, lane))
+      // 실패한 묶음이라도 다 옮긴 장의 기록은 남긴다 — 파일만 있고 기록이 없는 장(기록 없는 원본)이 생기지 않게
       await driver.batch(statements)
       report('copy')
+      if (failure) throw failure
       // 옮기는 중에도 공간을 본다 — 모자라면 여기서 멈추고 다음에 이어서
       if (sinceCheck >= 48) {
         sinceCheck = 0
@@ -175,6 +207,16 @@ export async function migrateLegacy(opts: {
     }
   } catch (e) {
     return { status: 'failed', error: (e as Error).message, done: doneCount, total }
+  }
+  if (unreadable.length) {
+    // 읽히는 장은 모두 옮겼다. 읽히지 않는 장이 있으니 옛 데이터는 그대로 두고, 다시 시도하면 그 장만 다시 읽는다
+    const shown = unreadable.slice(0, 5).join(', ') + (unreadable.length > 5 ? ' …' : '')
+    return {
+      status: 'failed',
+      error: `${unreadable.length}장의 원본을 읽지 못했습니다 (id ${shown}): ${unreadableError}`,
+      done: doneCount,
+      total
+    }
   }
 
   // ── 검증: 옛 장수만큼 행이 있고, 원본이 있는 장은 파일 크기가 기록과 같아야 한다
@@ -206,4 +248,31 @@ export async function migrateLegacy(opts: {
   ])
   await source.clear()
   return { status: 'done', count: total, bytes, missing }
+}
+
+/** 아직 옮기지 않은 예전 히스토리가 남아 있는지 (읽을 수 없으면 false) */
+export async function legacyPending(): Promise<boolean> {
+  if (typeof indexedDB === 'undefined') return false
+  try {
+    return (await idbLegacySource().count()) > 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 새 저장소에서 지운 장을 예전 저장소(meta·blobs·text)에서도 지운다.
+ * 옮기기가 끝나기 전("나중에")에 지운 그림이 다음 옮기기에서 되살아나지 않게 한다.
+ * 사용자가 지우기로 한 장만 받는다 — 아직 옮기지 않은 장을 여기서 함부로 지우지 않는다.
+ */
+export async function forgetLegacy(ids: number[]): Promise<void> {
+  if (!ids.length || !(await legacyPending())) return
+  const db = await openIdb()
+  const tx = db.transaction(['meta', 'blobs', 'text'], 'readwrite')
+  for (const id of ids) {
+    tx.objectStore('meta').delete(id)
+    tx.objectStore('blobs').delete(id)
+    tx.objectStore('text').delete(id)
+  }
+  await txDone(tx)
 }

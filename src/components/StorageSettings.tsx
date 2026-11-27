@@ -3,6 +3,7 @@ import { loadImage, makeThumb } from '../lib/image'
 import { readImageSettings } from '../lib/metadata'
 import { clearCache, formatBytes, getStorage, storageInfo } from '../storage'
 import { checkStorage, deleteStoredFiles, recoverOrphans, type CheckReport } from '../storage/check'
+import { idbLegacySource } from '../storage/legacy'
 import type { StorageInfo } from '../storage/native'
 import { useGeneration } from '../stores/generation'
 import { useHistory } from '../stores/history'
@@ -130,8 +131,12 @@ export function StorageGroup(): ReactNode {
                   disabled={!!busy}
                   onClick={() =>
                     void run('되살리기', async () => {
-                      const n = await recoverOrphans(await getStorage(), report.orphanOriginals, describe)
-                      toast(`${n}장을 히스토리로 되살렸습니다`)
+                      // 예전 히스토리에 아직 있는 장은 되살리지 않는다 — 옮기기가 원래 기록과 함께 옮긴다
+                      const r = await recoverOrphans(await getStorage(), report.orphanOriginals, describe, idbLegacySource())
+                      toast(
+                        `${r.recovered}장을 히스토리로 되살렸습니다` +
+                          (r.waiting ? ` · ${r.waiting}장은 이전 히스토리 옮기기에서 원래 기록과 함께 옮깁니다` : '')
+                      )
                       await useHistory.getState().init()
                       await check()
                     })
