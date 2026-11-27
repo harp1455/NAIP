@@ -117,6 +117,8 @@ let previewSeq = 0
 let lastPreviewAt = 0
 /** 대기열에 들어간 배치의 실제 내용 (상태에는 표시용 요약만 둔다) */
 const pendingBatches: Batch[] = []
+/** 멈춰 있을 때 누른 "생성"이 공간 확인을 기다리는 중 (두 번 눌림 방지) */
+let preparingFresh = false
 
 /** 생성 계획 한 칸 = 서버 요청 1번 = 이미지 1장 */
 export interface PlanItem {
@@ -773,6 +775,10 @@ export const useGeneration = create<GenerationState>()((set, get) => {
     start: async (opts) => {
       const token = useSettings.getState().token
       if (!token) return set({ error: 'API 토큰을 먼저 설정해 주세요 (설정 탭)' })
+      // 공간 확인을 기다리는 동안은 아직 running이 아니라 버튼이 "생성" 그대로다 — 그 사이 두 번 눌려도
+      // 배치가 두 번(두 배 비용) 들어가지 않게 막는다. 생성 중 대기열 추가는 누를 때마다 넣는 게 맞다
+      const fresh = !get().running
+      if (fresh && preparingFresh) return
       const batch = buildBatch(opts)
       if (typeof batch === 'string') {
         if (get().running) toast(batch, true)
@@ -780,7 +786,15 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         return
       }
       // 저장 공간이 모자랄 것 같으면 묻는다 (설정은 이미 누른 순간의 것으로 묶였다)
-      const warning = await lowSpaceWarning(batch.plan.length)
+      if (fresh) preparingFresh = true
+      let warning: string | null = null
+      try {
+        warning = await lowSpaceWarning(batch.plan.length)
+      } catch {
+        warning = null
+      } finally {
+        if (fresh) preparingFresh = false
+      }
       if (warning && !window.confirm(warning)) {
         release(batch.plan)
         return

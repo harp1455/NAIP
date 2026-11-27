@@ -223,6 +223,18 @@ describe('persisted queue + generation store', () => {
     expect(await s.driver.query('SELECT * FROM queue_items')).toEqual([])
   }, 20000)
 
+  it('a double tap on 생성 while idle starts one batch, not two', async () => {
+    useSettings.setState({ delayMin: 1, delayMax: 1 })
+    const { usePrompt } = await import('../src/stores/prompt')
+    usePrompt.setState({ count: 2 })
+    // 두 번째 탭은 첫 탭이 공간 확인을 기다리는 사이(아직 running 아님)에 들어온다
+    const first = useGeneration.getState().start()
+    const second = useGeneration.getState().start()
+    await Promise.all([first, second])
+    expect(calls).toHaveLength(2)
+    expect(useGeneration.getState().queue).toEqual([])
+  }, 20000)
+
   it('forgets progress rows whose batch was never written', async () => {
     const { getStorage } = await import('../src/storage')
     const s = await getStorage()
