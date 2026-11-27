@@ -206,6 +206,11 @@ export class ZipReader {
       list.push(entry)
       byPath.set(path, entry)
     }
+    // 압축률은 아카이브 전체로도 본다 — ratioMinSize 바로 밑의 작은 항목을 잔뜩 넣어 항목별 검사를 피하는 폭탄
+    // (풀린 합이 파일 크기의 maxRatio 배를 넘으면). 작은 아카이브는 ratioMinSize×maxRatio 까지 둔다
+    if (total > Math.max(source.size, L.ratioMinSize) * L.maxRatio) {
+      throw new BackupError('suspicious-ratio', '압축률이 비정상적으로 높습니다 (압축 폭탄 의심)')
+    }
 
     // 겹치는 항목: 위치순으로 늘어놓고 각 항목의 최소 끝이 다음 항목 시작을 넘지 않아야 한다
     const sorted = [...list].sort((a, b) => a.offset - b.offset)
