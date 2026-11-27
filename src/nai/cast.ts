@@ -1,4 +1,5 @@
 import { removeComments } from './presets'
+import { parseWeights } from './weights'
 
 /**
  * 캐릭터 출연 슬롯 · 변형 뽑기 엔진 (순수 함수 — 저장소·화면과 무관하게 시험할 수 있다).
@@ -255,7 +256,7 @@ export function variationGroupLabel(g: VariationGroup): string {
 
 /** 무작위·확률용: 후보를 캐릭터 단위 가중치로 (폴더 비중은 안의 캐릭터가 나눠 갖고, 겹치면 더한다) */
 export function weightedCandidates(
-  slot: Pick<CastSlot, 'candidates' | 'charId'>,
+  slot: Pick<CastSlot, 'mode' | 'candidates' | 'charId'>,
   characters: readonly CastCharacter[]
 ): { char: CastCharacter; weight: number }[] {
   const out = new Map<number, { char: CastCharacter; weight: number }>()
@@ -274,17 +275,17 @@ export function weightedCandidates(
       for (const c of members) add(c, w / members.length)
     }
   }
-  // 후보를 비워 둔 확률 슬롯은 고정 캐릭터를 쓴다
-  if (!slot.candidates.length && slot.charId !== null) {
+  // 후보를 비워 둔 확률 슬롯만 고정 캐릭터를 쓴다 (무작위는 후보가 없으면 빈 슬롯 — 고정에서 바꿀 때 남은 charId를 몰래 쓰지 않게)
+  if (slot.mode === 'chance' && !slot.candidates.length && slot.charId !== null) {
     const c = characters.find((x) => x.id === slot.charId)
     if (c) add(c, 1)
   }
   return [...out.values()]
 }
 
-/** 순차용: 후보 순서대로 (폴더는 라이브러리 순서로 펼치고, 겹치면 처음 것만) */
+/** 순차용: 후보 순서대로 (폴더는 라이브러리 순서로 펼치고, 겹치면 처음 것만). 후보가 없으면 빈 목록 */
 export function orderedCandidates(
-  slot: Pick<CastSlot, 'candidates' | 'charId'>,
+  slot: Pick<CastSlot, 'candidates'>,
   characters: readonly CastCharacter[]
 ): CastCharacter[] {
   const seen = new Set<number>()
@@ -298,7 +299,6 @@ export function orderedCandidates(
     if (cand.kind === 'char') add(characters.find((x) => x.id === cand.id))
     else for (const c of characters.filter((x) => x.folderId === cand.id)) add(c)
   }
-  if (!slot.candidates.length && slot.charId !== null) add(characters.find((x) => x.id === slot.charId))
   return out
 }
 
@@ -597,6 +597,67 @@ function tagsOf(prompt: string): string[] {
     .filter(Boolean)
 }
 
+const isCommentLine = (line: string): boolean => line.trimStart().startsWith('#')
+
+/** 쉼표 칸 하나를 감싼 문법과 태그로 — bareTag가 걷어 내는 자리 그대로 (앞: 가중치 `1.2::`·여는 괄호, 뒤: `:1.2`·닫는 괄호·`::`) */
+interface TagSyntax {
+  lead: string
+  weight: string
+  open: string
+  core: string
+  colon: string
+  close: string
+  end: string
+  trail: string
+}
+
+function splitTagSyntax(part: string): TagSyntax {
+  const m = /^(\s*)(-?\d+(?:\.\d+)?::)?([{[(]*)(.*?)(:\d+(?:\.\d+)?)?([}\])]*)(::)?(\s*)$/s.exec(part)
+  const g = (i: number): string => m?.[i] ?? ''
+  return m
+    ? { lead: g(1), weight: g(2), open: g(3), core: g(4), colon: g(5), close: g(6), end: g(7), trail: g(8) }
+    : { lead: '', weight: '', open: '', core: part, colon: '', close: '', end: '', trail: '' }
+}
+
+interface FoundCountTag {
+  line: number
+  /** 그 줄을 쉼표로 나눈 칸 번호 */
+  part: number
+  /** 적힌 그대로 (앞뒤 공백만 뺌) */
+  raw: string
+  tag: CountTag
+}
+
+/**
+ * 프롬프트의 인원 태그 (주석 줄 제외, 쉼표 칸마다).
+ * 음수·0 가중치 안의 태그(-1::solo:: 등)는 "그 인원이 아니게"라는 뜻이라 인원 태그로 세지도 고치지도 않는다.
+ */
+function findCountTags(prompt: string): FoundCountTag[] {
+  const lines = prompt.split('\n')
+  // 주석 줄은 같은 길이의 공백으로 바꿔 위치는 그대로 두고, 그 안의 가중치 문법은 무시한다
+  const segments = parseWeights(lines.map((l) => (isCommentLine(l) ? ' '.repeat(l.length) : l)).join('\n'))
+  const weightAt = (pos: number): number => segments.find((x) => pos >= x.start && pos < x.end)?.weight ?? 1
+  const found: FoundCountTag[] = []
+  let lineStart = 0
+  lines.forEach((line, li) => {
+    if (!isCommentLine(line)) {
+      let pos = lineStart
+      line.split(',').forEach((part, pi) => {
+        const tag = parseCountTag(part)
+        if (tag) {
+          const x = splitTagSyntax(part)
+          if (weightAt(pos + x.lead.length + x.weight.length + x.open.length) > 0) {
+            found.push({ line: li, part: pi, raw: part.trim(), tag })
+          }
+        }
+        pos += part.length + 1
+      })
+    }
+    lineStart += line.length + 1
+  })
+  return found
+}
+
 export interface CountCheck {
   /** 메인 프롬프트에서 찾은 인원 태그 (적힌 그대로) */
   tags: string[]
@@ -613,11 +674,7 @@ export interface CountCheck {
  */
 export function checkPeopleCount(prompt: string, actual: number): CountCheck | null {
   if (actual <= 0) return null
-  const found: { raw: string; tag: CountTag }[] = []
-  for (const raw of tagsOf(prompt)) {
-    const tag = parseCountTag(raw)
-    if (tag) found.push({ raw, tag })
-  }
+  const found = findCountTags(prompt)
   if (!found.length) return null
   let min = 0
   let max = 0
@@ -683,6 +740,7 @@ function countTag(sex: Sex, n: number): string {
  * 인원 태그를 실제 캐릭터에 맞게 고친 프롬프트. 고칠 필요가 없으면(충돌 없음·태그 없음) null.
  * 성별은 캐릭터 캡션의 girl/boy/other 태그로 판단하고, 알 수 없으면 원래 프롬프트에 가장 많이 적힌 성별로 친다.
  * 처음 나온 인원 태그 자리에 새 태그를 넣고 나머지 인원 태그는 지운다 (주석 줄은 건드리지 않음).
+ * 태그를 감싼 가중치·괄호는 그대로 둔다 — 새 태그는 그 안에 넣고, 지운 태그가 열거나 닫던 문법은 이웃 태그로 옮겨 짝을 맞춘다.
  */
 export function fixPeopleCount(
   prompt: string,
@@ -708,21 +766,48 @@ export function fixPeopleCount(
   }
   const to = next.join(', ')
 
+  const targets = new Set(findCountTags(prompt).map((f) => `${f.line}:${f.part}`))
+  const closerOf: Record<string, string> = { '{': '}', '[': ']', '(': ')' }
   let inserted = false
-  const lines = prompt.split('\n').map((line) => {
-    if (line.trimStart().startsWith('#')) return line
-    const parts = line.split(',')
+  /** 지운 태그가 열어 둔 문법 (가중치 `1.2::`·여는 괄호) — 다음에 남는 태그 앞에 붙인다 */
+  let pending: string[] = []
+  const lines = prompt.split('\n').map((line, li) => {
+    if (isCommentLine(line)) return line
     const kept: string[] = []
-    for (const part of parts) {
-      if (!parseCountTag(part)) {
+    line.split(',').forEach((part, pi) => {
+      if (!targets.has(`${li}:${pi}`)) {
+        if (pending.length) {
+          const lead = /^\s*/.exec(part)?.[0] ?? ''
+          part = lead + pending.join('') + part.slice(lead.length)
+          pending = []
+        }
         kept.push(part)
-        continue
+        return
       }
+      const x = splitTagSyntax(part)
       if (!inserted) {
         inserted = true
-        const lead = /^\s*/.exec(part)?.[0] ?? ''
-        kept.push(lead + to)
+        kept.push(x.lead + x.weight + x.open + to + x.colon + x.close + x.end + x.trail)
+        return
       }
+      // 지우는 태그: 여는 문법은 미뤄 두고, 닫는 문법은 미뤄 둔 것과 짝이 맞으면 함께 없애고 아니면 앞 태그에 붙인다
+      if (x.weight) pending.push(x.weight)
+      pending.push(...x.open)
+      let tail = ''
+      for (const closer of x.end ? [...x.close, x.end] : [...x.close]) {
+        const top = pending[pending.length - 1]
+        const pairs = top !== undefined && (closer === '::' ? top.endsWith('::') : closerOf[top] === closer)
+        if (pairs) pending.pop()
+        else tail += closer
+      }
+      if (!tail) return
+      if (kept.length) kept[kept.length - 1] = kept[kept.length - 1].replace(/\s*$/, (ws) => tail + ws)
+      else kept.push(x.lead + tail)
+    })
+    // 줄 끝까지 열린 채 남은 문법은 그 줄 끝에 둔다 (다음 줄 태그에 그대로 걸린다)
+    if (pending.length) {
+      kept.push((kept.length ? ' ' : '') + pending.join(''))
+      pending = []
     }
     // 지운 태그는 배열에서 빠지므로 쉼표가 겹치지 않는다 (사용자가 쓴 줄 끝 쉼표 등은 그대로 둔다)
     return kept.join(',')

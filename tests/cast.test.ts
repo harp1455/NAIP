@@ -268,6 +268,19 @@ describe('cast: slots', () => {
     expect(drawMany(p, 20, 99)).toEqual(drawMany(p, 20, 99))
   })
 
+  it('random and sequential slots with no candidates stay empty even when a fixed character is left over', () => {
+    // 고정 → 무작위로 바꾸면 고정 캐릭터가 후보로 옮겨지고 charId는 남는다 — 후보를 다 빼면 슬롯은 비어야 한다
+    const left = { charId: 1, candidates: [] }
+    for (const mode of ['random', 'sequential'] as const) {
+      const res = resolveCast(plan([slot({ mode, ...left })], LIB), createDrawState())
+      expect(res.chars).toEqual([])
+      expect(res.notes.join()).toContain('후보가 없어 비웠습니다')
+    }
+    // 확률 슬롯만 후보가 없을 때 고정 캐릭터를 쓴다 (편집 화면이 그 이름을 보여 준다)
+    const chance = resolveCast(plan([slot({ mode: 'chance', chance: 100, ...left })], LIB), createDrawState())
+    expect(chance.chars.map((c) => c.name)).toEqual(['A'])
+  })
+
   it('leaves out empty captions and slots whose character is gone', () => {
     const empty = char(5, 'E', { base: '' })
     const res = resolveCast(plan([slot({ charId: 5 }), slot({ charId: 404 })], [empty]), createDrawState())
@@ -323,6 +336,38 @@ describe('cast: people-count tags', () => {
     // 충돌이 없으면 그대로
     expect(fixPeopleCount('2girls', girls(2))).toBeNull()
     expect(fixPeopleCount('smile', girls(2))).toBeNull()
+  })
+
+  it('keeps weight and emphasis groups intact when it rewrites or removes count tags', () => {
+    const girls = (n: number) => Array.from({ length: n }, () => ({ prompt: 'girl, long hair' }))
+    const fix = (p: string, n: number) => fixPeopleCount(p, girls(n))?.prompt
+    // 고친 태그는 감싼 문법(괄호·가중치) 안에 그대로 들어간다
+    expect(fix('{2girls, smile}, park', 1)).toBe('{1girl, smile}, park')
+    expect(fix('[2girls, smile]', 1)).toBe('[1girl, smile]')
+    expect(fix('1.3::2girls, smile::, park', 1)).toBe('1.3::1girl, smile::, park')
+    expect(fix('masterpiece, 1.2::2girls, hug::, park', 1)).toBe('masterpiece, 1.2::1girl, hug::, park')
+    expect(fix('{{2girls}}, smile', 1)).toBe('{{1girl}}, smile')
+    // 지운 태그가 열거나 닫던 그룹은 이웃 태그로 옮겨 짝이 맞게 남는다
+    expect(fix('2girls, {smile, solo}, park', 2)).toBe('2girls, {smile}, park')
+    expect(fix('2girls, {solo, smile}, park', 2)).toBe('2girls, {smile}, park')
+    expect(fix('2girls, {solo}, smile', 2)).toBe('2girls, smile')
+    expect(fix('1.2::2girls, solo::, park', 2)).toBe('1.2::2girls::, park')
+    expect(fix('2girls, 1.2::solo, smile::, park', 2)).toBe('2girls, 1.2::smile::, park')
+    expect(fix('2girls, {solo, 1boy}, smile', 1)).toBe('1girl, solo, smile')
+  })
+
+  it('does not count or rewrite count tags inside a negative or zero weight', () => {
+    const girls = (n: number) => Array.from({ length: n }, () => ({ prompt: 'girl' }))
+    // "-1::solo::"는 솔로가 아니게 하라는 뜻 — 인원 태그로 세지 않는다
+    expect(checkPeopleCount('2girls, -1::solo::', 2)?.conflict).toBe(false)
+    expect(checkPeopleCount('-1::solo::, smile', 3)).toBeNull()
+    expect(checkPeopleCount('0::2girls::', 1)).toBeNull()
+    expect(fixPeopleCount('2girls, -1::solo::, smile', girls(2))).toBeNull()
+    // 음수 가중치 태그는 양수로 바뀌거나 지워지지 않고, 고칠 태그는 그 밖의 것만
+    expect(fixPeopleCount('-1::solo::, 2girls', girls(1))?.prompt).toBe('-1::solo::, 1girl')
+    expect(fixPeopleCount('-1::smile, 2girls::, 3girls', girls(1))?.prompt).toBe('-1::smile, 2girls::, 1girl')
+    // 주석 줄의 가중치 문법은 영향을 주지 않는다
+    expect(fixPeopleCount('# -1::\n2girls', girls(1))?.prompt).toBe('# -1::\n1girl')
   })
 })
 
