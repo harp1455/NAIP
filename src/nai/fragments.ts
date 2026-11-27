@@ -31,6 +31,17 @@ export function resetSequentialCounters(): void {
   sequentialCounters.clear()
 }
 
+/** 이어서 생성용 — 지금 순차 카운터 (조각 경로 → 다음 줄 번호) */
+export function sequentialCounterEntries(): [string, number][] {
+  return [...sequentialCounters]
+}
+
+/** 이어서 생성용 — 저장해 둔 순차 카운터로 되돌린다 */
+export function restoreSequentialCounters(entries: readonly (readonly [string, number])[]): void {
+  sequentialCounters.clear()
+  for (const [path, index] of entries) if (typeof path === 'string' && Number.isFinite(index)) sequentialCounters.set(path, index)
+}
+
 function processFileWildcards(
   prompt: string,
   source: FragmentSource,

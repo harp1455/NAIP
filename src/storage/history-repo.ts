@@ -322,10 +322,35 @@ export function createHistoryRepo(driver: SqlDriver, files: FileStore) {
       return Number(row?.n ?? 0)
     },
 
-    /** 보관 한도 정리용: 즐겨찾기를 뺀 가장 오래된 n장의 id */
-    async oldestIds(n: number): Promise<number[]> {
-      const rows = await driver.query<{ id: number }>('SELECT id FROM images WHERE fav = 0 ORDER BY id ASC LIMIT ?', [n])
-      return rows.map((r) => Number(r.id))
+    /** ── Phase 5: id가 afterId보다 큰(더 나중에 만든) 그림 중 프로젝트 분류 표시가 있는 것 */
+    async taggedSince(afterId: number): Promise<HistoryMeta[]> {
+      const rows = await driver.query<ImageRow>(
+        `SELECT * FROM images WHERE id > ? AND extra LIKE '%"project":%' ORDER BY id ASC`,
+        [afterId]
+      )
+      return (await toMetas(rows)).filter((m) => !!m.project)
+    },
+
+    /** 보관 한도 정리용: 즐겨찾기와 keep(예: 프로젝트에 든 그림)을 뺀 가장 오래된 n장의 id */
+    async oldestIds(n: number, keep: ReadonlySet<number> = new Set()): Promise<number[]> {
+      const out: number[] = []
+      let after = -1
+      while (out.length < n) {
+        // keep은 수천 장일 수 있어 SQL 인자로 넘기지 않고, 오래된 순으로 조금씩 읽으며 거른다
+        const want = n - out.length + Math.min(keep.size, 500)
+        const rows = await driver.query<{ id: number }>(
+          'SELECT id FROM images WHERE fav = 0 AND id > ? ORDER BY id ASC LIMIT ?',
+          [after, want]
+        )
+        for (const r of rows) {
+          const id = Number(r.id)
+          after = id
+          if (!keep.has(id)) out.push(id)
+          if (out.length >= n) break
+        }
+        if (rows.length < want) break
+      }
+      return out
     },
 
     /** 행을 먼저 지우고 파일을 지운다 — 중간에 죽으면 파일만 남고(점검에서 찾는다), 행이 빈 파일을 가리키지 않는다 */

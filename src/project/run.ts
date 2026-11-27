@@ -28,11 +28,22 @@ export interface EnqueueResult {
   notes: string[]
 }
 
+/** 같은 내용을 이 시간 안에 다시 넣으면 두 번 눌린 것으로 본다 (ms) */
+export const REPEAT_GUARD_MS = 1500
+let lastEnqueue: { sig: string; at: number } | null = null
+
 /** 작업들을 대기열에 넣는다. 넣을 수 없으면 이유(문자열) */
 export function enqueueJobs(project: Project, jobs: readonly GenerationJob[]): EnqueueResult | string {
   const live = jobs.filter((j) => j.count > 0)
   if (!live.length) return '생성할 장이 없습니다'
   if (!useSettings.getState().token) return 'API 토큰을 먼저 설정해 주세요 (설정 탭)'
+  // 단추를 빠르게 두 번 누르면 같은 배치가 두 번 들어가 두 배로 과금된다 — 방금 넣은 것과 같으면 넣지 않는다
+  const sig = JSON.stringify([project.id, live.map((j) => [j.key, j.count])])
+  const now = Date.now()
+  if (lastEnqueue && lastEnqueue.sig === sig && now - lastEnqueue.at < REPEAT_GUARD_MS) {
+    return '방금 같은 생성을 대기열에 넣었습니다 — 두 번 눌린 것으로 보고 한 번만 넣었습니다'
+  }
+  lastEnqueue = { sig, at: now }
   const refs = useRefs.getState()
   const fragmentLib = fragmentLibrary()
   const built = jobsToBatches(project.slug?.trim() || project.name, live, {
@@ -56,6 +67,16 @@ export function enqueueCombo(project: Project, key: string, count: number): Enqu
   const combo = expandMatrix(project, { keys: [key] }).combos[0]
   if (!combo) return '이 조합은 지금 행렬에 없습니다 (축 값이 꺼졌거나 제외됨)'
   return enqueueJobs(project, [buildJob(project, combo, Math.max(1, Math.floor(count)))])
+}
+
+/** 이 작업들의 조합에 이미 대기·생성 중인 장수 (같은 조합을 겹쳐 넣기 전에 묻는 데 쓴다) */
+export function inFlightFor(project: Project, jobs: readonly GenerationJob[]): number {
+  let n = 0
+  for (const key of new Set(jobs.map((j) => j.key))) {
+    const item = project.items[key]
+    if (item) n += item.queued + item.generating
+  }
+  return n
 }
 
 /** 예상에 쓸 계정·레퍼런스 정보 (구독 정보·지난 배치 속도) */
