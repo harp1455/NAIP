@@ -364,15 +364,15 @@ export function CharacterEditor(props: { initial: Partial<Character>; onClose: (
         </label>
         <label className="flex flex-col gap-1 text-xs text-dim">
           고정 — 얼굴·체형·머리 등 이 캐릭터를 알아보게 하는 부분
-          <TextArea label="고정 프롬프트" rows={4} value={base} onChange={setBase} placeholder="girl, black hair, red eyes, ..." />
+          <TextArea label="캐릭터 고정 프롬프트" rows={4} value={base} onChange={setBase} placeholder="girl, black hair, red eyes, ..." />
         </label>
         <label className="flex flex-col gap-1 text-xs text-dim">
           가변 — 복장·표정·자세처럼 그때그때 바꿀 부분 (변형 그룹 뒤에 붙습니다)
-          <TextArea label="가변 프롬프트" rows={2} value={additional} onChange={setAdditional} placeholder="smile, ..." />
+          <TextArea label="캐릭터 가변 프롬프트" rows={2} value={additional} onChange={setAdditional} placeholder="smile, ..." />
         </label>
         <label className="flex flex-col gap-1 text-xs text-dim">
           디테일 — 맨 뒤에 붙일 세부 묘사
-          <TextArea label="디테일 프롬프트" rows={2} value={detail} onChange={setDetail} />
+          <TextArea label="캐릭터 디테일 프롬프트" rows={2} value={detail} onChange={setDetail} />
         </label>
         <label className="flex flex-col gap-1 text-xs text-dim">
           캐릭터 네거티브 (선택)
