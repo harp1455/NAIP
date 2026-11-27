@@ -16,6 +16,10 @@ const DEV_PREFIX = 'naip-dev-secret:'
 
 export type SecretName = 'naiToken' | 'githubToken'
 
+/**
+ * lost: 암호화 키가 바뀌어 다시는 풀 수 없는 값이라 지웠다.
+ * 휴대폰에서 키 저장소가 잠시 응답하지 않으면 reject 한다 — 저장된 값은 지우지 않는다 (다음에 다시 읽는다)
+ */
 export async function readSecret(name: SecretName): Promise<{ value: string; lost: boolean }> {
   if (isNative) {
     const r = await Secure.get({ name })
@@ -28,6 +32,7 @@ export async function readSecret(name: SecretName): Promise<{ value: string; los
   }
 }
 
+/** 디스크에 쓴 뒤에 끝난다 (실패하면 reject — 메시지에 값은 없다) */
 export async function writeSecret(name: SecretName, value: string): Promise<void> {
   if (isNative) return Secure.set({ name, value })
   try {

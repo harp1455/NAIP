@@ -131,6 +131,7 @@ function UpdateGroup(): ReactNode {
           </p>
         </div>
       )}
+      {s.secretErrors.githubToken && <p className="pt-1 text-xs text-danger">{s.secretErrors.githubToken}</p>}
       <details className="pb-2 text-xs text-dim">
         <summary className="cursor-pointer py-1.5">저장소 · 비공개 저장소용 토큰</summary>
         <label className="mt-1 flex flex-col gap-1">
@@ -208,6 +209,7 @@ export function SettingsPane(): ReactNode {
               {checking ? '확인 중' : '확인'}
             </Button>
           </div>
+          {s.secretErrors.token && <p className="pt-2 text-xs text-danger">{s.secretErrors.token}</p>}
           <p className="py-2 text-xs" role="status">
             {s.subscriptionError ? (
               <span className="text-danger">{s.subscriptionError}</span>

@@ -4,10 +4,71 @@ import { fetchSubscription } from '../nai/client'
 import type { SubscriptionInfo } from '../nai/types'
 import { clamp, round1 } from '../lib/util'
 import type { TagSourceSetting } from '../lib/tags'
-import { readSecret, writeSecret } from '../lib/secrets'
+import { readSecret, writeSecret, type SecretName } from '../lib/secrets'
+import { toast } from './toast'
 
 export const DELAY_MIN = 1
 export const DELAY_MAX = 2
+
+type SecretField = 'token' | 'githubToken'
+const SECRET_FIELDS: SecretField[] = ['token', 'githubToken']
+const SECRET_NAME: Record<SecretField, SecretName> = { token: 'naiToken', githubToken: 'githubToken' }
+const SECRET_LABEL: Record<SecretField, string> = { token: 'NovelAI 토큰', githubToken: 'GitHub 토큰' }
+
+/**
+ * 0.12.0까지 naip-settings(평문 localStorage)에 있던 토큰.
+ * 암호화 저장소에 쓰고 다시 읽어 같은 값인 것을 확인하기 전에는 naip-settings에서 지우지 않는다
+ * (옮기다 실패하면 다음 실행에서 다시 옮긴다). 확인되면 다음 저장 때 naip-settings에서 빠진다.
+ */
+const legacyHeld: Partial<Record<SecretField, string>> = {}
+/** 이번 실행에서 사용자가 직접 넣은 토큰 — 시작할 때 읽어 온 값이나 예전 값으로 덮지 않는다 */
+const userSet: Partial<Record<SecretField, boolean>> = {}
+
+interface LoadedSecret {
+  value: string
+  /** 암호화 키가 바뀌어 저장된 값을 영영 풀 수 없어 지워졌다 */
+  lost: boolean
+  /** 지금은 읽지 못했다 (일시적인 오류일 수 있어 지우지 않았다) */
+  unreadable: boolean
+  /** 예전 평문을 암호화 저장소로 옮기지 못했다 (평문은 그대로 둔다) */
+  unmoved: boolean
+}
+
+async function loadSecret(field: SecretField): Promise<LoadedSecret> {
+  const name = SECRET_NAME[field]
+  const none = { lost: false, unreadable: false, unmoved: false }
+  let stored: { value: string; lost: boolean }
+  try {
+    stored = await readSecret(name)
+  } catch {
+    // 저장된 값도, 예전 평문도 그대로 둔다 — 이번 실행은 예전 평문(있으면)으로 쓴다
+    return { ...none, value: legacyHeld[field] ?? '', unreadable: true }
+  }
+  const legacy = legacyHeld[field]
+  if (legacy === undefined || userSet[field]) return { ...none, value: stored.value, lost: stored.lost }
+  if (stored.value) {
+    // 이미 옮겨져 있다 (지난 실행이 평문을 지우기 전에 끝났다) — 암호화 저장소 쪽이 최신이다
+    delete legacyHeld[field]
+    return { ...none, value: stored.value }
+  }
+  try {
+    await writeSecret(name, legacy)
+    const check = await readSecret(name)
+    if (check.value !== legacy) throw new Error('verify')
+    delete legacyHeld[field]
+    return { ...none, value: legacy }
+  } catch {
+    return { ...none, value: legacy, unmoved: true }
+  }
+}
+
+function secretNotice(field: SecretField, r: LoadedSecret): string | null {
+  const label = SECRET_LABEL[field]
+  if (r.lost) return `기기 보안 상태가 바뀌어 저장된 ${label}을 읽을 수 없습니다. ${label}을 다시 넣어 주세요`
+  if (r.unreadable) return `저장된 ${label}을 지금은 읽지 못했습니다 (지우지 않았습니다). 앱을 다시 열어 보고, 계속되면 ${label}을 다시 넣어 주세요`
+  if (r.unmoved) return `${label}을 암호화 저장소로 옮기지 못했습니다. 예전 자리에 그대로 두고 다음에 앱을 열 때 다시 옮깁니다`
+  return null
+}
 
 interface SettingsState {
   token: string
@@ -46,6 +107,8 @@ interface SettingsState {
   /** subscription을 서버에서 읽은 시각 (V5 할당량이 언제 다 차는지 계산하는 기준) */
   subscriptionAt: number
   subscriptionError: string | null
+  /** 토큰을 읽거나 저장하지 못한 이유 (구독 확인과 상관없이 새 토큰을 저장할 때까지 남는다) */
+  secretErrors: Partial<Record<SecretField, string>>
   setToken: (token: string) => void
   setDelay: (min: number, max: number) => void
   patch: (
@@ -86,37 +149,34 @@ export const useSettings = create<SettingsState>()(
       subscription: null,
       subscriptionAt: 0,
       subscriptionError: null,
+      secretErrors: {},
       setToken: (token) => {
         const value = token.trim()
         set({ token: value, subscription: null, subscriptionError: null })
-        void writeSecret('naiToken', value)
+        void saveSecret('token', value)
       },
       setGithubToken: (token) => {
         const value = token.trim()
         set({ githubToken: value })
-        void writeSecret('githubToken', value)
+        void saveSecret('githubToken', value)
       },
       secretsLoaded: false,
       loadSecrets: async () => {
-        // 0.12.0까지는 토큰이 naip-settings(localStorage)에 평문으로 들어 있었다 — 한 번 옮기고 지운다
-        const legacy = get() as SettingsState & { token: string; githubToken: string }
-        const [nai, gh] = await Promise.all([readSecret('naiToken'), readSecret('githubToken')])
-        let token = nai.value
-        let githubToken = gh.value
-        if (!token && legacy.token) {
-          token = legacy.token
-          await writeSecret('naiToken', token)
+        // 0.12.0까지는 토큰이 naip-settings(localStorage)에 평문으로 들어 있었다 — 옮긴 것을 확인한 뒤에만 지운다
+        const [nai, gh] = await Promise.all(SECRET_FIELDS.map(loadSecret))
+        const loaded: Record<SecretField, LoadedSecret> = { token: nai, githubToken: gh }
+        const next: Partial<SettingsState> = { secretsLoaded: true }
+        const errors = { ...get().secretErrors }
+        for (const field of SECRET_FIELDS) {
+          // 읽는 사이 사용자가 새로 넣은 값은 그대로 둔다
+          if (userSet[field]) continue
+          next[field] = loaded[field].value
+          const notice = secretNotice(field, loaded[field])
+          if (notice) errors[field] = notice
         }
-        if (!githubToken && legacy.githubToken) {
-          githubToken = legacy.githubToken
-          await writeSecret('githubToken', githubToken)
-        }
-        set({
-          token,
-          githubToken,
-          secretsLoaded: true,
-          ...(nai.lost ? { subscriptionError: '기기 보안 상태가 바뀌어 저장된 토큰을 읽을 수 없습니다. 토큰을 다시 넣어 주세요' } : {})
-        })
+        set({ ...next, secretErrors: errors })
+        const first = SECRET_FIELDS.map((f) => errors[f]).find(Boolean)
+        if (first) toast(first, true)
       },
       setDelay: (min, max) => {
         const lo = round1(clamp(min, DELAY_MIN, DELAY_MAX))
@@ -140,8 +200,18 @@ export const useSettings = create<SettingsState>()(
     }),
     {
       name: 'naip-settings',
-      // 토큰은 여기(평문 localStorage)에 두지 않는다 — loadSecrets/setToken이 암호화 저장소를 쓴다
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<Record<SecretField, unknown>>
+        for (const field of SECRET_FIELDS) {
+          const v = p[field]
+          if (typeof v === 'string' && v.trim()) legacyHeld[field] = v
+        }
+        return { ...current, ...(persisted as object) }
+      },
+      // 토큰은 여기(평문 localStorage)에 두지 않는다 — loadSecrets/setToken이 암호화 저장소를 쓴다.
+      // 예외: 예전 평문 토큰은 암호화 저장소로 옮긴 것이 확인될 때까지 그대로 남긴다 (legacyHeld)
       partialize: (s) => ({
+        ...legacyHeld,
         delayMin: s.delayMin,
         delayMax: s.delayMax,
         autoSave: s.autoSave,
@@ -163,6 +233,26 @@ export const useSettings = create<SettingsState>()(
     }
   )
 )
+
+/** 암호화 저장소에 쓴다. 실패하면 화면에 알린다 (이번 실행에서만 쓰이고 다음에는 없다) */
+async function saveSecret(field: SecretField, value: string): Promise<void> {
+  userSet[field] = true
+  const errors = (): Partial<Record<SecretField, string>> => ({ ...useSettings.getState().secretErrors })
+  try {
+    await writeSecret(SECRET_NAME[field], value)
+    if (useSettings.getState()[field] !== value) return // 그 사이 또 바뀌었다 — 나중 호출이 정리한다
+    // 새 값을 저장했으니 예전 평문은 필요 없다 (아래 setState가 naip-settings를 다시 쓴다)
+    delete legacyHeld[field]
+    const rest = errors()
+    delete rest[field]
+    useSettings.setState({ secretErrors: rest })
+  } catch {
+    if (useSettings.getState()[field] !== value) return
+    useSettings.setState({
+      secretErrors: { ...errors(), [field]: `${SECRET_LABEL[field]}을 기기에 저장하지 못했습니다. 이번 실행에서만 쓰이고 앱을 다시 열면 없어집니다` }
+    })
+  }
+}
 
 export function anlasOf(s: SubscriptionInfo | null): number | null {
   return s ? s.anlasFixed + s.anlasPurchased : null
