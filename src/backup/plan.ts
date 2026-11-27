@@ -15,7 +15,7 @@
  * - 에셋 프로젝트(projects): id 가 문자열이라 addMissing — 합치면 지금 없는 id 의 프로젝트만 더하고 같은 id 는 지금 것을 유지.
  *   프로젝트 캐릭터의 libraryId·vibeIds·refIds 는 바뀐 id 를 따라가고, 프로젝트 그림(AssetImage.id = 히스토리 id)은
  *   바꾸지 않는다 — 히스토리 id 는 만든 시각(ms)이라 같은 id 를 같은 그림으로 본다 (restoreHistory 의 합치기도 같은 규칙).
- * - 합치기에서 컬렉션이 아닌 배열(출연 슬롯 등)은 지금 것이 비어 있을 때만 백업 것을 쓴다.
+ * - 합치기에서 컬렉션이 아닌 값(출연 슬롯·고른 프로젝트 등)은 지금 것이 비어 있을 때(빈 배열·null)만 백업 것을 쓴다.
  */
 import { countSection } from './format'
 import { DATA_SECTION_IDS, SECTION_LABELS, type BackupData, type DataSectionId, type SectionId } from './types'
@@ -565,7 +565,7 @@ export function planRestore(current: BackupData, incoming: BackupData, opts: Pla
       result[key] = merged
     }
     // 나머지 필드(출연·작업 중인 프롬프트·설정값 …): 지금 값을 유지하고, 지금 없는 것만 백업에서.
-    // 지금 값이 빈 배열이면(예: 출연 슬롯이 비었으면) 백업 것을 쓴다 — Phase 4 UI
+    // 지금 값이 빈 배열이나 null 이면(예: 출연 슬롯이 비었거나 고른 프로젝트가 없으면) 백업 것을 쓴다 — Phase 4 UI
     const handled = new Set([
       ...collectionKeys,
       ...(schema.addMissing ?? []).map((c) => c.key),
@@ -575,8 +575,8 @@ export function planRestore(current: BackupData, incoming: BackupData, opts: Pla
     let keptCurrent = 0
     for (const key of new Set([...Object.keys(curObj), ...Object.keys(incObj)])) {
       if (handled.has(key)) continue
-      const fillEmpty =
-        Array.isArray(curObj[key]) && !(curObj[key] as unknown[]).length && Array.isArray(incObj[key]) && (incObj[key] as unknown[]).length > 0
+      const isEmpty = (v: unknown): boolean => v === null || v === undefined || (Array.isArray(v) && !v.length)
+      const fillEmpty = isEmpty(curObj[key]) && !isEmpty(incObj[key])
       if (key in curObj && !fillEmpty) {
         result[key] = curObj[key]
         if (key in incObj && !deepEqual(curObj[key], incObj[key])) keptCurrent++

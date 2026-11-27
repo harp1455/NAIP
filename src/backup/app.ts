@@ -13,6 +13,7 @@ import { uid } from '../lib/util'
 import { freeSpace, getStorage } from '../storage'
 import { useHistory } from '../stores/history'
 import { createFile, pickFile, type ReadableFile } from './files'
+import { countSection } from './format'
 import { BACKUP_ACCEPT, backupFileName, openAnyBackup, type OpenedBackup } from './index'
 import type { ByteSource } from './io'
 import { exportNais3, naipToNais3, type Nais3ExportPlan, type Nais3ExportSection } from './nais3/export'
@@ -68,6 +69,8 @@ export interface BackupEstimate {
   /** 기기 남은 공간 (모르면 null) */
   free: number | null
   historyCount: number
+  /** 섹션별 지금 항목 수 (고르기 화면용) */
+  counts: Partial<Record<SectionId, number>>
 }
 
 export async function estimateBackup(choice: BackupChoice): Promise<BackupEstimate> {
@@ -77,7 +80,9 @@ export async function estimateBackup(choice: BackupChoice): Promise<BackupEstima
     freeSpace(true),
     p.exportPort.stats()
   ])
-  return { estimate, free, historyCount: stats.count }
+  const counts: Partial<Record<SectionId, number>> = { history: stats.count, historyOriginals: stats.count }
+  for (const id of DATA_SECTION_IDS) if (data[id] != null) counts[id] = countSection(id, data[id])
+  return { estimate, free, historyCount: stats.count, counts }
 }
 
 /** 저장할 곳을 고르게 하고 백업을 쓴다. 고르기를 취소하면 null. 쓰다가 취소·실패하면 만든 파일을 지우고 BackupError */

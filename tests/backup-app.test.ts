@@ -448,6 +448,15 @@ describe('asset projects section', () => {
     expect(pr.result.presets).toEqual([{ id: 'cp', name: '변환' }])
   })
 
+  it('takes the backup active project (and cast slots) on merge only when nothing is chosen now', () => {
+    const inc: BackupData = { projects: { projects: [proj('p9', 'Backup')], activeId: 'p9' } }
+    const empty = planRestore({ projects: { projects: [], activeId: null } }, inc, { mode: 'merge' })
+    expect(empty.sections.projects!.result.activeId).toBe('p9')
+    expect(empty.sections.projects!.notes).toEqual([])
+    const chosen = planRestore({ projects: { projects: [proj('p1', 'Mine')], activeId: 'p1' } }, inc, { mode: 'merge' })
+    expect(chosen.sections.projects!.result.activeId).toBe('p1')
+  })
+
   it('overwrites or skips the projects section as a whole', () => {
     const cur: BackupData = { projects: { projects: [proj('p1', 'Mine')], activeId: 'p1' } }
     const inc: BackupData = { projects: { projects: [proj('p9', 'Backup')], activeId: 'p9' } }
