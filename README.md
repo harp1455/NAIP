@@ -54,7 +54,16 @@ NovelAI 이미지 대량 출력용 안드로이드 앱. [NAIS3](https://github.c
 - **설정 불러오기**: NAI 이미지의 메타데이터나 히스토리 이미지에서 프롬프트·네거티브·캐릭터·모델·해상도·샘플링·시드를
   항목별로 골라 불러오고, 새 프리셋으로 저장할 수 있습니다.
 - Opus의 V5 할당량을 퍼센트와 막대로 표시(생성할 때마다 갱신, 충전 속도·부스트 표시).
-- 보유 Anlas와 예상 사용량, 남은 시간 표시, 429·5xx 자동 재시도, 백업 내보내기/불러오기.
+- **에셋 제작(프로젝트 탭)**: 캐릭터 × 의상 × 표정 … 조합 행렬로 캐릭터 챗용 이미지를 빠짐없이 만들고(전체·부족한 것만·실패한 것만),
+  채택·보류·탈락으로 고른 뒤 파일·폴더 이름 템플릿, 사용자 변환 프리셋, 목록 파일(CSV·JSON·TXT·Markdown)·이미지 코드 목록과 함께
+  갤러리나 ZIP으로 내보냅니다. 채택 그림을 바꿔도 같은 칸·코드·파일 이름이 유지됩니다.
+- **백업·복원**: `.naipbackup`(체크섬·무결성 확인) 가벼운/전체/직접 고르기, 덮어쓰기·합치기·골라서 복원, 복원 전 자동 백업과 되돌리기.
+  NAIS3 `.nais` 가져오기·내보내기와 예전 JSON 백업 불러오기. 토큰은 백업에 넣지 않습니다.
+- 토큰은 Android Keystore로 암호화해 보관합니다.
+- 보유 Anlas와 예상 사용량, 남은 시간 표시, 429·5xx 자동 재시도.
+
+자세한 사용법은 [docs/USAGE.md](docs/USAGE.md), 저장 위치·업데이트·백업 형식·NAIS3 호환은 [docs/DATA.md](docs/DATA.md),
+버전별 변경은 [CHANGELOG.md](CHANGELOG.md)에 있습니다.
 
 ## 설치 · 업데이트
 
@@ -82,14 +91,17 @@ npm run apk        # 웹 빌드 → cap sync → android/app/build/outputs/apk/d
 APK 빌드에는 JDK 21과 Android SDK(platform 35)가 필요합니다 (`ANDROID_HOME` 지정).
 
 구조: `src/nai/`(NAIS3에서 이식한 payload·모델·프리셋·Anlas·토크나이저), `src/stores/`(zustand 상태와 생성 큐),
-`src/storage/`(히스토리·대기열 저장소: SQL 계층, 파일 보관, 스키마, 예전 IndexedDB 옮기기), `src/components/`(화면),
-`android/`(Capacitor 프로젝트 + 갤러리 저장/화면 켜짐 유지 플러그인, SQLite·파일 저장소 플러그인).
+`src/storage/`(히스토리·대기열 저장소: SQL 계층, 파일 보관, 스키마, 예전 IndexedDB 옮기기), `src/backup/`(백업 형식·복원 계획·NAIS3 변환),
+`src/project/`(에셋 제작: 행렬·선별·이름 템플릿·변환·목록), `src/components/`(화면),
+`android/`(Capacitor 프로젝트 + 갤러리 저장/화면 켜짐 유지, Keystore 비밀값, SQLite·파일 저장소, SAF 파일 플러그인).
 브라우저 개발 빌드와 테스트는 같은 SQL을 sql.js(WASM)로 실행합니다.
 
 ## 알아 둘 점
 
 - 이전 버전에서 업데이트하면 처음 한 번 히스토리를 새 저장소로 옮깁니다(진행 화면 표시). 모두 옮기고 장수와 파일 크기를
   확인한 뒤에만 예전 데이터를 지우고, 중간에 꺼져도 다음에 이어서 합니다. 옮기는 동안 히스토리 크기만큼 빈 공간이 더 필요합니다.
+- 0.12.0(릴리스 `build-18`)으로 되돌릴 수 있지만 앱을 지우고 다시 설치해야 하고, 0.12.0은 새 백업·저장소를 읽지 못합니다.
+  자세한 내용은 [docs/DATA.md](docs/DATA.md#이전-버전으로-돌아가기)를 보세요.
 
 - 생성은 웹뷰 안에서 돌고, 백그라운드에서는 포그라운드 서비스가 프로세스를 붙잡아 둡니다.
   제조사 배터리 최적화가 강한 기기에서는 그래도 멈출 수 있으니, 그럴 때는 앱의 배터리 사용을 "제한 없음"으로 바꾸세요.
@@ -100,5 +112,5 @@ APK 빌드에는 JDK 21과 Android SDK(platform 35)가 필요합니다 (`ANDROID
 ## 라이선스
 
 GPL-3.0 (`LICENSE`). NAIS3 (© sunanakgo, GPL-3.0)의 코드, SDStudio (© sunho, MIT)의 V5 레퍼런스 규칙,
-@msgpack/msgpack (ISC), sql.js (MIT, 브라우저 개발 빌드의 히스토리 저장소),
+@msgpack/msgpack (ISC), sql.js (MIT, 브라우저 개발 빌드의 히스토리 저장소), fflate (MIT, 백업 압축),
 Qwen 3.5 토크나이저 자료(Apache-2.0, `public/qwen35`)와 NAIA2.0 (DNT-LAB, GPL-3.0)의 한국어 태그 키워드 데이터를 포함합니다. NovelAI와는 무관합니다.
