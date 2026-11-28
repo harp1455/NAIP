@@ -666,7 +666,95 @@ describe('app data collection waits for IndexedDB stores', () => {
       useRefs.setState({ hydrated: was })
     }
     useRefs.setState({ hydrated: true })
-    await expect(app.currentData(20)).resolves.toHaveProperty('vibes')
+    await expect(app.currentData(20)).resolves.toMatchObject({ unavailable: [], data: { vibes: expect.anything() } })
+  })
+
+  /** 스토어의 IndexedDB 읽기를 실패시키고(열기 실패·손상된 값) 다시 불러온다. 되돌리는 함수를 준다 */
+  async function failLoad(store: { persist: { getOptions: () => { storage?: unknown }; setOptions: (o: never) => void; rehydrate: () => Promise<void> | void } }) {
+    const original = store.persist.getOptions().storage
+    const broken = { getItem: () => Promise.reject(new SyntaxError('Unexpected token')), setItem: () => {}, removeItem: async () => {} }
+    store.persist.setOptions({ storage: broken } as never)
+    await store.persist.rehydrate()
+    return async () => {
+      store.persist.setOptions({ storage: original } as never)
+      await store.persist.rehydrate()
+    }
+  }
+
+  it('does not block backup and restore for the whole session when masks failed to load; leaves masks out instead', async () => {
+    const { setStorageForTests } = await import('../src/storage')
+    const app = await import('../src/backup/app')
+    const { useMasks, masksLoadFailed } = await import('../src/stores/masks')
+    await setStorageForTests(await createSqlJsDriver(), memoryFileStore())
+    const restore = await failLoad(useMasks)
+    try {
+      // zustand 는 실패하면 hasHydrated() 를 false 로 둔다 — "불러오는 중"과 구별돼야 한다
+      expect(useMasks.persist.hasHydrated()).toBe(false)
+      expect(masksLoadFailed()).toBe(true)
+
+      // 기다려도 나아지지 않으니 바로(시간 제한까지 기다리지 않고) 모으되, 빈 마스크 목록을 지금 것으로 담지 않는다
+      const cur = await app.currentData(10_000)
+      expect(cur.unavailable).toEqual(['masks'])
+      expect(cur.data.masks).toBeUndefined()
+      expect(cur.data.characters).toBeDefined()
+
+      // 백업 어림·자동 백업은 된다 (마스크 섹션 없이)
+      const est = await app.estimateBackup({ mode: 'full' })
+      expect(est.unavailable).toEqual(['masks'])
+      const safety = await app.createSafetyBackup('test')
+      const back = await app.openRestoreSource(await app.safetyFile(safety))
+      expect(back.data.masks).toBeUndefined()
+      expect(back.manifest!.sections).not.toContain('masks')
+
+      // 복원: 마스크가 든 백업이어도 마스크는 건너뛰고(저장된 것을 덮어쓰지 않게) 나머지는 복원한다
+      const bytes = await fullBackup(await fresh(), {
+        masks: { masks: [{ id: 7, name: 'm', width: 8, height: 8, data: 'data:image/png;base64,AA==', ts: 1 }] },
+        characters: { folders: [], characters: [{ id: 5, name: 'Mia', folderId: null, base: 'mia', additional: '', detail: '', negative: '', variations: [] }] }
+      })
+      const src = await app.openRestoreSource({ name: 'b.naipbackup', source: bytesSource(bytes) })
+      expect((await app.previewFor(src)).map((p) => p.section)).not.toContain('masks')
+      for (const mode of ['overwrite', 'merge'] as const) {
+        const plan = await app.planFor(src, { mode, sections: {}, history: 'skip', originals: false })
+        expect(plan.sections.masks).toBeUndefined()
+        expect(plan.sections.characters).toBeDefined()
+        expect(plan.unavailable).toEqual(['masks'])
+        expect(plan.warnings[0]).toContain('보관한 마스크')
+      }
+      const plan = await app.planFor(src, { mode: 'overwrite', sections: {}, history: 'skip', originals: false })
+      const summary = await app.applyRestore(src, plan, { safety: true })
+      expect(summary.safety).not.toBeNull()
+      expect(summary.skipped).toContainEqual(expect.objectContaining({ section: 'masks', reason: expect.stringContaining('불러오지 못함') }))
+      expect(useMasks.getState().masks).toEqual([])
+      expect(useCharacters.getState().characters.map((c) => c.name)).toEqual(['Mia'])
+    } finally {
+      await restore()
+    }
+    expect(masksLoadFailed()).toBe(false)
+    expect(useMasks.persist.hasHydrated()).toBe(true)
+    await expect(app.currentData(20)).resolves.toMatchObject({ unavailable: [], data: { masks: expect.anything() } })
+  })
+
+  it('leaves vibes and references out (backup and .nais export) when they failed to load, instead of an empty list', async () => {
+    const app = await import('../src/backup/app')
+    const { useRefs, refsLoadFailed } = await import('../src/stores/refs')
+    const restore = await failLoad(useRefs)
+    try {
+      // 화면은 빈 목록으로 쓰도록 hydrated 는 true 지만, 실패는 따로 알 수 있다
+      expect(useRefs.getState().hydrated).toBe(true)
+      expect(refsLoadFailed()).toBe(true)
+      const cur = await app.currentData(10_000)
+      expect(cur.unavailable).toEqual(['vibes', 'charRefs'])
+      expect(cur.data.vibes).toBeUndefined()
+      expect(cur.data.charRefs).toBeUndefined()
+      const { plan } = await app.nais3Plan(['characters', 'vibes', 'charRefs'])
+      expect(plan.lost.filter((l) => l.text.includes('불러오지 못해')).map((l) => l.scope)).toEqual(['정밀 레퍼런스', '바이브'])
+      const { plan: noRefs } = await app.nais3Plan(['characters'])
+      expect(noRefs.lost.some((l) => l.text.includes('불러오지 못해'))).toBe(false)
+    } finally {
+      await restore()
+    }
+    expect(refsLoadFailed()).toBe(false)
+    await expect(app.currentData(20)).resolves.toMatchObject({ unavailable: [] })
   })
 })
 

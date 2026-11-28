@@ -180,6 +180,8 @@ export interface RestorePlan {
   /** 히스토리: replace = 비우고 백업으로, merge = 없는 것만 더함 */
   history: { action: 'replace' | 'merge'; originals: boolean } | null
   warnings: string[]
+  /** 이 기기의 지금 데이터를 불러오지 못해 복원하지 않는 섹션 (app.ts planFor 가 채운다) */
+  unavailable?: DataSectionId[]
 }
 
 export interface PlanOptions {

@@ -58,6 +58,12 @@ interface RefsState {
   removeCharRef: (id: number) => void
 }
 
+/** 이번 실행에서 IndexedDB 의 바이브·레퍼런스를 불러오지 못했는지 (백업이 빈 목록을 지금 것으로 담지 않게) */
+let loadFailed = false
+export function refsLoadFailed(): boolean {
+  return loadFailed
+}
+
 export const useRefs = create<RefsState>()(
   persist(
     (set) => ({
@@ -174,7 +180,14 @@ export const useRefs = create<RefsState>()(
       // 강도 슬라이더를 끄는 동안 그림까지 매번 다시 쓰지 않도록 모아서 저장한다
       storage: debouncedIdbStorage<Pick<RefsState, 'vibes' | 'charRefs'>>(),
       partialize: (s) => ({ vibes: s.vibes, charRefs: s.charRefs }),
-      onRehydrateStorage: () => () => useRefs.setState({ hydrated: true })
+      // 불러오지 못해도 hydrated 는 true 가 된다(화면은 빈 목록으로 쓴다) — 실패는 refsLoadFailed 로 따로 알린다
+      onRehydrateStorage: () => {
+        loadFailed = false
+        return (state, error) => {
+          loadFailed = !state || error !== undefined
+          useRefs.setState({ hydrated: true })
+        }
+      }
     }
   )
 )

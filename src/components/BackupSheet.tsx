@@ -24,6 +24,7 @@ import {
   previewFor,
   removeSafety,
   safetyFile,
+  unavailableText,
   writeNais3File,
   type BackupEstimate,
   type HistoryChoice,
@@ -96,7 +97,7 @@ const RESTORE_PHASE: Record<RestorePhase, string> = {
 type Step =
   | { name: 'home' }
   | { name: 'writing'; fileName: string | null; progress: ProgressInfo | null }
-  | { name: 'written'; fileName: string; result: WriteBackupResult }
+  | { name: 'written'; fileName: string; result: WriteBackupResult; unavailable: DataSectionId[] }
   | { name: 'failed'; title: string; message: string }
   | { name: 'opening'; fileName: string; progress: ProgressInfo | null }
   | { name: 'preview'; src: RestoreSource; preview: SectionPreview[]; free: number | null; initial: RestoreChoice & { safety: boolean } }
@@ -299,6 +300,11 @@ function CreateGroup(props: { busy: boolean; onCreate: (mode: BackupMode, sectio
           ? `예상 크기 최대 약 ${formatBytes(est.estimate.bytes)}${est.free !== null ? ` · 기기 남은 공간 ${formatBytes(est.free)}` : ''}`
           : '크기를 어림하는 중…'}
       </p>
+      {est && est.unavailable.length > 0 && (
+        <div className="pb-2" data-testid="backup-unavailable">
+          <Note tone="warn">{unavailableText(est.unavailable)} — 이 백업에는 넣지 않습니다.</Note>
+        </div>
+      )}
       {tooBig && (
         <div className="pb-2">
           <Note tone="danger">예상 크기가 기기 남은 공간보다 큽니다. 다른 저장소(SD 카드·클라우드)를 고르거나 원본 이미지를 빼세요.</Note>
@@ -757,7 +763,7 @@ export default function BackupSheet(props: { onClose: () => void }): ReactNode {
         }
       )
       if (!r) return setStep({ name: 'home' })
-      setStep({ name: 'written', fileName: r.fileName, result: r.result })
+      setStep({ name: 'written', fileName: r.fileName, result: r.result, unavailable: r.unavailable })
     } catch (e) {
       setStep({
         name: 'failed',
@@ -1010,6 +1016,7 @@ export default function BackupSheet(props: { onClose: () => void }): ReactNode {
               ))}
             </ul>
             {r.skippedOriginals > 0 && <p className="pt-1.5 text-xs text-danger">원본 파일이 없어 기록만 담은 그림 {r.skippedOriginals}장</p>}
+            {step.unavailable.length > 0 && <p className="pt-1.5 text-xs text-danger">{unavailableText(step.unavailable)} — 이 백업에는 넣지 않았습니다.</p>}
             <p className="pt-1.5 text-xs text-dim">토큰은 들어가지 않았습니다. 생성 대기열은 담지 않습니다.</p>
           </Group>
         </div>
