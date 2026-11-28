@@ -119,12 +119,13 @@ export function collectStoreData(): BackupData {
 
 // ── 들어오는 데이터 다듬기 ──────────────────────────────────────────────
 
-const CHARACTER_KEYS = ['folders', 'characters', 'slots', 'options']
+const CHARACTER_KEYS = ['folders', 'characters', 'slots', 'options', 'cursors']
 
 /**
  * 캐릭터 섹션을 지금 형식(Phase 2)으로 — migrateCharacters 를 거친다(잃는 내용 없음):
  * 예전 prompt 한 칸 → 고정(base), 예전 출연 목록 cast → 같은 순서의 고정 슬롯.
  * 캐릭터와 섹션에 있던 모르는 필드(더 새로운 앱이 더한 것)는 그대로 둔다. version·cast 는 뺀다.
+ * 배치에 한 번 순차의 순서 자리(cursors)는 백업에 있을 때만 넣는다 — 없는 예전 백업은 지금 자리를 건드리지 않는다
  */
 export function normalizeCharactersSection(raw: unknown): Obj {
   const r = isObj(raw) ? raw : {}
@@ -140,7 +141,7 @@ export function normalizeCharactersSection(raw: unknown): Obj {
   })
   const rest: Obj = {}
   for (const [k, v] of Object.entries(r)) if (![...CHARACTER_KEYS, 'cast', 'version'].includes(k)) rest[k] = v
-  return { ...rest, folders: m.folders, characters, slots: m.slots, options: m.options }
+  return { ...rest, folders: m.folders, characters, slots: m.slots, options: m.options, ...(m.cursors ? { cursors: m.cursors } : {}) }
 }
 
 /** 프로젝트 섹션 — 문자열 id 가 있는 객체만 남긴다 (나머지 모양은 스토어의 normalizeProject 가 채운다) */

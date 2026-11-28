@@ -2,9 +2,12 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { uid } from '../lib/util'
 import {
+  advanceCursors,
+  cleanCursors,
   DEFAULT_CAST_OPTIONS,
   referencedCharacterIds,
   type CastCharacter,
+  type CastCursors,
   type CastOptions,
   type CastPlan,
   type CastSlot,
@@ -30,9 +33,15 @@ interface CharactersData {
   /** 출연 슬롯 (슬롯 순서 = 보내는 순서) */
   slots: CastSlot[]
   options: CastOptions
+  /**
+   * "배치에 한 번" 순차 슬롯·변형 그룹의 다음 차례 (src/nai/cast.ts CastCursors) — 새 배치마다 한 칸씩 나아간다.
+   * 나중에 더한 칸이라 예전 저장분·백업에는 없다 (없으면 처음부터)
+   */
+  cursors?: CastCursors
 }
 
 interface CharactersState extends CharactersData {
+  cursors: CastCursors
   addFolder: (name: string) => number
   renameFolder: (id: number, name: string) => void
   deleteFolder: (id: number, deleteCharacters: boolean) => void
@@ -49,6 +58,10 @@ interface CharactersState extends CharactersData {
   toggleFixed: (charId: number) => void
   clearSlots: () => void
   setOptions: (p: Partial<CastOptions>) => void
+  /** 그림이 나온 장이 쓴 순서 자리를 넘긴다 (resolveCast의 advance — 같은 배치를 다시 넘겨도 한 번만) */
+  commitCursors: (advance: CastCursors) => void
+  /** 배치에 한 번 순차를 다음 배치에 첫 후보·항목부터 */
+  resetCursors: () => void
 }
 
 export function newSlot(p: Partial<Omit<CastSlot, 'id'>> = {}): CastSlot {
@@ -158,19 +171,39 @@ export function migrateCharacters(raw: unknown): CharactersData {
     perScene: o.perScene === true,
     autoCountTags: o.autoCountTags === true
   }
-  return { folders, characters, slots, options }
+  // 순서 자리는 있을 때만 (없는 예전 데이터를 불러와도 지금 자리를 지우지 않게) — 깨진 값은 버린다
+  const hasCursors = !!r.cursors && typeof r.cursors === 'object' && !Array.isArray(r.cursors)
+  return { folders, characters, slots, options, ...(hasCursors ? { cursors: cleanCursors(r.cursors) } : {}) }
 }
 
 /** 백업용 — 지금 형식 그대로 (불러올 때는 migrateCharacters를 거친다) */
 export function exportCharacters(): CharactersData & { version: number } {
   const s = useCharacters.getState()
-  return { version: CHARACTERS_VERSION, folders: s.folders, characters: s.characters, slots: s.slots, options: s.options }
+  return {
+    version: CHARACTERS_VERSION,
+    folders: s.folders,
+    characters: s.characters,
+    slots: s.slots,
+    options: s.options,
+    cursors: s.cursors
+  }
 }
 
 /** 백업 불러오기 — 예전 형식(prompt 한 칸·cast)도 받는다 */
 export function importCharacters(raw: unknown): void {
   useCharacters.setState(migrateCharacters(raw))
 }
+
+/** 지운 슬롯·캐릭터의 순서 자리를 뺀다 (바뀐 것이 없으면 그대로) */
+function pruneCursors(cursors: CastCursors | undefined, keep: (key: string) => boolean): CastCursors {
+  const cur = cursors && typeof cursors === 'object' ? cursors : {}
+  const gone = Object.keys(cur).filter((k) => !keep(k))
+  if (!gone.length) return cur
+  const next = { ...cur }
+  for (const k of gone) delete next[k]
+  return next
+}
+const varOf = (key: string): number => Number(/^var:(-?\d+):/.exec(key)?.[1] ?? NaN)
 
 /** 후보·고정 캐릭터에서 지워진 캐릭터·폴더를 걷어 낸다 (고정 슬롯이 비면 슬롯째 내린다) */
 function pruneSlots(slots: CastSlot[], goneChars: Set<number>, goneFolder?: number): CastSlot[] {
@@ -191,6 +224,7 @@ export const useCharacters = create<CharactersState>()(
       characters: [],
       slots: [],
       options: DEFAULT_CAST_OPTIONS,
+      cursors: {},
       addFolder: (name) => {
         const id = uid()
         set((s) => ({ folders: [...s.folders, { id, name: name.trim() || '새 폴더' }] }))
@@ -211,7 +245,8 @@ export const useCharacters = create<CharactersState>()(
               .filter((c) => !gone.has(c.id))
               .map((c) => (c.folderId === id ? { ...c, folderId: null } : c)),
             // 폴더 후보는 폴더가 없어지면 뜻이 바뀌므로(미분류로 옮겨진 캐릭터) 후보에서 뺀다
-            slots: pruneSlots(s.slots, gone, id)
+            slots: pruneSlots(s.slots, gone, id),
+            cursors: pruneCursors(s.cursors, (k) => !gone.has(varOf(k)))
           }
         }),
       saveCharacter: (c) => {
@@ -244,7 +279,8 @@ export const useCharacters = create<CharactersState>()(
       deleteCharacter: (id) =>
         set((s) => ({
           characters: s.characters.filter((c) => c.id !== id),
-          slots: pruneSlots(s.slots, new Set([id]))
+          slots: pruneSlots(s.slots, new Set([id])),
+          cursors: pruneCursors(s.cursors, (k) => varOf(k) !== id)
         })),
       moveCharacter: (id, folderId) =>
         set((s) => ({
@@ -256,7 +292,8 @@ export const useCharacters = create<CharactersState>()(
         return slot.id
       },
       patchSlot: (id, p) => set((s) => ({ slots: s.slots.map((x) => (x.id === id ? { ...x, ...p } : x)) })),
-      removeSlot: (id) => set((s) => ({ slots: s.slots.filter((x) => x.id !== id) })),
+      removeSlot: (id) =>
+        set((s) => ({ slots: s.slots.filter((x) => x.id !== id), cursors: pruneCursors(s.cursors, (k) => k !== `slot:${id}`) })),
       moveSlot: (id, dir) =>
         set((s) => {
           const i = s.slots.findIndex((x) => x.id === id)
@@ -279,8 +316,14 @@ export const useCharacters = create<CharactersState>()(
             ? { slots: s.slots.filter((x) => !(x.mode === 'fixed' && x.charId === charId)) }
             : { slots: [...s.slots, newSlot({ mode: 'fixed', charId })] }
         ),
-      clearSlots: () => set({ slots: [] }),
-      setOptions: (p) => set((s) => ({ options: { ...s.options, ...p } }))
+      clearSlots: () => set((s) => ({ slots: [], cursors: pruneCursors(s.cursors, (k) => !k.startsWith('slot:')) })),
+      setOptions: (p) => set((s) => ({ options: { ...s.options, ...p } })),
+      commitCursors: (advance) =>
+        set((s) => {
+          const cursors = advanceCursors(s.cursors, advance)
+          return cursors ? { cursors } : s
+        }),
+      resetCursors: () => set({ cursors: {} })
     }),
     {
       name: 'naip-characters',

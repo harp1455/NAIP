@@ -65,7 +65,7 @@ function ToolButton(props: {
 
 export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode {
   const p = usePrompt()
-  const { slots, characters, options } = useCharacters()
+  const { slots, characters, options, cursors } = useCharacters()
   const refs = useRefs()
   const source = useSource()
   const fragmentCount = useFragments((f) => f.fragments.length)
@@ -82,9 +82,10 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
   const medium = isMediumEffortModel(p.params.model)
 
   // 토큰 수·인원 확인용 예시 — 무작위 슬롯·변형은 첫 후보로 고정해 화면이 흔들리지 않게 한다
+  // (배치에 한 번 순차는 다음 배치가 쓸 차례로)
   const castPreview = useMemo(
-    () => resolveCast({ slots, options, characters }, createDrawState(), () => 0, caps.maxCharacters),
-    [slots, options, characters, caps.maxCharacters]
+    () => resolveCast({ slots, options, characters }, createDrawState(cursors), () => 0, caps.maxCharacters),
+    [slots, options, characters, cursors, caps.maxCharacters]
   )
   const activeChars = castPreview.chars
   const activeSlots = slots.filter((x) => x.enabled).length

@@ -194,7 +194,14 @@ function GroupCard(props: {
           <Segmented label={`${label} 모드`} value={g.mode} options={VARIATION_MODES} onChange={(mode) => set({ mode })} />
           <p className="text-xs text-dim">{MODE_HINT[g.mode]}</p>
           {(g.mode === 'random' || g.mode === 'sequential') && (
-            <Row label="배치마다 한 번만 뽑기" hint="한 배치(씬마다 따로 뽑기면 씬) 안에서는 같은 항목을 씁니다">
+            <Row
+              label="배치마다 한 번만 뽑기"
+              hint={
+                g.mode === 'sequential'
+                  ? '한 배치(씬마다 따로 뽑기면 씬) 안에서는 같은 항목을 쓰고, 새 배치마다 다음 항목으로 넘어갑니다'
+                  : '한 배치(씬마다 따로 뽑기면 씬) 안에서는 같은 항목을 씁니다'
+              }
+            >
               <Toggle label="배치마다 한 번만 뽑기" checked={!!g.perBatch} onChange={(perBatch) => set({ perBatch })} />
             </Row>
           )}

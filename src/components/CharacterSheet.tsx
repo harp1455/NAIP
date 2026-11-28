@@ -20,6 +20,7 @@ import {
   fixPeopleCount,
   mulberry32,
   resolveCast,
+  type CastCursors,
   type CastResolution
 } from '../nai/cast'
 import { cx } from '../lib/util'
@@ -33,10 +34,13 @@ import { Button, Empty, IconButton, Row, Sheet, Toggle } from './ui'
 let positionPanelOpen = false
 let optionsPanelOpen = false
 
-/** 시드 난수로 한 배치를 처음부터 n장째까지 뽑아 n장째 결과 (같은 시드면 늘 같은 결과 — 렌더가 두 번 돌아도 안전) */
-function previewDraw(seed: number, n: number, max: number): CastResolution {
+/**
+ * 시드 난수로 한 배치를 처음부터 n장째까지 뽑아 n장째 결과 (같은 시드면 늘 같은 결과 — 렌더가 두 번 돌아도 안전).
+ * 배치에 한 번 순차는 다음 배치가 시작할 자리(cursors)에서 뽑는다 — 미리보기는 자리를 넘기지 않는다
+ */
+function previewDraw(seed: number, n: number, max: number, cursors: CastCursors): CastResolution {
   const plan = snapshotCastPlan()
-  const state = createDrawState()
+  const state = createDrawState(cursors)
   const rng = mulberry32(seed)
   let res = resolveCast(plan, state, rng, max)
   for (let i = 1; i < n; i++) res = resolveCast(plan, state, rng, max)
@@ -49,10 +53,10 @@ function CastPreview(props: { max: number }): ReactNode {
   const p = usePrompt()
   const [n, setN] = useState(1)
   const [seed, setSeed] = useState(() => Math.floor(Math.random() * 2 ** 32))
-  // 슬롯·라이브러리·한도가 바뀌면 같은 시드로 다시, "다음 장"은 같은 배치의 다음 장, "처음부터"는 새 배치
+  // 슬롯·라이브러리·한도·순서 자리가 바뀌면 같은 시드로 다시, "다음 장"은 같은 배치의 다음 장, "처음부터"는 새 배치
   const res: CastResolution = useMemo(
-    () => previewDraw(seed, n, props.max),
-    [s.slots, s.characters, s.options, props.max, seed, n] // eslint-disable-line react-hooks/exhaustive-deps
+    () => previewDraw(seed, n, props.max, s.cursors),
+    [s.slots, s.characters, s.options, s.cursors, props.max, seed, n] // eslint-disable-line react-hooks/exhaustive-deps
   )
   const main = mergePromptParts(p)
   const check = checkPeopleCount(main, res.chars.length)
@@ -127,7 +131,9 @@ function CastPreview(props: { max: number }): ReactNode {
 }
 
 function CastOptionsPanel(): ReactNode {
-  const { options, setOptions } = useCharacters()
+  const { options, setOptions, cursors, resetCursors } = useCharacters()
+  // 배치에 한 번 뽑는 순차가 첫 차례를 지났으면 되돌리기를 보여 준다
+  const moved = Object.values(cursors ?? {}).some((v) => v > 0)
   const [open, setOpenState] = useState(optionsPanelOpen)
   const setOpen = (v: boolean): void => {
     optionsPanelOpen = v
@@ -161,6 +167,23 @@ function CastOptionsPanel(): ReactNode {
             ]}
             onChange={(scope) => setOptions({ scope })}
           />
+          <p className="mt-1.5 text-xs text-dim">
+            {options.scope === 'batch'
+              ? '배치 안에서는 처음 뽑은 결과를 계속 씁니다. 순차는 새 배치마다 다음 후보로 넘어갑니다.'
+              : '장마다 새로 뽑습니다. 순차는 배치마다 첫 후보부터 씁니다.'}
+          </p>
+          {moved && (
+            <Row label="배치 순서 처음부터" hint="배치에 한 번 뽑는 순차 슬롯·변형을 다음 배치부터 첫 후보로 되돌립니다">
+              <Button
+                onClick={() => {
+                  if (window.confirm('배치에 한 번 뽑는 순차를 다음 배치부터 처음으로 되돌릴까요?')) resetCursors()
+                }}
+              >
+                <RotateCcw size={16} />
+                처음부터
+              </Button>
+            </Row>
+          )}
           <Row label="같은 캐릭터 중복 허용" hint="끄면 한 장에 같은 캐릭터가 두 슬롯에 나오지 않습니다">
             <Toggle
               label="같은 캐릭터 중복 허용"
@@ -168,7 +191,7 @@ function CastOptionsPanel(): ReactNode {
               onChange={(allowDuplicates) => setOptions({ allowDuplicates })}
             />
           </Row>
-          <Row label="씬마다 따로 뽑기" hint="씬 여러 개를 돌릴 때 씬이 바뀌면 순서·배치 뽑기를 처음부터">
+          <Row label="씬마다 따로 뽑기" hint="씬 여러 개를 돌릴 때 씬이 바뀌면 순서·배치 뽑기를 그 배치의 시작 자리부터 다시">
             <Toggle label="씬마다 따로 뽑기" checked={options.perScene} onChange={(perScene) => setOptions({ perScene })} />
           </Row>
           <Row label="인원 태그 자동 고침" hint="메인 프롬프트의 2girls·solo 등을 실제 캐릭터 수에 맞춰 고쳐 보냅니다">

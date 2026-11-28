@@ -9,6 +9,9 @@ import { parseWeights } from './weights'
  *   변형 항목 안의 조각 문법(<이름>, <a|b>, …)은 여기서 건드리지 않는다 — 합친 뒤 생성 단계에서 기존 처리기로 치환한다.
  * - 슬롯 = 출연 한 자리. 고정 / 무작위(가중치) / 순차 / 확률로 그 자리에 누가 나올지 정한다. 위치는 슬롯마다.
  * - 뽑기 상태(DrawState)는 배치(또는 씬)마다 하나 — 순차 카운터와 "배치에 한 번" 뽑은 결과를 담는다.
+ * - "배치에 한 번" 뽑는 순차(순차 슬롯 + 배치에 한 번, 배치마다 한 번만 뽑는 순차 변형 그룹)는 배치를 넘어
+ *   이어 간다: 배치가 시작할 때의 자리(CastCursors)에서 뽑고, 그 장이 쓴 다음 자리를 결과(advance)로 알린다.
+ *   자리를 저장하고 넘기는 일은 부르는 쪽(생성 스토어)이 한다 — 그림이 나온 배치만 넘긴다.
  * - 난수는 주입한다(rng). 시험·미리보기는 mulberry32 같은 시드 난수를, 생성은 Math.random을 쓴다.
  */
 
@@ -142,6 +145,46 @@ export interface CastPlan {
   characters: CastCharacter[]
 }
 
+/**
+ * 배치를 넘어 이어 가는 순서 자리 — "배치에 한 번" 뽑는 순차 슬롯·순차 변형 그룹이 새 배치마다 한 칸씩 나아가게 한다.
+ * 열쇠는 DrawState.seq와 같다 (`slot:<슬롯 id>`, `var:<캐릭터 id>:<그룹 id>`). 값 = 다음 배치가 쓸 차례 (0 = 첫 후보)
+ */
+export type CastCursors = Record<string, number>
+
+const CURSOR_KEY = /^(?:slot|var):/
+
+/** 저장소·백업에서 읽은 자리를 믿을 수 있는 것만 남긴다 (0 이상 정수, 아는 열쇠만) */
+export function cleanCursors(raw: unknown): CastCursors {
+  const out: CastCursors = {}
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (CURSOR_KEY.test(k) && typeof v === 'number' && Number.isFinite(v) && v >= 0) out[k] = Math.floor(v)
+  }
+  return out
+}
+
+/** 열쇠의 자리 (없거나 깨졌으면 0 = 처음부터) */
+function cursorAt(cursors: unknown, key: string): number {
+  const v = cursors && typeof cursors === 'object' ? (cursors as Record<string, unknown>)[key] : undefined
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0
+}
+
+/**
+ * 그림이 나온 장의 advance로 저장된 자리를 한 칸 넘긴다 — 그 배치가 시작한 자리(advance − 1)에 아직 있는 열쇠만.
+ * - 같은 배치를 다시 적용해도(같은 배치의 다음 장, 씬마다 따로 뽑기, 이어서 생성) 이미 넘어가 있어 한 번만 넘는다
+ * - 배치가 도는 사이 자리를 처음으로 되돌렸거나(백업 복원 등) 다른 값이 됐으면 그 값을 그대로 둔다
+ * 바뀐 것이 없으면 null
+ */
+export function advanceCursors(cursors: CastCursors, advance: CastCursors | undefined): CastCursors | null {
+  let next: CastCursors | null = null
+  for (const [k, v] of Object.entries(cleanCursors(advance))) {
+    if (v < 1 || cursorAt(cursors, k) !== v - 1) continue
+    next ??= cleanCursors(cursors)
+    next[k] = v
+  }
+  return next
+}
+
 /** 배치(또는 씬) 하나 동안 이어지는 뽑기 상태 */
 export interface DrawState {
   /** 순차 카운터 — `slot:<슬롯 id>`, `var:<캐릭터 id>:<그룹 id>` */
@@ -150,20 +193,28 @@ export interface DrawState {
   slots: Record<string, number | null>
   /** "배치에 한 번" 뽑은 변형 항목 (항목 id, null = 없음) */
   vars: Record<string, number | null>
+  /** 이 배치가 시작할 때의 순서 자리 — "배치에 한 번" 뽑는 순차만 여기서 시작한다 (없으면 처음부터) */
+  cursors?: CastCursors
 }
 
-export function createDrawState(): DrawState {
-  return { seq: {}, slots: {}, vars: {} }
+export function createDrawState(cursors?: CastCursors): DrawState {
+  return { seq: {}, slots: {}, vars: {}, ...(cursors ? { cursors: { ...cursors } } : {}) }
 }
 
 /**
  * 이번 장이 쓸 뽑기 상태 — 배치 전체가 하나를 이어 쓰고, "씬마다 따로 뽑기"면 씬마다 따로 둔다
- * (씬이 바뀌면 순차는 처음부터, 배치에 한 번 뽑기도 새로).
+ * (씬이 바뀌면 순차와 배치에 한 번 뽑기를 이 배치가 시작할 때의 자리부터 다시).
+ * cursors = 배치가 시작할 때의 순서 자리 (새로 만드는 상태에만 넣는다)
  */
-export function drawStateFor(states: Map<string, DrawState>, options: CastOptions, sceneId?: number): DrawState {
+export function drawStateFor(
+  states: Map<string, DrawState>,
+  options: CastOptions,
+  sceneId?: number,
+  cursors?: CastCursors
+): DrawState {
   const key = options.perScene && sceneId !== undefined ? `scene:${sceneId}` : 'batch'
   let state = states.get(key)
-  if (!state) states.set(key, (state = createDrawState()))
+  if (!state) states.set(key, (state = createDrawState(cursors)))
   return state
 }
 
@@ -194,6 +245,11 @@ export interface CastResolution {
   dropped: ResolvedCharacter[]
   /** 화면에 보여 줄 참고 (빈 슬롯·중복으로 뺀 캐릭터 등) */
   notes: string[]
+  /**
+   * 이 장이 쓴 "배치에 한 번" 순차의 다음 자리 (열쇠 → 다음 배치가 쓸 차례). 이 장의 그림이 나오면
+   * advanceCursors로 저장된 자리에 더한다 — 그러면 다음 배치가 다음 후보·항목부터 뽑는다
+   */
+  advance: CastCursors
 }
 
 // ── 난수 ───────────────────────────────────────────────────
@@ -341,7 +397,8 @@ function drawSlot(
       return null
     }
     const key = `slot:${slot.id}`
-    const n = state.seq[key] ?? 0
+    // 배치에 한 번이면 배치마다 한 번만 여기에 온다 — 지난 배치들이 넘긴 자리에서 시작한다
+    const n = state.seq[key] ?? (plan.options.scope === 'batch' ? cursorAt(state.cursors, key) : 0)
     state.seq[key] = n + 1
     if (!slot.wrap && n >= list.length) {
       note(`${label}: 순서가 끝나 비웠습니다`)
@@ -377,7 +434,7 @@ function drawSlot(
   return open[i].char
 }
 
-function drawVariations(c: CastCharacter, state: DrawState, rng: Rng): ResolvedVariation[] {
+function drawVariations(c: CastCharacter, state: DrawState, rng: Rng, advance: CastCursors): ResolvedVariation[] {
   const out: ResolvedVariation[] = []
   for (const g of c.variations) {
     if (g.mode === 'off' || !g.items.length) continue
@@ -396,12 +453,14 @@ function drawVariations(c: CastCharacter, state: DrawState, rng: Rng): ResolvedV
         )
         item = i < 0 ? undefined : g.items[i]
       } else {
-        const n = state.seq[key] ?? 0
+        // 배치마다 한 번만 뽑는 순차는 지난 배치들이 넘긴 자리에서 시작한다 (장마다 뽑는 순차는 배치마다 처음부터)
+        const n = state.seq[key] ?? (g.perBatch ? cursorAt(state.cursors, key) : 0)
         state.seq[key] = n + 1
         item = g.items[n % g.items.length]
       }
       if (g.perBatch) state.vars[key] = item ? item.id : null
     }
+    if (g.perBatch && g.mode === 'sequential' && state.seq[key] !== undefined) advance[key] = state.seq[key]
     if (!item) continue
     out.push({
       groupId: g.id,
@@ -455,6 +514,7 @@ export function resolveCast(
   }
 
   // 2) 나머지 슬롯을 순서대로 뽑는다 (배치에 한 번이면 처음 뽑은 결과를 계속 쓴다)
+  const advance: CastCursors = {}
   for (const s of active) {
     if (s.mode === 'fixed') continue
     const key = `slot:${s.id}`
@@ -467,6 +527,8 @@ export function resolveCast(
       c = drawSlot(s, plan, state, rng, blocked, note, labelOf(s))
       if (options.scope === 'batch') state.slots[key] = c ? c.id : null
     }
+    // 배치에 한 번 뽑은 순차 슬롯: 이 장도 그 차례를 썼다 — 그림이 나오면 다음 배치는 다음 차례부터
+    if (options.scope === 'batch' && s.mode === 'sequential' && state.seq[key] !== undefined) advance[key] = state.seq[key]
     if (!c) continue
     taken.add(c.id)
     picks.set(s.id, c)
@@ -477,7 +539,7 @@ export function resolveCast(
   for (const s of active) {
     const c = picks.get(s.id)
     if (!c) continue
-    const variations = drawVariations(c, state, rng)
+    const variations = drawVariations(c, state, rng, advance)
     const prompt = composeCaption(c, variations)
     if (!prompt) {
       note(`${labelOf(s)}: ${c.name}의 프롬프트가 비어 있어 뺐습니다`)
@@ -499,7 +561,7 @@ export function resolveCast(
   if (dropped.length) {
     note(`모델 한도 ${limit}명을 넘어 ${dropped.map((c) => c.name).join(', ')}을(를) 뺐습니다`)
   }
-  return { chars, dropped, notes }
+  return { chars, dropped, notes, advance }
 }
 
 /** 씬별 출연(캐릭터 id 목록 + 위치)을 고정 슬롯으로 — 씬 캐릭터에도 변형이 그대로 적용된다 */
