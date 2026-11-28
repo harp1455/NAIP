@@ -401,11 +401,13 @@ function drawSlot(
     const key = `slot:${slot.id}`
     // 배치에 한 번이면 배치마다 한 번만 여기에 온다 — 지난 배치들이 넘긴 자리에서 시작한다
     const n = state.seq[key] ?? (plan.options.scope === 'batch' ? cursorAt(state.cursors, key) : 0)
-    state.seq[key] = n + 1
     if (!slot.wrap && n >= list.length) {
+      // 끝난 자리에 머문다 — 넘기면 나중에 더한 후보를 비운 배치 수만큼 건너뛴다
+      state.seq[key] = n
       note(`${label}: 순서가 끝나 비웠습니다`)
       return null
     }
+    state.seq[key] = n + 1
     // 차례인 캐릭터가 다른 슬롯에 나와 있으면 그다음 사람으로
     for (let k = 0; k < list.length; k++) {
       const c = list[(n + k) % list.length]

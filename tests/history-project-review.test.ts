@@ -134,6 +134,12 @@ const meta = (id: number, patch: Partial<HistoryMeta> = {}): HistoryMeta => ({
   ...patch
 })
 
+/** 앱을 다시 연다 — 같은 DB·파일로 저장소를 새로 연다 (이 실행에서 적은 배정처럼 프로세스에만 있던 것이 사라진다) */
+async function relaunch(): Promise<void> {
+  const { driver, files } = await getStorage()
+  await setStorageForTests(driver, files)
+}
+
 async function reset(files: FileStore = memoryFileStore()): Promise<void> {
   calls.length = 0
   hold = null
@@ -202,6 +208,7 @@ describe('putting back images whose project record was lost', () => {
     // 분류가 히스토리에 표시를 남긴 뒤, 프로젝트 기록(localStorage)이 디스크에 닿기 전에 앱이 죽었다 (addImage 없음)
     const tagged = await tagHistoryImages([{ id: old, tag: { projectId: id, key, coords: {} } }])
     expect(tagged).toHaveLength(1)
+    await relaunch()
     await loadResume()
     expect(project(id).items[key].images.map((i) => i.id)).toEqual([old])
     const notes = async (): Promise<number> =>
@@ -209,6 +216,37 @@ describe('putting back images whose project record was lost', () => {
     // 이번 실행의 기록도 디스크에 닿기 전에 죽을 수 있어, 넣은 실행에서는 적어 둔 것을 지우지 않는다
     expect(await notes()).toBe(1)
     // 다음 실행: 이미 들어 있으면 두 번 넣지 않고 적어 둔 것을 지운다
+    await relaunch()
+    await loadResume()
+    expect(imagesOf(id)).toEqual([old])
+    expect(await notes()).toBe(0)
+  }, 20000)
+
+  it('keeps a 분류 note written in this run when the late boot finds the image already in the project', async () => {
+    const id = makeProject()
+    const key = planJobs(project(id), 'all').jobs[0].key
+    const { history, driver } = await getStorage()
+    const old = project(id).createdAt - 100000
+    await history.add(meta(old), png())
+    // 디스크의 프로젝트 기록 (이번 실행의 분류 전)
+    const onDisk = JSON.parse(JSON.stringify(useProjects.getState().projects)) as Project[]
+    // 저장소 준비가 끝나기 전에 분류로 오래된 그림을 배정한다 (ClassifySheet.apply와 같이 표시 → 조합에 넣기)
+    for (const m of await tagHistoryImages([{ id: old, tag: { projectId: id, key, coords: {} } }])) {
+      useProjects.getState().addImage(id, m.project!.key, { id: m.id, ts: m.ts, seed: m.seed, width: m.width, height: m.height, mime: m.mime }, { fromQueue: false })
+    }
+    const notes = async (): Promise<number> =>
+      (await driver.query("SELECT key FROM app_kv WHERE key LIKE 'project-assigned:%'")).length
+    expect(await notes()).toBe(1)
+    // 늦게 끝난 준비(loadResume): 메모리의 프로젝트에 들어 있어도 이번 기록이 디스크에 닿았는지는 모른다
+    await loadResume()
+    expect(await notes()).toBe(1)
+    // 프로젝트 기록이 디스크에 닿기 전에 앱이 죽었다 — 다음 실행에서 적어 둔 것으로 다시 넣는다
+    await relaunch()
+    useProjects.setState({ projects: onDisk })
+    await loadResume()
+    expect(imagesOf(id)).toEqual([old])
+    // 그다음 실행: 이미 들어 있으니 지운다
+    await relaunch()
     await loadResume()
     expect(imagesOf(id)).toEqual([old])
     expect(await notes()).toBe(0)

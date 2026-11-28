@@ -229,13 +229,15 @@ export async function loadResume(): Promise<ResumeEntry[]> {
       console.warn('프로젝트 그림을 맞추지 못했습니다', e)
     }
   }
-  // 분류로 배정한 그림은 id가 오래돼 위에서 찾지 못한다 — 배정할 때 적어 둔 id로 찾는다. 이번에 넣은 그림이 있으면
-  // 적은 것을 남긴다: 이번 기록도 디스크에 닿기 전에 죽을 수 있다. 넣을 것이 없는 실행(기록이 디스크에 있다)에서 지운다
+  // 분류로 배정한 그림은 id가 오래돼 위에서 찾지 못한다 — 배정할 때 적어 둔 id로 찾는다. 이번에 넣은 그림이 있거나
+  // 이 실행에서 적은 것(저장소 준비가 늦게 끝나는 사이 분류로 배정했다)이면 남긴다: 이번 프로젝트 기록도 디스크에 닿기 전에
+  // 죽을 수 있다 — 메모리의 프로젝트에 들어 있다고 디스크에 있는 것은 아니다. 지난 실행에서 적었고 넣을 것이 없으면
+  // (기록이 디스크에 있다) 지운다
   try {
     const notes = await history.assignedNotes()
     if (notes.length) {
       const added = new Set(adoptTaggedImages(await history.getMany([...new Set(notes.flatMap((n) => n.ids))])))
-      const settled = notes.filter((n) => !n.ids.some((id) => added.has(id))).map((n) => n.key)
+      const settled = notes.filter((n) => !n.thisRun && !n.ids.some((id) => added.has(id))).map((n) => n.key)
       if (settled.length) await history.dropAssignedNotes(settled)
     }
   } catch (e) {

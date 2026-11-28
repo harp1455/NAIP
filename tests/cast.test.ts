@@ -271,6 +271,17 @@ describe('cast: slots', () => {
       expect(res.notes.join()).toContain('순서가 끝나')
     })
 
+    it('without wrap an emptied batch keeps its place, so a candidate added later is drawn next', () => {
+      const two = plan([seq({ wrap: false, candidates: [cand(1), cand(2)] })], LIB, { scope: 'batch' })
+      const { out, cursors } = batches(two, [undefined], 4)
+      expect(out).toEqual([['A'], ['B'], ['-'], ['-']])
+      // 비운 배치는 자리를 넘기지 않는다
+      expect(cursors).toEqual({ 'slot:500': 2 })
+      // 후보를 하나 더하면 다음 배치가 그 후보부터
+      const three = plan([seq({ wrap: false })], LIB, { scope: 'batch' })
+      expect(batches(three, [undefined], 2, cursors).out).toEqual([['C'], ['-']])
+    })
+
     it('a sequential variation group drawn once per batch takes the next item in every new batch', () => {
       const g: VariationGroup = {
         id: 8,

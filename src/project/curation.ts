@@ -246,13 +246,19 @@ export function markExported(item: AssetItem, id: number, path: string, at: numb
 
 /**
  * 이 경로를 가리키던 다른 그림(keep 말고)의 내보낸 기록을 지운다 — 다른 조합의 그림이 기기의 같은 파일을
- * 덮어썼을 때 (markExported가 한 조합 안에서 하는 정리를 프로젝트 전체로)
+ * 덮어썼을 때 (markExported가 한 조합 안에서 하는 정리를 프로젝트 전체로).
+ * 그 경로를 기억한 채택 칸(slotPaths)도 잊는다 — 남겨 두면 그 칸의 그림이 다음 내보내기에서 이 파일을 "제 파일"로
+ * 물려받아(previousExportPath) 지금 이름 규칙·중복 처리를 무시하고 다른 조합의 그림을 덮어쓴다
  */
 export function forgetExportedPath(item: AssetItem, path: string, keep: number): AssetItem {
   const same = pathKey(path)
   const hit = (i: AssetImage): boolean => i.id !== keep && i.exported !== undefined && pathKey(i.exported.path) === same
-  if (!item.images.some(hit)) return item
-  return {
+  const keepSlot = item.images.find((i) => i.id === keep && i.mark === 'adopted')?.slot
+  const staleSlots = Object.entries(item.slotPaths ?? {})
+    .filter(([slot, p]) => pathKey(p) === same && slot !== String(keepSlot))
+    .map(([slot]) => slot)
+  if (!item.images.some(hit) && !staleSlots.length) return item
+  const next: AssetItem = {
     ...item,
     images: item.images.map((i) => {
       if (!hit(i)) return i
@@ -260,6 +266,13 @@ export function forgetExportedPath(item: AssetItem, path: string, keep: number):
       return rest
     })
   }
+  if (staleSlots.length) {
+    const slotPaths = { ...item.slotPaths }
+    for (const slot of staleSlots) delete slotPaths[slot]
+    if (Object.keys(slotPaths).length) next.slotPaths = slotPaths
+    else delete next.slotPaths
+  }
+  return next
 }
 
 /** 생성 대기·생성 중·실패 장수 조정 (음수가 되지 않게) */
