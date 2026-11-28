@@ -5,6 +5,8 @@ import { useHistory } from '../stores/history'
 import { anlasOf, DELAY_MAX, DELAY_MIN, useSettings } from '../stores/settings'
 import { CURRENT_BUILD, useUpdate } from '../stores/update'
 import { useGeneration } from '../stores/generation'
+import { BUILTIN_RESOLUTIONS } from '../nai/resolutionList'
+import { ResolutionListSheet } from './ResolutionListSheet'
 import { V5Gauge } from './V5Gauge'
 import { StorageGroup } from './StorageSettings'
 import { Button, IconButton, Row, Select, SliderRow, TextInput, Toggle } from './ui'
@@ -42,6 +44,25 @@ function TagUsageRow(): ReactNode {
         기록 지우기
       </Button>
     </Row>
+  )
+}
+
+/** 해상도 고르는 칸에 보일 크기 — 내 해상도 더하기, 기본 해상도 숨기기 */
+function ResolutionListRow(): ReactNode {
+  const resolutions = useSettings((x) => x.resolutions)
+  const hidden = useSettings((x) => x.hiddenResolutions)
+  const [open, setOpen] = useState(false)
+  const shown = BUILTIN_RESOLUTIONS.length - hidden.length
+  return (
+    <>
+      <Row
+        label="해상도 목록"
+        hint={`해상도 고르는 칸에 보일 크기를 더하고, 빼고, 순서를 바꿉니다 (기본 ${shown}개${resolutions.length ? ` · 내 해상도 ${resolutions.length}개` : ''})`}
+      >
+        <Button onClick={() => setOpen(true)}>편집</Button>
+      </Row>
+      {open && <ResolutionListSheet onClose={() => setOpen(false)} />}
+    </>
   )
 }
 
@@ -282,6 +303,7 @@ export function SettingsPane(): ReactNode {
             />
           </Row>
           <TagUsageRow />
+          <ResolutionListRow />
           <p className="pb-2 text-xs text-dim">
             가중치 색상: <span className="rounded px-1" style={{ background: 'color-mix(in srgb, var(--mark-up) 40%, transparent)' }}>강조 1.2::…::, {'{…}'}</span>{' '}
             <span className="rounded px-1" style={{ background: 'color-mix(in srgb, var(--mark-down) 40%, transparent)' }}>약화 0.7::…::, […]</span>{' '}

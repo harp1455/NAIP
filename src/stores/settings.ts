@@ -4,6 +4,16 @@ import { fetchSubscription } from '../nai/client'
 import type { SubscriptionInfo } from '../nai/types'
 import { clamp, round1 } from '../lib/util'
 import type { TagSourceSetting } from '../lib/tags'
+import {
+  addUserResolution,
+  moveUserResolution,
+  normalizeResolutionPrefs,
+  removeUserResolution,
+  setBuiltinHidden,
+  type ResolutionEdit,
+  type ResolutionPrefs,
+  type UserResolution
+} from '../nai/resolutionList'
 import { readSecret, writeSecret, type SecretName } from '../lib/secrets'
 import { toast } from './toast'
 
@@ -103,6 +113,9 @@ interface SettingsState {
   shareStripMeta: boolean
   /** 생성 중 단계별 미리보기 (generate-image-stream) */
   streaming: boolean
+  /** 해상도 목록: 사용자가 더한 해상도(순서대로)와 숨긴 기본 해상도 키 (예전 설정·백업에는 없다 — 빈 목록) */
+  resolutions: UserResolution[]
+  hiddenResolutions: string[]
   subscription: SubscriptionInfo | null
   /** subscription을 서버에서 읽은 시각 (V5 할당량이 언제 다 차는지 계산하는 기준) */
   subscriptionAt: number
@@ -122,6 +135,11 @@ interface SettingsState {
   /** 앱 시작 시 한 번: 암호화 저장소에서 토큰을 읽고, 예전 평문 토큰이 있으면 옮긴 뒤 지운다 */
   loadSecrets: () => Promise<void>
   setGithubToken: (token: string) => void
+  /** 해상도 목록 편집 — 바꿨으면 저장하고, 못 바꾸면 이유를 돌려준다 (목록이 비게 되는 경우 등) */
+  addResolution: (entry: UserResolution) => ResolutionEdit
+  removeResolution: (index: number) => ResolutionEdit
+  moveResolution: (index: number, delta: number) => ResolutionEdit
+  setResolutionHidden: (key: string, hidden: boolean) => ResolutionEdit
 }
 
 export const useSettings = create<SettingsState>()(
@@ -146,6 +164,8 @@ export const useSettings = create<SettingsState>()(
       githubToken: '',
       shareStripMeta: false,
       streaming: true,
+      resolutions: [],
+      hiddenResolutions: [],
       subscription: null,
       subscriptionAt: 0,
       subscriptionError: null,
@@ -184,6 +204,10 @@ export const useSettings = create<SettingsState>()(
         set({ delayMin: Math.min(lo, hi), delayMax: Math.max(lo, hi) })
       },
       patch: (p) => set(p),
+      addResolution: (entry) => editResolutions(get(), (prefs) => addUserResolution(prefs, entry)),
+      removeResolution: (index) => editResolutions(get(), (prefs) => removeUserResolution(prefs, index)),
+      moveResolution: (index, delta) => editResolutions(get(), (prefs) => moveUserResolution(prefs, index, delta)),
+      setResolutionHidden: (key, hidden) => editResolutions(get(), (prefs) => setBuiltinHidden(prefs, key, hidden)),
       refreshSubscription: async () => {
         const token = get().token
         if (!token) {
@@ -206,7 +230,9 @@ export const useSettings = create<SettingsState>()(
           const v = p[field]
           if (typeof v === 'string' && v.trim()) legacyHeld[field] = v
         }
-        return { ...current, ...(persisted as object) }
+        const merged = { ...current, ...(persisted as object) }
+        // 예전 버전에는 해상도 목록이 없다 (빈 목록) — 손상된 값은 쓸 수 있는 것만 남기고, 목록이 비지 않게
+        return { ...merged, ...normalizeResolutionPrefs(merged) }
       },
       // 토큰은 여기(평문 localStorage)에 두지 않는다 — loadSecrets/setToken이 암호화 저장소를 쓴다.
       // 예외: 예전 평문 토큰은 암호화 저장소로 옮긴 것이 확인될 때까지 그대로 남긴다 (legacyHeld)
@@ -228,11 +254,25 @@ export const useSettings = create<SettingsState>()(
         nameCounters: s.nameCounters,
         updateRepo: s.updateRepo,
         shareStripMeta: s.shareStripMeta,
-        streaming: s.streaming
+        streaming: s.streaming,
+        resolutions: s.resolutions,
+        hiddenResolutions: s.hiddenResolutions
       })
     }
   )
 )
+
+function editResolutions(state: ResolutionPrefs, fn: (prefs: ResolutionPrefs) => ResolutionEdit): ResolutionEdit {
+  const r = fn({ resolutions: state.resolutions, hiddenResolutions: state.hiddenResolutions })
+  if (r.ok) useSettings.setState({ resolutions: r.resolutions, hiddenResolutions: r.hiddenResolutions })
+  return r
+}
+
+/** 복원 뒤 등: 해상도 목록을 쓸 수 있는 모양으로 (손상된 항목 빼기, 목록이 비지 않게) */
+export function repairResolutionPrefs(): void {
+  const s = useSettings.getState()
+  useSettings.setState(normalizeResolutionPrefs(s))
+}
 
 /**
  * 암호화 저장소에 쓴다 (빈 값이면 지운다). 실패하면 화면에 알린다 — 저장된 값은 그대로라 앱을 다시 열면

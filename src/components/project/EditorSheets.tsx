@@ -1,7 +1,6 @@
 /** 프로젝트 설정의 편집 시트 — 캐릭터, 축과 값, 제외 규칙, 조합별 덮어쓰기, 바이브·레퍼런스 고르기 */
 import { useMemo, useState, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, Check, ListPlus, Pencil, Plus, Trash2 } from 'lucide-react'
-import { RESOLUTIONS } from '../../nai/constants'
 import { composeCaption } from '../../nai/cast'
 import { cx } from '../../lib/util'
 import {
@@ -24,6 +23,7 @@ import {
 } from '../../project'
 import { useCharacters } from '../../stores/characters'
 import { useRefs } from '../../stores/refs'
+import { ResolutionSelect } from '../ResolutionSelect'
 import { Button, Empty, IconButton, Row, Select, Sheet, TextArea, TextInput, Toggle } from '../ui'
 import { Chip, DraftArea, DraftInput, Field, patchLatest } from './common'
 
@@ -592,8 +592,7 @@ export function OverrideSheet(props: { project: Project; override: ComboOverride
     patchLatest(p.id, (latest) => ({ overrides: init ? latest.overrides.map((x) => (x.id === o.id ? o : x)) : [...latest.overrides, o] }))
     props.onClose()
   }
-  const sizes = [{ value: '', label: '기본 해상도' }, ...RESOLUTIONS.map((r) => ({ value: `${r.width}x${r.height}`, label: `${r.label} (${r.width}×${r.height})` }))]
-  if (size && !sizes.some((x) => x.value === size)) sizes.push({ value: size, label: size.replace('x', '×') })
+  const [sizeW, sizeH] = size ? size.split('x').map(Number) : [0, 0]
   return (
     <Sheet
       title={init ? '덮어쓰기 편집' : '덮어쓰기 추가'}
@@ -630,7 +629,13 @@ export function OverrideSheet(props: { project: Project; override: ComboOverride
           <TextArea label="덮어쓰기 네거티브" rows={2} value={negative} onChange={setNegative} />
         </Field>
         <Field label="해상도">
-          <Select label="덮어쓰기 해상도" value={size} options={sizes} onChange={setSize} />
+          <ResolutionSelect
+            label="덮어쓰기 해상도"
+            width={sizeW}
+            height={sizeH}
+            none={{ label: '기본 해상도', selected: !size, onPick: () => setSize('') }}
+            onPick={(r) => setSize(`${r.width}x${r.height}`)}
+          />
         </Field>
         <div className="grid grid-cols-2 gap-2">
           <Field label="생성 장수 (비우면 기본)">

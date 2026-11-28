@@ -25,7 +25,8 @@ import { masksLoadFailed, useMasks } from '../stores/masks'
 import { usePrompt } from '../stores/prompt'
 import { refsLoadFailed, useRefs } from '../stores/refs'
 import { useScenes } from '../stores/scenes'
-import { useSettings } from '../stores/settings'
+import { repairResolutionPrefs, useSettings } from '../stores/settings'
+import { normalizeHiddenResolutions, normalizeUserResolutions } from '../nai/resolutionList'
 import { useTagUsage } from '../stores/tagUsage'
 import { stripCredentials } from './credentials'
 import { splitSettings, UNSAVED_SETTINGS } from './format'
@@ -173,6 +174,17 @@ function withoutTransient(v: unknown): Obj {
 }
 
 /**
+ * 해상도 목록(있을 때만) — 쓸 수 없는 항목을 뺀다. 없는 예전 백업은 그대로 둔다(지금 목록을 건드리지 않는다).
+ * 목록이 비지 않게 하는 일은 스토어에 넣은 뒤 repairResolutionPrefs 가 한다 (다른 필드는 지금 값일 수 있어서)
+ */
+function withCleanResolutions(v: Obj): Obj {
+  const out: Obj = { ...v }
+  if ('resolutions' in out) out.resolutions = normalizeUserResolutions(out.resolutions)
+  if ('hiddenResolutions' in out) out.hiddenResolutions = normalizeHiddenResolutions(out.hiddenResolutions)
+  return out
+}
+
+/**
  * 백업·.nais·예전 JSON 에서 읽은 데이터를 복원 계획 전에 다듬는다 (어느 형식에서 왔든 같은 길).
  * 계획(planRestore)이 Phase 2 슬롯의 캐릭터 id 를 고치려면 캐릭터가 먼저 지금 형식이어야 한다.
  */
@@ -180,7 +192,7 @@ export function normalizeBackupData(data: BackupData): BackupData {
   const out: BackupData = { ...data }
   if (data.characters != null) out.characters = normalizeCharactersSection(data.characters) as BackupData['characters']
   if (data.projects != null) out.projects = normalizeProjectsSection(data.projects) as BackupData['projects']
-  if (data.settings != null) out.settings = withoutTransient(stripCredentials(data.settings).value)
+  if (data.settings != null) out.settings = withCleanResolutions(withoutTransient(stripCredentials(data.settings).value))
   if (data.saveFolders != null) out.saveFolders = stripCredentials(data.saveFolders).value
   return out
 }
@@ -314,7 +326,9 @@ export function applyRestorePlan(plan: RestorePlan): ApplyRestoreResult {
       case 'saveFolders':
         // 토큰·비밀값은 백업에서 오지 않는다 (읽을 때 이미 지웠지만 한 번 더). 실행 중 상태(구독 정보 등)와
         // 업데이트 받을 저장소도 넣지 않는다 (남이 만든 백업이 다른 APK를 설치하게 권하지 못하게)
-        useSettings.setState(safePatch(useSettings.getState(), withoutTransient(stripCredentials(r).value)) as never)
+        useSettings.setState(safePatch(useSettings.getState(), withCleanResolutions(withoutTransient(stripCredentials(r).value))) as never)
+        // 해상도 목록이 비지 않게 (백업의 숨김과 지금 목록이 섞여도)
+        repairResolutionPrefs()
         break
       case 'prompt':
         usePrompt.setState(safePatch(usePrompt.getState(), r) as never)
