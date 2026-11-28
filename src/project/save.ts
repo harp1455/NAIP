@@ -4,7 +4,9 @@
  *
  * 저장할 곳
  * - gallery (휴대폰): MediaStore Pictures/NAIP/폴더…/이름 — 여러 단계 폴더, 이 앱이 만든 같은 파일은 덮어쓰기.
- *   목록 파일은 Download/NAIP/폴더… (안드로이드는 사진 폴더에 글 파일을 넣지 못하게 한다)
+ *   한 장 저장할 때마다 바로 기록한다 (도중에 취소·종료돼도 다음 내보내기가 그 파일을 "지난번 파일"로 안다).
+ *   목록 파일은 Download/NAIP/폴더… (안드로이드는 사진 폴더에 글 파일을 넣지 못하게 한다) — 이번에 저장한 것에
+ *   같은 폴더 아래 전에 내보낸 채택 그림을 더해, "아직 안 내보낸 것만"이나 취소 뒤에도 목록이 줄지 않는다
  * - zip: 폴더 구조를 그대로 담은 ZIP 하나 (휴대폰은 저장할 곳을 고르고, 브라우저는 내려받기)
  */
 import * as db from '../lib/db'
@@ -14,11 +16,23 @@ import { createFile } from '../backup/files'
 import { BufferedSink } from '../backup/io'
 import { writeZip, type ZipEntryInput } from '../backup/zip/writer'
 import { FORMAT_EXT, convertInWorker, formatBytes, type ConvertResult } from './convert'
-import { manifestRows, planExport, projectCodeList, projectColumns, type ExportPlan, type ExportPlanEntry } from './export'
+import {
+  assetVars,
+  characterCodes,
+  exportCandidates,
+  manifestRows,
+  planExport,
+  projectCodeList,
+  projectCodes,
+  projectColumns,
+  slotRef,
+  type ExportPlan,
+  type ExportPlanEntry
+} from './export'
 import { buildManifest } from './manifest'
 import { presetToConvertOptions } from './presets'
 import { useProjects } from './store'
-import { sanitizeName } from './template'
+import { pathKey, sanitizeName } from './template'
 import type { PlatformPreset, Project } from './types'
 
 export type ExportTarget = 'gallery' | 'zip'
@@ -97,6 +111,42 @@ function withExt(fileName: string, ext: string): string {
   return `${dot > 0 ? fileName.slice(0, dot) : fileName}.${ext}`
 }
 
+/**
+ * 실제로 저장한 항목의 번호만 — 번호 범위마다 가장 큰 번호. 계획 전체의 번호(preview.counters)를 남기면
+ * 취소·실패·건너뛴 항목의 번호가 비어 다음 내보내기가 그 뒤부터 매긴다 (_01, _02, _04)
+ */
+export function savedCounters(entries: readonly ExportPlanEntry[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const e of entries) {
+    const { scope, index } = e.path
+    if (scope === undefined || index === null) continue
+    out[scope] = Math.max(out[scope] ?? index, index)
+  }
+  return out
+}
+
+/**
+ * 순서 글자(A, B …)로 코드를 처음 받은 캐릭터에 그 글자를 적어 둔다 — 나중에 캐릭터를 빼거나 순서를 바꿔도
+ * 같은 캐릭터의 새 코드가 다른 글자로 시작하지 않게 (사용자가 코드를 적어 둔 캐릭터는 그대로)
+ */
+export function keepCharacterLetters(project: Project, plan: ExportPlan): void {
+  if (!plan.newCodes.length || !/\{\s*char\s*(:[^{}]*)?\}/i.test(project.codes.pattern)) return
+  const fresh = new Set(plan.newCodes.map((c) => slotRef(c.key, c.slot)))
+  const letters = characterCodes(project)
+  const s = useProjects.getState()
+  const latest = s.projects.find((p) => p.id === project.id)
+  if (!latest) return
+  const done = new Set<string>()
+  for (const e of plan.entries) {
+    const ch = e.candidate.character
+    if (!ch || done.has(ch.id) || ch.code?.trim() || !fresh.has(slotRef(e.candidate.key, e.candidate.slot))) continue
+    done.add(ch.id)
+    const now = latest.characters.find((c) => c.id === ch.id)
+    const letter = letters.get(ch.id)
+    if (now && !now.code?.trim() && letter) s.patchCharacter(project.id, ch.id, { code: letter })
+  }
+}
+
 interface Prepared {
   entry: ExportPlanEntry
   blob: Blob
@@ -173,10 +223,68 @@ export async function runExport(
   const folder = commonFolder(todo.map((e) => e.path.folder))
   const sep = project.naming.separator || '_'
   const rawStem = (project.slug?.trim() || project.name).trim()
-  const stem = sanitizeName(project.naming.replaceSpaces ? rawStem.replace(/\s+/g, sep) : rawStem) || 'project'
-  const manifestFile = (): { name: string; text: string; mime: string; codes: string } => {
+  // 목록 파일 이름에 _manifest.json·_codes.txt가 붙어도 파일 이름 한도(lib/native, 200바이트 + 확장자) 안에 들게
+  const stem = sanitizeName(project.naming.replaceSpaces ? rawStem.replace(/\s+/g, sep) : rawStem, { maxBytes: 180 }) || 'project'
+
+  /**
+   * 갤러리 목록에 넣을 항목 — 이번에 저장한 것 + 목록 폴더 아래에 전에 내보내 아직 기기에 있는 채택 그림
+   * (행렬 순서). 전에 내보낸 그림의 크기는 변환했을 수 있어 지금 변환 설정이 있으면 비워 둔다
+   */
+  const galleryEntries = async (latest: Project): Promise<ExportPlanEntry[]> => {
+    const mine = new Map(doneEntries.map((e) => [e.candidate.image.id, e]))
+    const onDevice = new Set(existing.map(pathKey))
+    const prefix = folder ? `${pathKey(folder)}/` : ''
+    const candidates = exportCandidates(latest)
+    const codes = projectCodes(latest, candidates)
+    const out: ExportPlanEntry[] = []
+    const earlier: ExportPlanEntry[] = []
+    for (const c of candidates) {
+      const own = mine.get(c.image.id)
+      if (own) {
+        out.push(own)
+        mine.delete(c.image.id)
+        continue
+      }
+      const path = c.image.exported?.path
+      if (!path || !onDevice.has(pathKey(path)) || (prefix && !pathKey(path).startsWith(prefix))) continue
+      const code = codes.get(slotRef(c.key, c.slot)) ?? ''
+      const slash = path.lastIndexOf('/')
+      const fileName = path.slice(slash + 1)
+      const dot = fileName.lastIndexOf('.')
+      const entry: ExportPlanEntry = {
+        candidate: c,
+        code,
+        vars: assetVars(latest, c, code, 'file'),
+        path: {
+          id: c.image.id,
+          folder: slash >= 0 ? path.slice(0, slash) : '',
+          name: dot > 0 ? fileName.slice(0, dot) : fileName,
+          fileName,
+          path,
+          index: null,
+          kept: true,
+          status: 'ok'
+        }
+      }
+      out.push(entry)
+      earlier.push(entry)
+    }
+    out.push(...mine.values())
+    if (earlier.length) {
+      const metas = await db.getMetas(earlier.map((e) => e.candidate.image.id)).catch(() => [] as db.HistoryMeta[])
+      for (const m of metas) if (!prompts.has(m.id)) prompts.set(m.id, sentPrompt(m))
+      for (const e of earlier) {
+        const img = e.candidate.image
+        outputs.set(img.id, { ...(preset ? {} : { width: img.width, height: img.height }), bytes: img.exported?.bytes })
+      }
+    }
+    return out
+  }
+
+  const manifestFile = async (): Promise<{ name: string; text: string; mime: string; codes: string }> => {
     const latest = useProjects.getState().projects.find((p) => p.id === project.id) ?? project
-    const filtered: ExportPlan = { ...plan, entries: doneEntries }
+    const entries = s.target === 'gallery' ? await galleryEntries(latest) : doneEntries
+    const filtered: ExportPlan = { ...plan, entries }
     const m = buildManifest(manifestRows(latest, filtered, { prompts, outputs }), projectColumns(latest), latest.manifest.format, {
       bom: latest.manifest.bom,
       guardFormulas: latest.manifest.guardFormulas
@@ -184,13 +292,17 @@ export async function runExport(
     return { name: `${stem}_manifest.${m.ext}`, text: m.text, mime: m.mime, codes: projectCodeList(latest, filtered) }
   }
 
-  const finish = (): void => {
-    if (done.length) useProjects.getState().markExported(project.id, done, plan.preview.counters)
-    if (plan.newCodes.length) useProjects.getState().setCodes(project.id, plan.newCodes)
+  /** 새 이미지 코드 저장 (+ 캐릭터 글자 고정) — 코드는 칸에 붙는 고정 이름이라 저장한 파일과 어긋나지 않게 */
+  const saveCodes = (): void => {
+    if (!plan.newCodes.length) return
+    keepCharacterLetters(project, plan)
+    useProjects.getState().setCodes(project.id, plan.newCodes)
   }
 
   if (s.target === 'gallery') {
     summary.where = joinPath('Pictures/NAIP', folder)
+    // 파일 이름에 코드가 들어갈 수 있으니 먼저 저장한다 (도중에 꺼져도 다음에 같은 코드)
+    saveCodes()
     let n = 0
     for (const entry of todo) {
       if (o.signal.aborted) {
@@ -205,6 +317,8 @@ export async function runExport(
           const saved = await saveImageAt(p.blob, entry.path.folder, p.fileName, overwrite)
           if (saved.renamed) warn.add(`${entry.path.path}: 같은 이름의 다른 파일이 있어 기기가 "${saved.name}"(으)로 저장했습니다`)
           record(p, saved.path)
+          // 한 장마다 바로 기록 — 화면을 떠나거나 앱이 꺼져도 다음 내보내기가 이 파일을 다른 앱 것으로 보고 _2를 만들지 않게
+          useProjects.getState().markExported(project.id, done.slice(-1), savedCounters(doneEntries))
         }
       } catch (e) {
         summary.failed++
@@ -216,9 +330,8 @@ export async function runExport(
       }
       o.onProgress(++n, total, entry.path.path)
     }
-    finish()
     if (done.length) {
-      const m = manifestFile()
+      const m = await manifestFile()
       try {
         const saved = await saveTextAt(m.text, m.mime, folder, m.name, true)
         summary.manifestPath = `Download/NAIP/${saved.path}`
@@ -257,7 +370,7 @@ export async function runExport(
         o.onProgress(++n, total, entry.path.path)
       }
       if (done.length) {
-        const m = manifestFile()
+        const m = await manifestFile()
         summary.manifestPath = `${file!.name} › ${joinPath(folder, m.name)}`
         yield { path: joinPath(folder, m.name), data: new TextEncoder().encode(m.text) }
         if (m.codes.trim()) yield { path: joinPath(folder, `${stem}_codes.txt`), data: new TextEncoder().encode(`${m.codes}\n`) }
@@ -265,7 +378,8 @@ export async function runExport(
     }
     try {
       await writeZip(entries(), new BufferedSink(file), { signal: o.signal })
-      finish()
+      if (done.length) useProjects.getState().markExported(project.id, done, savedCounters(doneEntries))
+      saveCodes()
     } catch (e) {
       // ZIP은 쓰다 만 파일을 지운다 — 아무것도 내보내지 않은 것으로
       summary.cancelled = (e as Error)?.name === 'AbortError' || o.signal.aborted

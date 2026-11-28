@@ -2,6 +2,7 @@
  * 선별 도우미 — 조합별로 그림을 모으고, 채택/보류/탈락 표시, 대표 이미지, 교체(버전), 개수·상태 계산.
  * 모두 새 객체를 돌려주는 순수 함수다 (저장소는 store.ts가 이 함수들로 상태를 바꾼다).
  */
+import { pathKey } from './template'
 import type { AssetImage, AssetItem, AssetStatus, CurationMark } from './types'
 
 export function emptyItem(key: string): AssetItem {
@@ -219,13 +220,28 @@ export function removeImages(item: AssetItem, ids: readonly number[]): AssetItem
   return next
 }
 
-/** 내보낸 경로 기록 */
+/**
+ * 내보낸 경로 기록 (채택 칸이 있으면 그 칸의 경로도 — 다음에 그 칸을 받는 그림이 같은 파일을 쓴다).
+ * 같은 파일을 가리키던 다른 그림의 기록은 지운다 — 그 파일은 이제 이 그림이라, 남겨 두면 그 그림을 다시
+ * 채택했을 때 "새 것만"에서 빠지고 목록에 한 파일이 두 그림(두 코드)으로 실린다
+ */
 export function markExported(item: AssetItem, id: number, path: string, at: number, bytes?: number): AssetItem {
-  if (!item.images.some((i) => i.id === id)) return item
-  return {
+  const image = item.images.find((i) => i.id === id)
+  if (!image) return item
+  const same = pathKey(path)
+  const next: AssetItem = {
     ...item,
-    images: item.images.map((i) => (i.id === id ? { ...i, exported: { path, at, ...(bytes !== undefined ? { bytes } : {}) } } : i))
+    images: item.images.map((i) => {
+      if (i.id === id) return { ...i, exported: { path, at, ...(bytes !== undefined ? { bytes } : {}) } }
+      if (i.exported && pathKey(i.exported.path) === same) {
+        const { exported: _, ...rest } = i
+        return rest
+      }
+      return i
+    })
   }
+  if (image.mark === 'adopted' && image.slot !== undefined) next.slotPaths = { ...(item.slotPaths ?? {}), [String(image.slot)]: path }
+  return next
 }
 
 /** 생성 대기·생성 중·실패 장수 조정 (음수가 되지 않게) */

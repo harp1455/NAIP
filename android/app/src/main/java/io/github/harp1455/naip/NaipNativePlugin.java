@@ -173,7 +173,7 @@ public class NaipNativePlugin extends Plugin {
             JSObject result = writeMedia(
                 MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
                 relative,
-                path != null ? cleanSegment(fileName) : fileName,
+                path != null ? cleanFileSegment(fileName) : fileName,
                 mimeType,
                 Base64.decode(base64, Base64.DEFAULT),
                 overwrite
@@ -197,13 +197,41 @@ public class NaipNativePlugin extends Plugin {
 
     private static final java.util.regex.Pattern FORBIDDEN = java.util.regex.Pattern.compile("[\\\\/:*?\"<>|\\u0000-\\u001f]");
     private static final java.util.regex.Pattern EDGES = java.util.regex.Pattern.compile("^[.\\s]+|[.\\s]+$");
+    private static final java.util.regex.Pattern EXTENSION = java.util.regex.Pattern.compile("\\.[A-Za-z0-9]{1,6}$");
+    /**
+     * 이름 한 단계의 한도 (UTF-8 바이트) — src/lib/native.ts EXPORT_NAME_BYTES와 같다. 앱이 계획한 이름(template.ts
+     * sanitizeName, 200바이트)은 잘리지 않고, 255바이트 한도에서 확장자와 대기 중 파일의 ".pending-…-" 몫이 남는다
+     */
+    private static final int NAME_BYTES = 200;
 
-    /** 파일·폴더 이름 한 단계 정리 — src/lib/native.ts cleanFileName과 같은 규칙 (금지 문자 → _, 앞뒤 점·공백, 80자). 비면 "" */
+    /** 앞에서부터 UTF-8 maxBytes 안에 드는 만큼 (코드 포인트를 쪼개지 않음) */
+    static String utf8Prefix(String s, int maxBytes) {
+        int bytes = 0;
+        int i = 0;
+        while (i < s.length()) {
+            int cp = s.codePointAt(i);
+            int b = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+            if (bytes + b > maxBytes) break;
+            bytes += b;
+            i += Character.charCount(cp);
+        }
+        return s.substring(0, i);
+    }
+
+    /** 폴더 이름 한 단계 정리 — src/lib/native.ts cleanExportSegment와 같은 규칙 (금지 문자 → _, 앞뒤 점·공백, 200바이트). 비면 "" */
     static String cleanSegment(String name) {
         if (name == null) return "";
         String s = EDGES.matcher(FORBIDDEN.matcher(name).replaceAll("_")).replaceAll("");
-        if (s.codePointCount(0, s.length()) > 80) s = EDGES.matcher(s.substring(0, s.offsetByCodePoints(0, 80))).replaceAll("");
-        return s;
+        return EDGES.matcher(utf8Prefix(s, NAME_BYTES)).replaceAll("");
+    }
+
+    /** 파일 이름 정리 — cleanSegment와 같되, 길면 확장자는 남기고 앞부분만 줄인다 (src/lib/native.ts cleanExportFileName) */
+    static String cleanFileSegment(String name) {
+        if (name == null) return "";
+        String s = EDGES.matcher(FORBIDDEN.matcher(name).replaceAll("_")).replaceAll("");
+        java.util.regex.Matcher ext = EXTENSION.matcher(s);
+        if (!ext.find() || ext.start() == 0) return EDGES.matcher(utf8Prefix(s, NAME_BYTES)).replaceAll("");
+        return EDGES.matcher(utf8Prefix(s.substring(0, ext.start()), NAME_BYTES)).replaceAll("") + ext.group();
     }
 
     /** "a/b/c" → 단계마다 정리하고 빈 단계(.. 포함)는 뺀다 */
@@ -218,21 +246,31 @@ public class NaipNativePlugin extends Plugin {
         return out.toString();
     }
 
-    /** 이 앱이 만든 (relative 폴더, 이름) 항목 — 이름은 대소문자 무시. 없으면 null (권한 없이 보이는 것은 이 앱 것뿐) */
+    /**
+     * 이 앱이 만든 (relative 폴더, 이름) 항목 — 폴더·이름 모두 대소문자 무시 (공용 저장소는 대소문자를 가리지 않아
+     * "P/minji/x.png"가 있으면 "P/Minji/x.png"는 같은 파일이다. listSaved·내보내기 계획과 같은 기준).
+     * 없으면 null (권한 없이 보이는 것은 이 앱 것뿐)
+     */
     private Uri findOwn(ContentResolver resolver, Uri collection, String relative, String fileName) {
         String rel = relative.endsWith("/") ? relative : relative + "/";
         try (
             Cursor c = resolver.query(
                 collection,
-                new String[] { MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME },
-                MediaStore.MediaColumns.RELATIVE_PATH + "=?",
+                new String[] { MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.RELATIVE_PATH },
+                // LIKE는 ASCII 대소문자를 가리지 않는다. _ · % 와일드카드로 더 걸린 것은 아래에서 다시 거른다
+                MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?",
                 new String[] { rel },
                 null
             )
         ) {
             if (c == null) return null;
             while (c.moveToNext()) {
-                if (fileName.equalsIgnoreCase(c.getString(1))) return ContentUris.withAppendedId(collection, c.getLong(0));
+                String r = c.getString(2);
+                if (r == null) continue;
+                if (!r.endsWith("/")) r = r + "/";
+                if (rel.equalsIgnoreCase(r) && fileName.equalsIgnoreCase(c.getString(1))) {
+                    return ContentUris.withAppendedId(collection, c.getLong(0));
+                }
             }
         }
         return null;
@@ -258,7 +296,41 @@ public class NaipNativePlugin extends Plugin {
     }
 
     /**
-     * MediaStore에 쓴다. overwrite면 이 앱이 만든 같은 항목을 새로 쓰고(교체한 새 버전), 없으면 새로 만든다.
+     * 새 항목을 대기 상태로 만들어 내용을 다 쓰고 공개한다. 도중에 실패하면 만든 항목을 지우고 예외를 그대로 던진다
+     * (반쯤 쓴·숨은 항목을 남기지 않는다 — 공개 실패도 성공으로 돌려주지 않는다)
+     */
+    private static Uri insertPublished(ContentResolver resolver, Uri collection, String relative, String fileName, String mimeType, byte[] data)
+        throws Exception {
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+        values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
+        values.put(MediaStore.MediaColumns.RELATIVE_PATH, relative);
+        values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+        Uri uri = resolver.insert(collection, values);
+        if (uri == null) throw new IllegalStateException("MediaStore insert failed");
+        try {
+            try (OutputStream out = resolver.openOutputStream(uri)) {
+                if (out == null) throw new IllegalStateException("cannot open output stream");
+                out.write(data);
+            }
+            ContentValues publish = new ContentValues();
+            publish.put(MediaStore.MediaColumns.IS_PENDING, 0);
+            resolver.update(uri, publish, null, null);
+        } catch (Exception e) {
+            try {
+                resolver.delete(uri, null, null);
+            } catch (Exception ignored) {
+                // 지우지 못한 대기 항목은 시스템이 기한이 지나면 지운다
+            }
+            throw e;
+        }
+        return uri;
+    }
+
+    /**
+     * MediaStore에 쓴다. overwrite면 이 앱이 만든 같은 항목을 새 내용으로 바꾸고(교체한 새 버전), 없으면 새로 만든다.
+     * 바꿀 때는 새 내용을 다른 항목에 끝까지 쓰고 공개한 뒤에야 옛 항목을 지우고 새 항목 이름을 옛 이름으로 바꾼다 —
+     * 저장 공간이 모자라 쓰다 실패해도 지난번에 내보낸 파일은 그대로다 (예전에는 옛 파일을 먼저 비우고 숨겼다).
      * 새로 만들 때 같은 이름이 이미 있으면(이 앱 것이 아님) MediaStore가 "이름 (1)"로 바꾸는데 —
      * overwrite를 바랐으면 몰래 다른 이름으로 두지 않고 지운 뒤 OverwriteDenied, 아니면 바뀐 이름을 돌려준다(renamed).
      */
@@ -273,46 +345,32 @@ public class NaipNativePlugin extends Plugin {
         if (overwrite) {
             Uri existing = findOwn(resolver, collection, rel, fileName);
             if (existing != null) {
-                ContentValues pending = new ContentValues();
-                pending.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                // 1) 새 내용을 새 항목에 (실패하면 새 항목만 지워지고 옛 파일은 그대로)
+                Uri fresh = insertPublished(resolver, collection, relative, fileName, mimeType, data);
+                // 2) 새 내용이 안전하게 저장된 뒤에만 옛 파일을 지운다
+                boolean oldGone;
                 try {
-                    resolver.update(existing, pending, null, null);
-                } catch (Exception ignored) {
-                    // 일부 기기는 이미 공개된 항목의 IS_PENDING을 바꾸지 못한다 — 그대로 쓴다
+                    oldGone = resolver.delete(existing, null, null) > 0;
+                } catch (Exception e) {
+                    oldGone = false;
                 }
-                try (OutputStream out = resolver.openOutputStream(existing, "wt")) {
-                    if (out == null) throw new IllegalStateException("cannot open output stream");
-                    out.write(data);
+                // 3) 옛 파일과 이름이 겹쳐 "이름 (1)"이 됐으면 비운 이름으로 되돌린다
+                String actual = queryName(resolver, fresh);
+                if (oldGone && actual != null && !actual.equals(fileName)) {
+                    try {
+                        ContentValues rename = new ContentValues();
+                        rename.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+                        resolver.update(fresh, rename, null, null);
+                    } catch (Exception ignored) {
+                        // 이름을 못 바꾸면 바뀐 이름을 그대로 알린다 (renamed)
+                    }
+                    actual = queryName(resolver, fresh);
                 }
-                ContentValues done = new ContentValues();
-                done.put(MediaStore.MediaColumns.IS_PENDING, 0);
-                done.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
-                try {
-                    resolver.update(existing, done, null, null);
-                } catch (Exception ignored) {
-                    // 내용은 이미 썼다
-                }
-                String actual = queryName(resolver, existing);
-                return savedResult(existing, rel, root, actual != null ? actual : fileName, true, false);
+                String name = actual != null ? actual : fileName;
+                return savedResult(fresh, rel, root, name, true, !name.equals(fileName));
             }
         }
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
-        values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
-        values.put(MediaStore.MediaColumns.RELATIVE_PATH, relative);
-        values.put(MediaStore.MediaColumns.IS_PENDING, 1);
-        Uri uri = resolver.insert(collection, values);
-        if (uri == null) throw new IllegalStateException("MediaStore insert failed");
-        try (OutputStream out = resolver.openOutputStream(uri)) {
-            if (out == null) throw new IllegalStateException("cannot open output stream");
-            out.write(data);
-        } catch (Exception e) {
-            resolver.delete(uri, null, null);
-            throw e;
-        }
-        values.clear();
-        values.put(MediaStore.MediaColumns.IS_PENDING, 0);
-        resolver.update(uri, values, null, null);
+        Uri uri = insertPublished(resolver, collection, relative, fileName, mimeType, data);
         String actual = queryName(resolver, uri);
         boolean renamed = actual != null && !actual.equals(fileName);
         if (overwrite && renamed) {

@@ -251,11 +251,51 @@ export interface NativeSaved {
 /** 덮어쓰기를 바랐지만 같은 이름의 파일이 다른 앱(또는 앱을 다시 설치하기 전) 것이라 덮어쓸 수 없음 */
 export class OverwriteDeniedError extends Error {}
 
+/**
+ * 내보내기 이름 한 단계의 한도 (UTF-8 바이트) — project/template.ts sanitizeName의 기본 한도와 같아서
+ * 계획한 이름은 여기서 잘리지 않는다. 안드로이드 파일 이름 한도 255바이트에서 확장자와 MediaStore가
+ * 대기 중 파일에 붙이는 ".pending-…-" 몫을 남긴 값. NaipNativePlugin.java NAME_BYTES와 같아야 한다
+ */
+const EXPORT_NAME_BYTES = 200
+
+function utf8Prefix(s: string, maxBytes: number): string {
+  let out = ''
+  let bytes = 0
+  for (const ch of s) {
+    const c = ch.codePointAt(0)!
+    const b = c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4
+    if (bytes + b > maxBytes) break
+    out += ch
+    bytes += b
+  }
+  return out
+}
+
+const FORBIDDEN = /[\\/:*?"<>|\u0000-\u001f]/g
+const EDGES = /^[.\s]+|[.\s]+$/g
+
+/** 내보내기 폴더 한 단계 — cleanFileName과 같은 글자 정리, 길이는 바이트 한도로 */
+export function cleanExportSegment(name: string): string {
+  const s = name.replace(FORBIDDEN, '_').replace(EDGES, '')
+  return utf8Prefix(s, EXPORT_NAME_BYTES).replace(EDGES, '')
+}
+
+/**
+ * 내보내기 파일 이름 — 너무 길면 확장자는 남기고 앞부분만 줄인다. (예전에는 확장자까지 80자에서 잘라
+ * "…_01.p"가 되고, 기기가 확장자를 다시 붙인 이름이 바란 이름과 달라 덮어쓰기가 늘 실패했다)
+ */
+export function cleanExportFileName(name: string): string {
+  const s = name.replace(FORBIDDEN, '_').replace(EDGES, '')
+  const ext = /\.[A-Za-z0-9]{1,6}$/.exec(s)
+  if (!ext || ext.index === 0) return utf8Prefix(s, EXPORT_NAME_BYTES).replace(EDGES, '')
+  return `${utf8Prefix(s.slice(0, ext.index), EXPORT_NAME_BYTES).replace(EDGES, '')}${ext[0]}`
+}
+
 /** "a/b" 하위 폴더를 단계마다 정리 (빈 단계·..는 뺀다) */
 export function cleanFolderPath(path: string): string {
   return path
     .split('/')
-    .map(cleanFileName)
+    .map(cleanExportSegment)
     .filter(Boolean)
     .join('/')
 }
@@ -270,18 +310,19 @@ function nativeSaveError(e: unknown): Error {
 export async function saveImageAt(blob: Blob, folderPath: string, fileName: string, overwrite = false): Promise<NativeSaved> {
   if (!isNative) throw new Error('휴대폰 앱에서만 저장할 수 있습니다')
   const path = cleanFolderPath(folderPath)
+  const name = cleanExportFileName(fileName)
   try {
     const r = await NaipNative.saveToGallery({
       base64: await blobToBase64(blob),
-      fileName: cleanFileName(fileName),
+      fileName: name,
       mimeType: blob.type || 'image/png',
       path,
       overwrite
     })
     return {
       uri: r.uri,
-      name: r.name ?? fileName,
-      path: r.path ?? `${path ? `${path}/` : ''}${fileName}`,
+      name: r.name ?? name,
+      path: r.path ?? `${path ? `${path}/` : ''}${name}`,
       overwritten: !!r.overwritten,
       renamed: !!r.renamed
     }
@@ -294,7 +335,7 @@ export async function saveImageAt(blob: Blob, folderPath: string, fileName: stri
 export async function saveTextAt(text: string, mimeType: string, folderPath: string, fileName: string, overwrite = false): Promise<NativeSaved> {
   if (!isNative) throw new Error('휴대폰 앱에서만 저장할 수 있습니다')
   try {
-    return await NaipNative.saveTextFile({ text, fileName: cleanFileName(fileName), mimeType, path: cleanFolderPath(folderPath), overwrite })
+    return await NaipNative.saveTextFile({ text, fileName: cleanExportFileName(fileName), mimeType, path: cleanFolderPath(folderPath), overwrite })
   } catch (e) {
     throw nativeSaveError(e)
   }

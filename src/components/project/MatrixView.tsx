@@ -1,5 +1,5 @@
 /** 행렬 — 조합마다 상태·대표 그림·채택/목표, 축 값·상태로 거르기, 합계. 누르면 선별 화면 */
-import { useMemo, useState, type ReactNode } from 'react'
+import { memo, useMemo, useState, type ReactNode } from 'react'
 import { LayoutGrid, List, Play, Tags } from 'lucide-react'
 import { cx } from '../../lib/util'
 import {
@@ -12,6 +12,7 @@ import {
   parseComboKey,
   projectAxes,
   representativeOf,
+  type AssetItem,
   type AssetStatus,
   type Combination,
   type MatrixSelection,
@@ -25,25 +26,38 @@ import { ClassifySheet } from './ClassifySheet'
 
 const STATUSES = Object.keys(ASSET_STATUS_LABEL) as AssetStatus[]
 
+/** 한 번에 그리는 조합 칸 수 — 조합이 수천~수만 개여도 그림이 들어올 때마다 화면이 멈추지 않게 "더 보기"로 늘린다 */
+const PAGE = 200
+
 export function MatrixView(props: { project: Project; onEdit: () => void }): ReactNode {
   const p = props.project
-  const matrix = useMemo(() => expandMatrix(p), [p])
+  const { characters, axes: projectAxisList, exclusions, overrides, defaults, limits, params } = p
+  // 행렬은 축·캐릭터·규칙·기본값만으로 정해진다 — 생성 중 그림이 들어올 때마다(항목만 바뀜) 다시 펼치지 않는다
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const matrix = useMemo(() => expandMatrix(p), [characters, projectAxisList, exclusions, overrides, defaults, limits, params])
   const totals = useMemo(() => matrixTotals(p, matrix), [p, matrix])
-  const orphans = useMemo(() => orphanItems(p), [p])
-  const axes = useMemo(() => projectAxes(p), [p])
+  const orphans = useMemo(() => orphanItems(p, matrix), [p, matrix])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const axes = useMemo(() => projectAxes(p), [characters, projectAxisList])
   const [filter, setFilter] = useState<Record<string, string>>({})
   const [status, setStatus] = useState<AssetStatus | ''>('')
   const [grid, setGrid] = useState(true)
   const [open, setOpen] = useState<string | null>(null)
   const [planning, setPlanning] = useState(false)
   const [classifying, setClassifying] = useState(false)
+  const [limit, setLimit] = useState(PAGE)
+  const pickStatus = (s: AssetStatus | ''): void => {
+    setStatus(s)
+    setLimit(PAGE)
+  }
 
   const shown = matrix.combos.filter(
     (c) =>
       Object.entries(filter).every(([a, v]) => !v || c.coords[a] === v) &&
       (!status || itemStatus(p.items[c.key], c.target) === status)
   )
-  const reps = shown.map((c) => representativeOf(p.items[c.key])?.id).filter((id): id is number => id !== undefined)
+  const visible = shown.length > limit ? shown.slice(0, limit) : shown
+  const reps = visible.map((c) => representativeOf(p.items[c.key])?.id).filter((id): id is number => id !== undefined)
   const metas = useMetas(reps)
   const selection: MatrixSelection | undefined = Object.values(filter).some(Boolean)
     ? { values: Object.fromEntries(Object.entries(filter).filter(([, v]) => v).map(([a, v]) => [a, [v]])) }
@@ -88,7 +102,7 @@ export function MatrixView(props: { project: Project; onEdit: () => void }): Rea
                   key={s}
                   type="button"
                   aria-pressed={status === s}
-                  onClick={() => setStatus(status === s ? '' : s)}
+                  onClick={() => pickStatus(status === s ? '' : s)}
                   className={cx('h-7 rounded-full px-2.5 text-[11px]', STATUS_STYLE[s], status === s && 'ring-2 ring-fg')}
                 >
                   {ASSET_STATUS_LABEL[s]} {totals.byStatus[s]}
@@ -113,7 +127,10 @@ export function MatrixView(props: { project: Project; onEdit: () => void }): Rea
                 className="w-32 shrink-0 sm:w-40"
                 value={filter[a.id] ?? ''}
                 options={[{ value: '', label: `모든 ${a.name}` }, ...a.values.filter((v) => v.enabled !== false).map((v) => ({ value: v.id, label: v.label }))]}
-                onChange={(v) => setFilter({ ...filter, [a.id]: v })}
+                onChange={(v) => {
+                  setFilter({ ...filter, [a.id]: v })
+                  setLimit(PAGE)
+                }}
               />
             ))}
             <Select
@@ -121,7 +138,7 @@ export function MatrixView(props: { project: Project; onEdit: () => void }): Rea
               className="w-32 shrink-0 sm:w-40"
               value={status}
               options={[{ value: '' as const, label: '모든 상태' }, ...STATUSES.map((s) => ({ value: s, label: ASSET_STATUS_LABEL[s] }))]}
-              onChange={(v) => setStatus(v)}
+              onChange={(v) => pickStatus(v)}
             />
             <div className="ml-auto flex shrink-0">
               <button
@@ -156,10 +173,15 @@ export function MatrixView(props: { project: Project; onEdit: () => void }): Rea
               aria-label="조합"
               className={cx('mt-2', grid ? 'grid grid-cols-[repeat(auto-fill,minmax(110px,1fr))] gap-2' : 'flex flex-col gap-1.5')}
             >
-              {shown.map((c) => (
-                <ComboCell key={c.key} project={p} combo={c} grid={grid} meta={metas.get(representativeOf(p.items[c.key])?.id ?? -1)} onOpen={() => setOpen(c.key)} />
+              {visible.map((c) => (
+                <ComboCell key={c.key} item={p.items[c.key]} combo={c} grid={grid} meta={metas.get(representativeOf(p.items[c.key])?.id ?? -1)} onOpen={setOpen} />
               ))}
             </ul>
+          )}
+          {shown.length > visible.length && (
+            <Button variant="ghost" className="mt-2 w-full" onClick={() => setLimit((n) => n + PAGE)}>
+              조합 {Math.min(PAGE, shown.length - visible.length)}개 더 보기 ({visible.length}/{shown.length})
+            </Button>
           )}
 
           {orphans.length > 0 && (
@@ -205,9 +227,16 @@ export function orphanLabel(p: Project, key: string): string {
     .join(' · ')
 }
 
-function ComboCell(props: { project: Project; combo: Combination; grid: boolean; meta: ReturnType<ReturnType<typeof useMetas>['get']>; onOpen: () => void }): ReactNode {
-  const { combo } = props
-  const item = props.project.items[combo.key]
+/** 조합 칸 — 바뀐 칸만 다시 그리도록 memo (항목은 바뀐 조합만 새 객체가 된다) */
+const ComboCell = memo(function ComboCell(props: {
+  item: AssetItem | undefined
+  combo: Combination
+  grid: boolean
+  meta: ReturnType<ReturnType<typeof useMetas>['get']>
+  onOpen: (key: string) => void
+}): ReactNode {
+  const { combo, item } = props
+  const onOpen = (): void => props.onOpen(combo.key)
   const status = itemStatus(item, combo.target)
   const c = curationCounts(item)
   const inFlight = (item?.queued ?? 0) + (item?.generating ?? 0)
@@ -216,7 +245,7 @@ function ComboCell(props: { project: Project; combo: Combination; grid: boolean;
   if (!props.grid) {
     return (
       <li>
-        <button type="button" aria-label={label} onClick={props.onOpen} className="flex w-full items-center gap-2.5 rounded-lg border border-line bg-panel p-1.5 pr-3 text-left">
+        <button type="button" aria-label={label} onClick={onOpen} className="flex w-full items-center gap-2.5 rounded-lg border border-line bg-panel p-1.5 pr-3 text-left">
           {hasRep ? <Thumb meta={props.meta} className="h-12 w-12 shrink-0 rounded-md" /> : <div className="h-12 w-12 shrink-0 rounded-md bg-raised" />}
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm">{combo.label}</div>
@@ -233,7 +262,7 @@ function ComboCell(props: { project: Project; combo: Combination; grid: boolean;
   }
   return (
     <li>
-      <button type="button" aria-label={label} onClick={props.onOpen} className="block w-full overflow-hidden rounded-lg border border-line bg-panel text-left">
+      <button type="button" aria-label={label} onClick={onOpen} className="block w-full overflow-hidden rounded-lg border border-line bg-panel text-left">
         <div className="relative aspect-[3/4] w-full bg-raised">
           {hasRep && <Thumb meta={props.meta} className="absolute inset-0 h-full w-full" />}
           <span className="absolute left-1 top-1 rounded-full bg-black/75">
@@ -250,4 +279,4 @@ function ComboCell(props: { project: Project; combo: Combination; grid: boolean;
       </button>
     </li>
   )
-}
+})

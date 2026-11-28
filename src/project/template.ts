@@ -219,6 +219,11 @@ export interface PathEntry {
   path: string
   /** 매긴 번호 (지난 경로를 그대로 쓴 항목은 null) */
   index: number | null
+  /**
+   * 번호 범위 열쇠 (파일 템플릿이 {index}를 쓰고 새로 번호를 받은 항목만). 실제로 저장한 항목의 번호만
+   * exportCounters에 남기도록 — 취소·실패한 항목의 번호를 건너뛰지 않게 (save.ts)
+   */
+  scope?: string
   /** 지난번 경로를 그대로 썼는가 (keepPrevious) */
   kept: boolean
   status: PathStatus
@@ -288,6 +293,8 @@ export function previewPaths(
   opts: PreviewOptions = {}
 ): NamingPreview {
   const sep = settings.separator
+  // 구분자는 이름 정리(sanitizeName)가 끝난 뒤의 중복 접미사·빈 이름 대체에도 쓰이니 금지 문자를 미리 걷는다 ('/'면 폴더가 생긴다)
+  const safeSep = sep.replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '_')
   const separators = `${sep}_- .`
   const transform = settings.replaceSpaces ? (v: string): string => v.trim().replace(/\s+/g, sep || ' ') : undefined
   const sanitize = { maxLength: settings.maxLength }
@@ -313,7 +320,7 @@ export function previewPaths(
     const ext = item.ext.replace(/^\./, '').toLowerCase() || 'png'
     if (opts.keepPrevious && item.previousPath) {
       const prev = splitPath(item.previousPath)
-      return { item, folder: prev.folder, name: prev.name, ext, index: null, kept: true }
+      return { item, folder: prev.folder, name: prev.name, ext, index: null, kept: true, scope: undefined }
     }
     const folders = [
       ...renderSegments(settings.rootFolder, item.vars),
@@ -328,9 +335,9 @@ export function previewPaths(
     let name = sanitizeName(r.text, sanitize)
     if (!name) {
       warnings.add('이름이 비어 "image_번호"로 정했습니다')
-      name = `image${sep || '_'}${pad(index, 3)}`
+      name = `image${safeSep || '_'}${pad(index, 3)}`
     }
-    return { item, folder, name, ext, index, kept: false }
+    return { item, folder, name, ext, index, kept: false, scope: indexed ? key : undefined }
   })
 
   const taken = new Map<string, number | string>()
@@ -342,7 +349,7 @@ export function previewPaths(
   // 지난 경로를 지키는 항목부터 자리를 잡는다
   const order = [...raw.keys()].sort((a, b) => Number(raw[b].kept) - Number(raw[a].kept) || a - b)
   for (const i of order) {
-    const { item, folder, name, ext, index, kept } = raw[i]
+    const { item, folder, name, ext, index, kept, scope } = raw[i]
     let finalName = name
     let path = join(folder, `${name}.${ext}`)
     let status: PathStatus = 'ok'
@@ -354,8 +361,11 @@ export function previewPaths(
     } else if (owner !== undefined) {
       conflictWith = owner
       status = resolveStatus(settings.duplicate)
+      // 덮어쓰기는 기기에 이미 있는 파일에만 — 같은 묶음의 두 그림이 같은 이름이면 서로 덮어써 한 장이 사라지고
+      // (갤러리) ZIP은 같은 항목을 두 번 쓸 수 없어 통째로 실패하니, 번호를 붙여 둘 다 남긴다
+      if (status === 'overwrite' && owner !== 'existing') status = 'renamed'
       if (status === 'renamed') {
-        const joiner = sep || '_'
+        const joiner = safeSep || '_'
         for (let n = 2; ; n++) {
           const suffix = `${joiner}${n}`
           const stem = truncateName(name, Math.max(1, settings.maxLength - [...suffix].length), 200 - suffix.length)
@@ -377,6 +387,7 @@ export function previewPaths(
       index,
       kept,
       status,
+      ...(scope !== undefined ? { scope } : {}),
       ...(conflictWith !== undefined ? { conflictWith } : {})
     }
   }

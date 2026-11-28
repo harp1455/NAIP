@@ -68,7 +68,8 @@ export function csvField(value: ManifestValue, guardFormulas = false): string {
 
 export function toCsv(rows: readonly ManifestRow[], columns: readonly ColumnSpec[], opts: CsvOptions = {}): string {
   const lines: string[] = []
-  if (opts.header !== false) lines.push(columns.map((c) => csvField(c.label)).join(','))
+  // 머리글에도 사용자 축 이름(예: "+추가")이 들어가니 수식 방지를 똑같이
+  if (opts.header !== false) lines.push(columns.map((c) => csvField(c.label, opts.guardFormulas)).join(','))
   for (const row of rows) lines.push(columns.map((c) => csvField(row[c.key], opts.guardFormulas)).join(','))
   return `${opts.bom ? '\ufeff' : ''}${lines.join('\r\n')}\r\n`
 }

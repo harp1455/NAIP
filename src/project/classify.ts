@@ -63,6 +63,8 @@ export function classify(project: Project, input: ClassifyInput, opts: { useFrag
   const missing: string[] = []
   const ambiguous: string[] = []
   for (const axis of projectAxes(project)) {
+    // 켠 값이 없는 축은 행렬(expandMatrix)이 빼고 펼치니 조합 키에도 없다 — 분류에서도 뺀다
+    if (!axis.values.some((v) => v.enabled !== false)) continue
     const hits = new Set<string>()
     for (const rule of project.rules) {
       if (rule.axisId !== axis.id) continue

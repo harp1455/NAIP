@@ -4,6 +4,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, Copy, FileDown, Pencil, Plus, Trash2 } from 'lucide-react'
+import { create } from 'zustand'
 import { isNative } from '../../lib/native'
 import { copyTextWithToast } from '../../lib/share'
 import { cx } from '../../lib/util'
@@ -28,7 +29,7 @@ import {
 } from '../../project'
 import { buildExportPlan, describeSummary, existingPaths, exportPreset, runExport, type ExportSettings, type ExportSummary, type ExportTarget } from '../../project/save'
 import { Button, Empty, IconButton, Row, Section, Select, Sheet, TextInput, Toggle } from '../ui'
-import { Chip, DraftInput, Field, NumberInput, Segmented } from './common'
+import { Chip, DraftInput, Field, NumberInput, patchLatest, Segmented } from './common'
 
 const INDEX_SCOPES: { value: IndexScope; label: string }[] = [
   { value: 'combination', label: '조합마다' },
@@ -60,6 +61,44 @@ const STATUS_COLOR: Record<string, string> = {
   error: 'text-danger'
 }
 
+// ── 진행 중인 내보내기 ──────────────────────────────────────────────────────
+// 화면(행렬·설정 전환, 다른 탭, 뒤로 가기)을 떠나도 내보내기는 계속되니 진행·취소·결과를 화면 밖에 둔다 —
+// 돌아와도 진행 막대와 취소가 보이고, 끝나기 전에는 두 번째 내보내기를 시작할 수 없다 (같은 그림을 _2로 또 저장하지 않게)
+
+interface RunningExport {
+  projectId: string
+  projectName: string
+  controller: AbortController
+  progress: { done: number; total: number; label: string }
+}
+
+const useExportRun = create<{ running: RunningExport | null; summaries: Record<string, ExportSummary> }>()(() => ({
+  running: null,
+  summaries: {}
+}))
+
+async function startExport(project: Project, presets: readonly PlatformPreset[], settings: ExportSettings, total: number): Promise<void> {
+  // 한 번에 하나 (빠르게 두 번 눌러도)
+  if (useExportRun.getState().running) return
+  const controller = new AbortController()
+  useExportRun.setState((s) => {
+    const summaries = { ...s.summaries }
+    delete summaries[project.id]
+    return { running: { projectId: project.id, projectName: project.name, controller, progress: { done: 0, total, label: '' } }, summaries }
+  })
+  let summary: ExportSummary
+  try {
+    summary = await runExport(project, presets, settings, {
+      signal: controller.signal,
+      onProgress: (done, all, label) =>
+        useExportRun.setState((s) => (s.running?.controller === controller ? { running: { ...s.running, progress: { done, total: all, label } } } : {}))
+    })
+  } catch (e) {
+    summary = { saved: 0, skipped: 0, failed: 0, where: '', manifestPath: null, warnings: [], errors: [(e as Error).message], cancelled: false }
+  }
+  useExportRun.setState((s) => ({ running: null, summaries: { ...s.summaries, [project.id]: summary } }))
+}
+
 export function ExportView(props: { project: Project }): ReactNode {
   const p = props.project
   const presets = useProjects((s) => s.presets)
@@ -67,11 +106,11 @@ export function ExportView(props: { project: Project }): ReactNode {
   const [existing, setExisting] = useState<string[]>([])
   const [showAll, setShowAll] = useState(false)
   const [presetSheet, setPresetSheet] = useState(false)
-  const [progress, setProgress] = useState<{ done: number; total: number; label: string } | null>(null)
-  const [summary, setSummary] = useState<ExportSummary | null>(null)
-  const abort = useRef<AbortController | null>(null)
+  const running = useExportRun((s) => s.running)
+  const summary = useExportRun((s) => s.summaries[p.id] ?? null)
+  const progress = running?.projectId === p.id ? running.progress : null
   const naming = p.naming
-  const setNaming = (x: Partial<NamingSettings>): void => useProjects.getState().patch(p.id, { naming: { ...naming, ...x } })
+  const setNaming = (x: Partial<NamingSettings>): void => patchLatest(p.id, (latest) => ({ naming: { ...latest.naming, ...x } }))
   const fileRef = useRef<string>(naming.fileTemplate)
   fileRef.current = naming.fileTemplate
 
@@ -91,23 +130,7 @@ export function ExportView(props: { project: Project }): ReactNode {
   const axisVars = p.axes.flatMap((a) => [a.name, ...(a.key ? [a.key] : [])])
   const codeList = useMemo(() => projectCodeList(p, plan), [p, plan])
 
-  const run = async (): Promise<void> => {
-    setSummary(null)
-    abort.current = new AbortController()
-    setProgress({ done: 0, total: todo, label: '' })
-    try {
-      const r = await runExport(p, presets, settings, {
-        signal: abort.current.signal,
-        onProgress: (done, total, label) => setProgress({ done, total, label })
-      })
-      setSummary(r)
-    } catch (e) {
-      setSummary({ saved: 0, skipped: 0, failed: 0, where: '', manifestPath: null, warnings: [], errors: [(e as Error).message], cancelled: false })
-    } finally {
-      setProgress(null)
-      abort.current = null
-    }
-  }
+  const run = (): Promise<void> => startExport(p, presets, settings, todo)
 
   const insertVar = (name: string): void => setNaming({ fileTemplate: `${fileRef.current}${fileRef.current && !/[_\-\s/]$/.test(fileRef.current) ? naming.separator : ''}{${name}}` })
 
@@ -300,14 +323,20 @@ export function ExportView(props: { project: Project }): ReactNode {
                 <div className="h-full bg-accent transition-[width]" style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }} />
               </div>
             </div>
-            <Button variant="danger" onClick={() => abort.current?.abort()}>
+            <Button variant="danger" onClick={() => running?.controller.abort()}>
               취소
             </Button>
           </div>
         ) : (
-          <Button variant="primary" className="w-full" disabled={!todo || !plan.preview.ok} onClick={() => void run()}>
+          <Button variant="primary" className="w-full" disabled={!todo || !plan.preview.ok || !!running} onClick={() => void run()}>
             <FileDown size={16} />
-            {!plan.preview.ok ? '같은 이름 오류를 먼저 해결해 주세요' : todo ? `${todo}장 내보내기` : '내보낼 그림이 없습니다'}
+            {running
+              ? `"${running.projectName}" 내보내는 중 (${running.progress.done}/${running.progress.total})`
+              : !plan.preview.ok
+                ? '같은 이름 오류를 먼저 해결해 주세요'
+                : todo
+                  ? `${todo}장 내보내기`
+                  : '내보낼 그림이 없습니다'}
           </Button>
         )}
       </div>
@@ -346,8 +375,8 @@ function SummaryCard(props: { summary: ExportSummary }): ReactNode {
 function ManifestEditor(props: { project: Project; codeList: string }): ReactNode {
   const p = props.project
   const m = p.manifest
-  const set = (x: Partial<typeof m>): void => useProjects.getState().patch(p.id, { manifest: { ...m, ...x } })
-  const setCodes = (x: Partial<typeof p.codes>): void => useProjects.getState().patch(p.id, { codes: { ...p.codes, ...x } })
+  const set = (x: Partial<typeof m>): void => patchLatest(p.id, (latest) => ({ manifest: { ...latest.manifest, ...x } }))
+  const setCodes = (x: Partial<typeof p.codes>): void => patchLatest(p.id, (latest) => ({ codes: { ...latest.codes, ...x } }))
   const axisCols = [
     ...(p.characters.length ? [{ key: `axis:${CHARACTER_AXIS}`, label: '캐릭터 (축)' }] : []),
     ...p.axes.map((a) => ({ key: `axis:${a.id}`, label: `${a.name} (축)` }))
