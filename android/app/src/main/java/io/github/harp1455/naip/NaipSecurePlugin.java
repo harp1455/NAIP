@@ -18,7 +18,9 @@ import javax.crypto.SecretKey;
 /**
  * 인증정보(NovelAI·GitHub 토큰) 보관소.
  * Android Keystore에 만든 AES-256-GCM 키(기기 밖으로 꺼낼 수 없음, 값마다 하나)로 암호화해 SharedPreferences에 둔다.
- * 평문은 메모리에서만 다루고 로그에 남기지 않는다. 앱 백업(allowBackup=false)에도 포함되지 않는다.
+ * 평문은 메모리에서만 다루고 로그에 남기지 않는다. 앱 백업(allowBackup=false)에도, 기기 간 전송에도 포함되지 않는다
+ * (targetSdk 31+에서 allowBackup=false는 기기 간 전송을 막지 않아 res/xml/data_extraction_rules.xml로 이 설정 파일을 뺀다 —
+ * 키는 기기를 떠나지 않으니 새 기기에는 풀 수 없는 암호문만 남는다). PREFS 이름을 바꾸면 그 파일도 바꾼다.
  * 암호화·보관 규칙(키를 언제 만들고 지우는지)은 SecretVault에 있다.
  */
 @CapacitorPlugin(name = "NaipSecure")

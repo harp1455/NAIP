@@ -3,9 +3,12 @@ package io.github.harp1455.naip;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStoreException;
 import java.security.SecureRandom;
+import java.security.UnrecoverableKeyException;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
@@ -27,6 +30,10 @@ public final class SecretVaultCheck {
         boolean reportMissing;
         /** 키 저장소 호출이 모두 실패한다 */
         boolean failing;
+        /** 이 이름들은 목록에는 있는데 꺼내지 못한다 (getEntry가 예외) */
+        final Set<String> unreadable = new HashSet<>();
+        /** 새로 만든 키로도 암호화하지 못한다 */
+        boolean createUnusable;
         /** 이미 있는 키를 새 키로 바꾼 횟수 (그 키로 잠근 값은 다시는 풀 수 없다) */
         int replaced;
 
@@ -34,17 +41,26 @@ public final class SecretVaultCheck {
         public SecretKey find(String alias) throws Exception {
             if (failing) throw new KeyStoreException("system error");
             if (reportMissing) return null;
+            if (unreadable.contains(alias)) throw new UnrecoverableKeyException("entry unreadable");
             return keys.get(alias);
         }
 
         @Override
         public SecretKey create(String alias) throws Exception {
             if (failing) throw new KeyStoreException("system error");
-            byte[] raw = new byte[32];
-            RANDOM.nextBytes(raw);
-            SecretKey key = new SecretKeySpec(raw, "AES");
+            SecretKey key = createUnusable ? unusableKey() : new SecretKeySpec(randomBytes(32), "AES");
             if (keys.put(alias, key) != null) replaced++;
             return key;
+        }
+
+        /** 목록에는 있지만 쓰면 늘 InvalidKeyException인 키 (키 저장소의 키 덩어리가 깨졌을 때처럼 — 영구 무효로는 알리지 않는다) */
+        void breakKey(String alias) {
+            check(keys.containsKey(alias), "no key " + alias);
+            keys.put(alias, unusableKey());
+        }
+
+        static SecretKey unusableKey() {
+            return new SecretKeySpec(randomBytes(5), "AES");
         }
 
         @Override
@@ -98,6 +114,12 @@ public final class SecretVaultCheck {
     final FakePrefs prefs = new FakePrefs();
     final SecretVault vault = new SecretVault(keys, prefs);
 
+    static byte[] randomBytes(int n) {
+        byte[] raw = new byte[n];
+        RANDOM.nextBytes(raw);
+        return raw;
+    }
+
     static void check(boolean ok, String what) {
         if (!ok) throw new AssertionError(what);
     }
@@ -126,6 +148,12 @@ public final class SecretVaultCheck {
         } catch (Exception e) {
             return true;
         }
+    }
+
+    /** 저장된 값이 가리키는 키 이름 ("2:<키 이름>:<암호문>") */
+    String aliasOf(String name) {
+        String stored = prefs.get(name);
+        return stored.substring(2, stored.indexOf(':', 2));
     }
 
     /** 이전 버전이 남긴 값: 모든 이름이 같이 쓰는 키(naip_secrets_v1)로 잠그고 IV+암호문을 Base64로 */
@@ -233,6 +261,73 @@ public final class SecretVaultCheck {
         expectRead("githubToken", "<lost>", "a new-format value that names a key it does not own");
     }
 
+    /** 키가 목록에는 있는데 쓸 수 없으면 읽기는 지우지 않고 실패하고, 새 값을 넣을 때는 새 키로 잠근다 */
+    void unusableKeyIsReplacedOnWrite() throws Exception {
+        vault.set("naiToken", "pst-old");
+        vault.set("githubToken", "ghp-one");
+        String broken = aliasOf("naiToken");
+        keys.breakKey(broken);
+        expectRead("naiToken", "<unavailable>", "read with an unusable key");
+        check(prefs.get("naiToken") != null, "value deleted after a read with an unusable key");
+        // 안내대로 토큰을 다시 넣는다 — 지우기("")를 거치지 않아도 저장돼야 한다 (NovelAI 칸은 빈 값을 저장할 수 없다)
+        check(!setFails("naiToken", "pst-new"), "a new token could not be saved over a value whose key is unusable");
+        prefs.relaunch();
+        expectRead("naiToken", "pst-new", "naiToken after re-entering it");
+        expectRead("githubToken", "ghp-one", "githubToken after the NovelAI token got a new key");
+        check(!aliasOf("naiToken").equals(broken), "the new value is sealed with the unusable key");
+        check(!keys.keys.containsKey(broken), "the unusable key was kept after the new value reached the disk");
+        check(keys.keys.size() == 2, "keys left: " + keys.keys.keySet());
+        check(keys.replaced == 0, "a key in use was replaced " + keys.replaced + " time(s)");
+    }
+
+    /** 키를 꺼내지 못해도(getEntry 예외) 새 값은 새 키로 저장된다 */
+    void unreadableKeyIsReplacedOnWrite() throws Exception {
+        vault.set("naiToken", "pst-old");
+        vault.set("githubToken", "ghp-one");
+        String stuck = aliasOf("naiToken");
+        keys.unreadable.add(stuck);
+        expectRead("naiToken", "<unavailable>", "read with an unreadable key");
+        check(!setFails("naiToken", "pst-new"), "a new token could not be saved over a value whose key cannot be read");
+        prefs.relaunch();
+        expectRead("naiToken", "pst-new", "naiToken after re-entering it");
+        expectRead("githubToken", "ghp-one", "githubToken");
+        check(!keys.keys.containsKey(stuck), "the unreadable key was kept after the new value reached the disk");
+        check(keys.replaced == 0, "a key in use was replaced " + keys.replaced + " time(s)");
+    }
+
+    /** 쓸 수 없는 키를 새 키로 바꾸다 디스크 쓰기가 실패하면 예전 키도 새 키도 지우지 않는다 (다음 commit이 새 값을 쓸 수 있다) */
+    void failedWriteOverUnusableKeyKeepsBothKeys() throws Exception {
+        vault.set("naiToken", "pst-old");
+        String broken = aliasOf("naiToken");
+        keys.breakKey(broken);
+        prefs.diskFails = true;
+        check(setFails("naiToken", "pst-new"), "a write that did not reach the disk resolved");
+        prefs.diskFails = false;
+        check(keys.keys.containsKey(broken), "the old key was deleted although the new value never reached the disk");
+        String fresh = aliasOf("naiToken"); // SharedPreferences 메모리에는 새 값이 들어 있다
+        check(!fresh.equals(broken) && keys.keys.containsKey(fresh), "the key of the value in memory is missing");
+        vault.set("githubToken", "ghp-one"); // 다음 commit이 메모리 내용을 통째로 디스크에 쓴다
+        prefs.relaunch();
+        expectRead("naiToken", "pst-new", "naiToken written by a later commit");
+    }
+
+    /** 새로 만든 키로도 잠그지 못하면 실패로 알리고, 아무 값도 가리키지 않는 그 키는 남기지 않는다 */
+    void freshKeyThatCannotSealIsDropped() throws Exception {
+        vault.set("naiToken", "pst-old");
+        String broken = aliasOf("naiToken");
+        keys.breakKey(broken);
+        keys.createUnusable = true;
+        check(setFails("naiToken", "pst-new"), "a write that could not be sealed resolved");
+        keys.createUnusable = false;
+        check(aliasOf("naiToken").equals(broken), "the stored value changed after a failed write");
+        check(keys.keys.keySet().equals(Set.of(broken)), "keys left: " + keys.keys.keySet());
+        prefs.relaunch();
+        check(prefs.get("naiToken") != null, "value deleted after a failed write");
+        check(!setFails("naiToken", "pst-new"), "a later write failed");
+        expectRead("naiToken", "pst-new", "naiToken after a later write");
+        check(keys.keys.size() == 1, "keys left: " + keys.keys.keySet());
+    }
+
     /** 빈 값은 지우기, 한글 값도 그대로 */
     void clearAndRoundTrip() throws Exception {
         vault.set("naiToken", "토큰-값");
@@ -260,6 +355,10 @@ public final class SecretVaultCheck {
                 case "keystoreErrorsNeverDelete": t.keystoreErrorsNeverDelete(); break;
                 case "undecryptableValuesAreForgotten": t.undecryptableValuesAreForgotten(); break;
                 case "clearAndRoundTrip": t.clearAndRoundTrip(); break;
+                case "unusableKeyIsReplacedOnWrite": t.unusableKeyIsReplacedOnWrite(); break;
+                case "unreadableKeyIsReplacedOnWrite": t.unreadableKeyIsReplacedOnWrite(); break;
+                case "failedWriteOverUnusableKeyKeepsBothKeys": t.failedWriteOverUnusableKeyKeepsBothKeys(); break;
+                case "freshKeyThatCannotSealIsDropped": t.freshKeyThatCannotSealIsDropped(); break;
                 default: throw new AssertionError("unknown scenario " + args[0]);
             }
         } catch (AssertionError e) {

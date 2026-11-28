@@ -62,6 +62,21 @@ describe.skipIf(!hasJdk)('NaipSecure store (SecretVault on a desktop JVM)', () =
     expect(scenario('undecryptableValuesAreForgotten')).toBe('ok')
   })
 
+  it('saves a new token over a value whose key is listed but unusable, without clearing it first', () => {
+    // 키 덩어리가 깨지면(INVALID_KEY_BLOB 등) 키 저장소는 키가 있다고 답하면서 InvalidKeyException(영구 무효 아님)을 낸다.
+    // 예전에는 set이 그 키를 계속 다시 써서 새 토큰을 영영 저장하지 못했다 (NovelAI 칸은 빈 값으로 지울 수도 없다)
+    expect(scenario('unusableKeyIsReplacedOnWrite')).toBe('ok')
+    expect(scenario('unreadableKeyIsReplacedOnWrite')).toBe('ok')
+  })
+
+  it('keeps both keys when a write over an unusable key does not reach the disk', () => {
+    expect(scenario('failedWriteOverUnusableKeyKeepsBothKeys')).toBe('ok')
+  })
+
+  it('drops a new key it could not seal with and leaves the stored value alone', () => {
+    expect(scenario('freshKeyThatCannotSealIsDropped')).toBe('ok')
+  })
+
   it('clears with an empty value and round-trips Korean text', () => {
     expect(scenario('clearAndRoundTrip')).toBe('ok')
   })
