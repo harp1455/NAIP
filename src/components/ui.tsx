@@ -101,14 +101,41 @@ export function Button(props: {
   )
 }
 
-/** 접을 수 있는 구역 (스크린샷의 "고정 ^" 헤더) */
+const SECTIONS_KEY = 'naip-sections'
+
+/** 접어 둔 구역 기억 (persistKey가 있는 구역만) — 화면을 오가도, 앱을 다시 열어도 다시 누를 때까지 유지 */
+function readFolded(key: string): boolean | undefined {
+  try {
+    const all = JSON.parse(localStorage.getItem(SECTIONS_KEY) ?? '{}') as Record<string, unknown>
+    return typeof all[key] === 'boolean' ? (all[key] as boolean) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function writeFolded(key: string, open: boolean): void {
+  try {
+    const all = JSON.parse(localStorage.getItem(SECTIONS_KEY) ?? '{}') as Record<string, unknown>
+    all[key] = open
+    localStorage.setItem(SECTIONS_KEY, JSON.stringify(all))
+  } catch {
+    // 기억하지 못해도 접기·펴기는 된다
+  }
+}
+
+/** 접을 수 있는 구역 (스크린샷의 "고정 ^" 헤더). persistKey를 주면 접힘 상태를 기억한다 */
 export function Section(props: {
   title: string
   right?: ReactNode
   defaultOpen?: boolean
+  persistKey?: string
   children: ReactNode
 }): ReactNode {
-  const [open, setOpen] = useState(props.defaultOpen ?? true)
+  const [open, setOpenState] = useState(() => (props.persistKey ? readFolded(props.persistKey) : undefined) ?? props.defaultOpen ?? true)
+  const setOpen = (next: boolean): void => {
+    setOpenState(next)
+    if (props.persistKey) writeFolded(props.persistKey, next)
+  }
   return (
     <section>
       <div className="flex h-8 items-center">

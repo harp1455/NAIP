@@ -115,10 +115,11 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
 
       <Section
         title="프롬프트"
+        persistKey="prompt"
         right={<TokenBadge count={posCount} limit={limit} />}
       >
         <div className="flex flex-col gap-1 pl-0.5">
-          <Section title="고정">
+          <Section title="고정" persistKey="prompt.base">
             <TextArea
               label="고정 프롬프트"
               rows={6}
@@ -127,7 +128,7 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
               placeholder="작가·화풍 등 매번 유지할 프롬프트"
             />
           </Section>
-          <Section title="가변">
+          <Section title="가변" persistKey="prompt.additional">
             <TextArea
               label="가변 프롬프트"
               rows={3}
@@ -136,7 +137,7 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
               placeholder="매번 지우고 바꿀 프롬프트"
             />
           </Section>
-          <Section title="디테일">
+          <Section title="디테일" persistKey="prompt.detail">
             <TextArea
               label="디테일 프롬프트"
               rows={2}
@@ -150,6 +151,7 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
 
       <Section
         title="네거티브"
+        persistKey="prompt.negative"
         right={<TokenBadge count={negCount} limit={limit} />}
       >
         <TextArea
