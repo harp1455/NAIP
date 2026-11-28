@@ -801,6 +801,47 @@ describe('sections whose lists are missing or not lists', () => {
     const s = await stores()
     expect(s.usePrompt.getState().presets.map((p) => p.name)).toEqual(['good preset'])
   })
+
+  it('opens and restores a backup with junk inside nested lists (slot candidates, old cast, project items) without throwing', async () => {
+    const { setStorageForTests } = await import('../src/storage')
+    const app = await import('../src/backup/app')
+    await setStorageForTests(await createSqlJsDriver(), memoryFileStore())
+    const open = async (data: BackupData) => {
+      const sink = memorySink()
+      await writeNaipBackup(data, sink, { mode: 'light', appVersion: '0.12.0' })
+      return app.openRestoreSource({ name: 'nested-junk.naipbackup', source: bytesSource(sink.bytes()) })
+    }
+    const character = { id: 21, name: 'good character', folderId: null, base: 'b', additional: '', detail: '', negative: '', variations: [] }
+
+    // 슬롯 후보 안의 null·숫자 — 그 후보만 빠지고 쓸 수 있는 후보·슬롯은 남는다
+    const slots = await open({
+      characters: { folders: [], characters: [character], slots: [{ id: 1, mode: 'random', candidates: [null, 5, { kind: 'char', id: 21, weight: 2 }] }] }
+    } as unknown as BackupData)
+    const slot = (slots.data.characters as { slots: { candidates: unknown[] }[] }).slots[0]
+    expect(slot.candidates).toEqual([{ kind: 'char', id: 21, weight: 2 }])
+
+    // 예전 형식의 출연 목록(cast) 안의 null — 그 자리만 빠지고 나머지는 고정 슬롯이 된다
+    const cast = await open({ characters: { folders: [], characters: [character], cast: [null, { charId: 21, enabled: true }] } } as unknown as BackupData)
+    expect((cast.data.characters as { slots: { mode: string; charId: number }[] }).slots).toMatchObject([{ mode: 'fixed', charId: 21 }])
+
+    // 프로젝트 조합 항목(items) 안의 null — 덮어쓰기를 적용해도 멈추지 않고, 쓸 수 있는 항목만 들어간다 (대기·생성 장수는 0)
+    const projects = await open({
+      projects: {
+        projects: [{ id: 'p9', name: 'Nested junk', characters: [], axes: [], items: { a: null, b: 'x', k: { key: 'k', images: [], queued: 2, generating: 1 } } }],
+        activeId: 'p9'
+      },
+      scenes: { folders: [], scenes: [{ id: 78, name: 'restored scene', folderId: null, prompt: '', negative: '', size: null, cast: [], reserve: 0 }] }
+    } as unknown as BackupData)
+    await seedStores()
+    const plan = await app.planFor(projects, { mode: 'overwrite', sections: {}, history: 'skip', originals: false })
+    const summary = await app.applyRestore(projects, plan, { safety: false })
+    expect(summary.applied.map((a) => a.section)).toEqual(expect.arrayContaining(['projects', 'scenes']))
+    const p = useProjects.getState().projects
+    expect(p.map((x) => x.id)).toEqual(['p9'])
+    expect(Object.keys(p[0].items)).toEqual(['k'])
+    expect(p[0].items.k).toMatchObject({ queued: 0, generating: 0 })
+    expect(useProjects.getState().activeId).toBe('p9')
+  })
 })
 
 describe('credentials and the generation queue', () => {

@@ -78,6 +78,16 @@ export function createProject(name: string, params: Partial<ProjectParams> = {},
   }
 }
 
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+
+/** 조합 항목 맵에서 객체인 항목만 (손상·조작된 백업의 null·숫자·문자열 항목은 읽다가 멈추지 않게 뺀다) */
+function itemRecords(items: unknown): Record<string, AssetItem> {
+  if (!isRecord(items)) return {}
+  const out: Record<string, AssetItem> = {}
+  for (const [k, v] of Object.entries(items)) if (isRecord(v)) out[k] = v as unknown as AssetItem
+  return out
+}
+
 /** 예전 버전에서 저장한 프로젝트에 빠진 칸을 채운다 */
 export function normalizeProject(p: Partial<Project> & Pick<Project, 'id' | 'name'>): Project {
   const base = createProject(p.name, p.params, p.createdAt ?? Date.now())
@@ -91,7 +101,7 @@ export function normalizeProject(p: Partial<Project> & Pick<Project, 'id' | 'nam
     manifest: { ...base.manifest, ...p.manifest },
     codes: { ...base.codes, ...p.codes },
     exportCounters: { ...(p.exportCounters ?? {}) },
-    items: { ...(p.items ?? {}) }
+    items: itemRecords(p.items)
   } as Project
 }
 
