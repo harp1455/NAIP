@@ -119,12 +119,36 @@ final class SecretVault {
             return;
         }
         String alias = previous;
-        SecretKey key = alias == null ? null : keys.find(alias);
-        if (key == null) {
-            // 키가 정말 없거나, 잠시 "없음"으로 보일 뿐이다 — 어느 쪽이든 예전 키는 그대로 두고 새 이름으로 만든다
-            alias = freshAlias(name);
-            key = keys.create(alias);
+        byte[] out = null;
+        if (previous != null) {
+            try {
+                SecretKey key = keys.find(previous);
+                if (key != null) out = seal(key, value);
+            } catch (Exception e) {
+                // 예전 키가 목록에는 있는데 쓸 수 없다 (키 덩어리가 깨졌거나 잠시 응답하지 않는다) — 아래에서 새 키로 잠근다.
+                // 그 키를 계속 다시 쓰면 새 토큰을 영영 저장하지 못한다 (깨진 키는 영구 무효로 알려지지 않을 수 있다)
+            }
         }
+        if (out == null) {
+            // 키가 정말 없거나, 잠시 "없음"으로 보이거나, 쓸 수 없다 — 어느 쪽이든 예전 키는 그대로 두고 새 이름으로 만든다
+            alias = freshAlias(name);
+            SecretKey key = keys.create(alias);
+            try {
+                out = seal(key, value);
+            } catch (Exception e) {
+                dropUnused(alias); // 처음 쓰는 이름이라 이 키로 잠근 값은 어디에도 없다
+                throw e;
+            }
+        }
+        // 디스크에 못 써도 키는 지우지 않는다 — SharedPreferences는 메모리에는 이미 넣었고 다음 commit이 디스크에 쓴다
+        if (!store.put(name, FORMAT + alias + ":" + Base64.getEncoder().encodeToString(out))) {
+            throw new IllegalStateException("write");
+        }
+        if (!alias.equals(previous)) dropUnused(previous);
+    }
+
+    /** IV + 암호문 */
+    private static byte[] seal(SecretKey key, String value) throws Exception {
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, key);
         byte[] iv = cipher.getIV();
@@ -132,11 +156,7 @@ final class SecretVault {
         byte[] out = new byte[iv.length + sealed.length];
         System.arraycopy(iv, 0, out, 0, iv.length);
         System.arraycopy(sealed, 0, out, iv.length, sealed.length);
-        // 디스크에 못 써도 키는 지우지 않는다 — SharedPreferences는 메모리에는 이미 넣었고 다음 commit이 디스크에 쓴다
-        if (!store.put(name, FORMAT + alias + ":" + Base64.getEncoder().encodeToString(out))) {
-            throw new IllegalStateException("write");
-        }
-        if (!alias.equals(previous)) dropUnused(previous);
+        return out;
     }
 
     /**
@@ -155,7 +175,7 @@ final class SecretVault {
             throw forget(name);
         }
         if (all.length < IV_BYTES + TAG_BYTES) throw forget(name);
-        // 키가 없어 보여도 지우지 않는다 — 일시적인 오류일 수 있다. 정말 없어졌다면 사용자가 새 토큰을 넣을 때(set) 새 키로 덮어쓴다
+        // 키가 없어 보이거나 쓸 수 없어도 지우지 않는다 — 일시적인 오류일 수 있다. 정말 없어졌거나 깨졌다면 사용자가 새 토큰을 넣을 때(set) 새 키로 덮어쓴다
         SecretKey key = keys.find(s.alias);
         if (key == null) throw new KeyStoreException("key not available");
         try {
