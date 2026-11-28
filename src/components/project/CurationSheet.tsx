@@ -23,6 +23,7 @@ import {
 } from '../../project'
 import { enqueueCombo } from '../../project/run'
 import { imageUrl } from '../../stores/history'
+import { checkerStyle, hasAlphaBackground } from '../../lib/alpha'
 import { toast } from '../../stores/toast'
 import { Button, IconButton, Row, Select, Sheet, Stepper, Toggle } from '../ui'
 import { ZoomImage } from '../ZoomImage'
@@ -295,7 +296,13 @@ function ReviewView(props: {
       </header>
       <div className="relative min-h-0 flex-1">
         {url ? (
-          <ZoomImage src={url} alt={`seed ${img.seed ?? ''}`} onSwipe={(d) => go(d)} onZoomChange={setZoomed} />
+          <ZoomImage
+            src={url}
+            alt={`seed ${img.seed ?? ''}`}
+            onSwipe={(d) => go(d)}
+            onZoomChange={setZoomed}
+            imgStyle={meta && hasAlphaBackground(meta) ? checkerStyle(meta.width, meta.height) : undefined}
+          />
         ) : (
           <Thumb meta={meta} className="absolute inset-0 h-full w-full !object-contain" />
         )}

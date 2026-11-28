@@ -59,7 +59,8 @@ export function ImportSheet(): ReactNode {
       .join(' · '),
     quality: [
       p.qualityToggle !== undefined && `퀄리티 태그 ${p.qualityToggle ? '켬' : '끔'}`,
-      p.ucPreset !== undefined && `UC ${UC_PRESET_OPTIONS.find((o) => o.value === p.ucPreset)?.label ?? p.ucPreset}`
+      p.ucPreset !== undefined && `UC ${UC_PRESET_OPTIONS.find((o) => o.value === p.ucPreset)?.label ?? p.ucPreset}`,
+      p.transparentBackground && '배경 투명'
     ]
       .filter(Boolean)
       .join(' · '),

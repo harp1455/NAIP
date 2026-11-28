@@ -414,6 +414,14 @@ function ParamsEditor(props: { project: Project }): ReactNode {
         <Row label="Variety+">
           <Toggle label="프로젝트 Variety+" checked={caps.variety && params.variety} disabled={!caps.variety} onChange={(variety) => set({ variety })} />
         </Row>
+        <Row label="배경 투명 (V5)" hint={caps.transparency ? '배경 없이 투명 PNG로 받습니다' : 'V5 모델에서만 쓸 수 있습니다'}>
+          <Toggle
+            label="프로젝트 배경 투명"
+            checked={caps.transparency && !!params.transparentBackground}
+            disabled={!caps.transparency}
+            onChange={(transparentBackground) => set({ transparentBackground })}
+          />
+        </Row>
       </div>
       <p className={cx('mt-1 text-[11px] text-dim')}>시드는 장마다 무작위입니다. 프롬프트 화면의 프롬프트는 쓰지 않고, 위 스타일과 축 조각으로 만든 프롬프트를 보냅니다.</p>
     </div>

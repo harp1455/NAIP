@@ -18,6 +18,11 @@ export interface ImportedSettings {
   width?: number
   height?: number
   variety?: boolean
+  /**
+   * V5 배경 투명(요청의 straight_alpha·tag_hint_transparent_background)으로 만든 그림인지. 그런 그림이면 보낸 프롬프트 끝의
+   * "transparent background"는 이 설정이 붙인 것이라 prompt에서 뺐다 (다시 켜면 또 붙는다)
+   */
+  transparentBackground: boolean
   characters: { prompt: string; negative: string; center?: { x: number; y: number } }[]
   /** 이미지에 들어 있던 바이브 트랜스퍼 (인코딩된 형태 — 원본 그림 없이 그대로 다시 쓸 수 있다) */
   vibes: MetadataVibe[]
@@ -115,6 +120,15 @@ function inferUcPreset(uc: string): { preset: UcPresetIndex; rest: string } {
   return { preset: best, rest: bestLen < 0 ? uc : uc.slice(bestLen).replace(/^,\s*/, '') }
 }
 
+/** 배경 투명 설정이 기본 프롬프트 끝(퀄리티 태그 앞)에 붙이는 태그 — src/nai/payload.ts */
+export const TRANSPARENT_TAG = 'transparent background'
+
+/** 배경 투명 설정이 붙인 끝의 태그를 뗀다 (사용자가 직접 쓴 같은 태그가 앞쪽에 있으면 그대로) */
+export function stripTransparentTag(prompt: string): string {
+  if (prompt === TRANSPARENT_TAG) return ''
+  return prompt.endsWith(`, ${TRANSPARENT_TAG}`) ? prompt.slice(0, -(TRANSPARENT_TAG.length + 2)) : prompt
+}
+
 /** PNG에서 NAI 생성 설정을 읽는다. NAI 메타데이터가 없으면 null */
 export async function readImageSettings(blob: Blob): Promise<ImportedSettings | null> {
   const text = pngTextChunks(new Uint8Array(await blob.arrayBuffer()))
@@ -139,12 +153,14 @@ export async function readImageSettings(blob: Blob): Promise<ImportedSettings | 
     v4?.use_coords === true
   )
   const qualityToggle = rawPrompt.endsWith(QUALITY_TAGS_SUFFIX)
+  const transparentBackground = c.straight_alpha === true || c.tag_hint_transparent_background === true
+  const userPrompt = qualityToggle ? rawPrompt.slice(0, -QUALITY_TAGS_SUFFIX.length) : rawPrompt
   const uc = inferUcPreset(v4n?.caption?.base_caption ?? str('uc') ?? '')
   const useCoords = v4?.use_coords === true
   const negChars = v4n?.caption?.char_captions ?? []
   const source = text.Source ?? ''
   return {
-    prompt: qualityToggle ? rawPrompt.slice(0, -QUALITY_TAGS_SUFFIX.length) : rawPrompt,
+    prompt: transparentBackground ? stripTransparentTag(userPrompt) : userPrompt,
     negative: uc.rest,
     qualityToggle,
     ucPreset: uc.preset,
@@ -158,6 +174,7 @@ export async function readImageSettings(blob: Blob): Promise<ImportedSettings | 
     width: num('width'),
     height: num('height'),
     variety: c.skip_cfg_above_sigma != null,
+    transparentBackground,
     vibes: parseVibes(c),
     ...(VIBE_SOURCE_MODELS[source.trim()] ? { vibeModel: VIBE_SOURCE_MODELS[source.trim()] } : {}),
     characters: (v4?.caption?.char_captions ?? []).map((ch, i) => ({

@@ -1,4 +1,5 @@
 import { planReferenceBucket } from '../nai/reference'
+import { flattenOnChecker } from './alpha'
 
 /** 캔버스 기반 이미지 유틸 (NAIS3가 sharp로 하던 전처리를 WebView에서 수행) */
 
@@ -75,6 +76,13 @@ export async function makeThumb(src: string | Blob, side = 320): Promise<string>
   const [c, ctx] = canvasOf(w, h)
   ctx.imageSmoothingQuality = 'high'
   ctx.drawImage(img, 0, 0, w, h)
+  // JPEG에는 알파가 없어 투명한 곳이 검게 된다 — 투명 배경 그림이면 체크무늬 위에 합친다 (보통 그림은 그대로)
+  try {
+    const data = ctx.getImageData(0, 0, w, h)
+    if (flattenOnChecker(data.data, w)) ctx.putImageData(data, 0, 0)
+  } catch {
+    // 픽셀을 읽을 수 없는 캔버스면 예전처럼
+  }
   return c.toDataURL('image/jpeg', 0.8)
 }
 

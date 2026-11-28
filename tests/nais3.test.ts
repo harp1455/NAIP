@@ -169,11 +169,14 @@ describe('NAIS3 .nais import (real archive written by NAIS3)', () => {
         noiseSchedule: 'karras',
         variety: true,
         qualityToggle: true,
-        ucPreset: 1
+        ucPreset: 1,
+        transparentBackground: true
       },
       seed: ''
     })
-    expect(line(report.notImported, '작업 중인 프롬프트', 'transparentBackground')).toBeDefined()
+    // NAIS3 의 V5 투명 배경은 NAIP 의 배경 투명으로 옮긴다 (예전에는 "옮기지 못한 것"이었다)
+    expect(line(report.notImported, '작업 중인 프롬프트', 'transparentBackground')).toBeUndefined()
+    expect(line(report.transformed, '작업 중인 프롬프트', 'transparentBackground')).toBeUndefined()
     expect(line(report.transformed, '작업 중인 프롬프트', '시드')?.items).toEqual(['시드 12345'])
     expect(line(report.notImported, '라이브러리', '그림')?.items).toEqual(['lib-1', 'lib-2'])
     expect(line(report.notImported, '라이브러리', '묶음')?.items).toEqual(['모음'])
