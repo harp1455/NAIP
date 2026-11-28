@@ -1,9 +1,10 @@
 /** 프로젝트 설정 — 기본, 캐릭터, 스타일, 생성 설정, 축, 제외 규칙, 덮어쓰기, 경고 기준 */
 import { useState, type ReactNode } from 'react'
 import { ArrowLeftRight, Download, Plus, UserPlus } from 'lucide-react'
-import { MODELS, NOISE_SCHEDULES, RESOLUTIONS, SAMPLERS, UC_PRESET_OPTIONS } from '../../nai/constants'
+import { MODELS, NOISE_SCHEDULES, SAMPLERS, UC_PRESET_OPTIONS } from '../../nai/constants'
 import { generationDefaultsForModel, isMediumEffortModel, isV5Model, MEDIUM_EFFORT_FIXED, modelCapabilities } from '../../nai/models'
 import { fitNaiGenerationResolution } from '../../nai/resolution'
+import { isListedSize } from '../../nai/resolutionList'
 import { cx } from '../../lib/util'
 import {
   AXIS_KIND_LABEL,
@@ -20,7 +21,7 @@ import {
 import { useCharacters } from '../../stores/characters'
 import { usePrompt } from '../../stores/prompt'
 import { toast } from '../../stores/toast'
-import { ResolutionSelect } from '../ResolutionSelect'
+import { ResolutionSelect, resolutionPrefs } from '../ResolutionSelect'
 import { Button, Row, Section, Select, SliderRow, Stepper, TextInput, Toggle } from '../ui'
 import { DraftArea, DraftInput, Field, NumberInput, patchLatest, Segmented } from './common'
 import {
@@ -287,7 +288,7 @@ function ParamsEditor(props: { project: Project }): ReactNode {
   const set = (x: Partial<ProjectParams>): void => useProjects.getState().patch(p.id, { params: { ...params, ...x } })
   const caps = modelCapabilities(params.model)
   const medium = isMediumEffortModel(params.model)
-  const [custom, setCustom] = useState(() => !RESOLUTIONS.some((r) => r.width === params.width && r.height === params.height))
+  const [custom, setCustom] = useState(() => !isListedSize(resolutionPrefs(), params.width, params.height))
   const [w, setW] = useState(String(params.width))
   const [h, setH] = useState(String(params.height))
   const commitSize = (): void => {
@@ -309,7 +310,7 @@ function ParamsEditor(props: { project: Project }): ReactNode {
         onClick={() => {
           const screen = usePrompt.getState().params
           useProjects.getState().patch(p.id, { params: { ...screen } })
-          setCustom(!RESOLUTIONS.some((r) => r.width === screen.width && r.height === screen.height))
+          setCustom(!isListedSize(resolutionPrefs(), screen.width, screen.height))
           setW(String(screen.width))
           setH(String(screen.height))
           toast('프롬프트 화면의 생성 설정을 가져왔습니다')

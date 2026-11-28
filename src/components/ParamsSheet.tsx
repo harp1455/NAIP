@@ -1,10 +1,13 @@
 import { useState, type ReactNode } from 'react'
 import { ArrowLeftRight, Dices } from 'lucide-react'
-import { MODELS, NOISE_SCHEDULES, RESOLUTIONS, SAMPLERS, UC_PRESET_OPTIONS } from '../nai/constants'
+import { MODELS, NOISE_SCHEDULES, SAMPLERS, UC_PRESET_OPTIONS } from '../nai/constants'
 import { isMediumEffortModel, isV5Model, MEDIUM_EFFORT_FIXED, modelCapabilities } from '../nai/models'
 import { fitNaiGenerationResolution } from '../nai/resolution'
+import { isListedSize, sizeProblem, sizeText } from '../nai/resolutionList'
 import { usePrompt } from '../stores/prompt'
-import { ResolutionSelect } from './ResolutionSelect'
+import { useSettings } from '../stores/settings'
+import { ResolutionListSheet } from './ResolutionListSheet'
+import { ResolutionSelect, resolutionPrefs } from './ResolutionSelect'
 import { IconButton, Row, Select, Sheet, SliderRow, TextInput, Toggle } from './ui'
 
 export function ParamsSheet(props: { onClose: () => void }): ReactNode {
@@ -15,9 +18,13 @@ export function ParamsSheet(props: { onClose: () => void }): ReactNode {
   const [w, setW] = useState(String(params.width))
   const [h, setH] = useState(String(params.height))
   // 목록에 없는 크기면 처음부터 사용자 지정 입력을 펼친다
-  const [custom, setCustom] = useState(
-    () => !RESOLUTIONS.some((r) => r.width === params.width && r.height === params.height)
-  )
+  const [custom, setCustom] = useState(() => !isListedSize(resolutionPrefs(), params.width, params.height))
+  const resolutions = useSettings((s) => s.resolutions)
+  const hiddenResolutions = useSettings((s) => s.hiddenResolutions)
+  // 직접 넣은 크기가 목록에 없으면 목록에 더할 수 있다
+  const canAdd =
+    !isListedSize({ resolutions, hiddenResolutions }, params.width, params.height) && !sizeProblem(params.width, params.height)
+  const [adding, setAdding] = useState(false)
 
   const commitSize = (edited: 'width' | 'height'): void => {
     const fit = fitNaiGenerationResolution(Number(w), Number(h), edited)
@@ -68,31 +75,55 @@ export function ParamsSheet(props: { onClose: () => void }): ReactNode {
             </button>
           </div>
           {custom && (
-            <div className="flex items-center justify-end gap-1.5 pb-1 pt-1.5">
-              <span className="mr-auto text-xs text-dim">64 배수로 맞춰집니다 (최대 약 3MP)</span>
-              <TextInput
-                label="너비"
-                inputMode="numeric"
-                className="!w-[72px] text-center font-mono"
-                value={w}
-                onChange={setW}
-              />
-              <span className="text-dim">×</span>
-              <TextInput
-                label="높이"
-                inputMode="numeric"
-                className="!w-[72px] text-center font-mono"
-                value={h}
-                onChange={setH}
-              />
-              <button
-                type="button"
-                className="h-11 rounded-lg bg-raised px-3 text-sm"
-                onClick={() => commitSize('width')}
-              >
-                적용
-              </button>
+            <div className="flex flex-col gap-1 pb-1 pt-1.5">
+              <div className="flex items-center justify-end gap-1.5">
+                <TextInput
+                  label="너비"
+                  inputMode="numeric"
+                  className="!w-[72px] text-center font-mono"
+                  value={w}
+                  onChange={setW}
+                />
+                <span className="text-dim">×</span>
+                <TextInput
+                  label="높이"
+                  inputMode="numeric"
+                  className="!w-[72px] text-center font-mono"
+                  value={h}
+                  onChange={setH}
+                />
+                <button
+                  type="button"
+                  className="h-11 shrink-0 whitespace-nowrap rounded-lg bg-raised px-3 text-sm"
+                  onClick={() => commitSize('width')}
+                >
+                  적용
+                </button>
+              </div>
+              <div className="flex min-h-9 items-center gap-2">
+                <span className="mr-auto text-xs text-dim">64 배수로 맞춰집니다 (최대 약 3MP)</span>
+                {canAdd && (
+                  <button
+                    type="button"
+                    className="h-9 shrink-0 rounded-lg px-1 text-xs text-accent active:bg-raised"
+                    onClick={() => setAdding(true)}
+                  >
+                    {sizeText(params.width, params.height)} 목록에 추가…
+                  </button>
+                )}
+              </div>
             </div>
+          )}
+          {adding && (
+            <ResolutionListSheet
+              prefill={{ width: params.width, height: params.height }}
+              onClose={() => setAdding(false)}
+              onAdded={(size) => {
+                setAdding(false)
+                // 지금 크기를 더했으면 목록 항목으로 보인다 (사용자 지정 입력을 접는다)
+                if (size.width === params.width && size.height === params.height) setCustom(false)
+              }}
+            />
           )}
         </div>
         <SliderRow

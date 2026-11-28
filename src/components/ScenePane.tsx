@@ -1,10 +1,10 @@
 import { useState, type ReactNode } from 'react'
 import { Copy, FolderPlus, Images, Minus, Pencil, Plus, Trash2 } from 'lucide-react'
-import { RESOLUTIONS } from '../nai/constants'
 import { modelCapabilities } from '../nai/models'
 import { cx } from '../lib/util'
 import { useCharacters } from '../stores/characters'
 import { PositionCanvas } from './PositionCanvas'
+import { ResolutionSelect } from './ResolutionSelect'
 import { estimateScenes, useGeneration } from '../stores/generation'
 import { useHistory } from '../stores/history'
 import { usePrompt } from '../stores/prompt'
@@ -30,7 +30,6 @@ function SceneEditor(props: { initial: Partial<Scene>; onClose: () => void }): R
   // 라이브러리에서 지워진 캐릭터는 세지 않는다
   const picked = (cast ?? []).filter((cid) => characters.some((c) => c.id === cid))
   const id = props.initial.id
-  const resIndex = size ? RESOLUTIONS.findIndex((r) => r.width === size.width && r.height === size.height) : -1
   return (
     <Sheet
       title={id ? '씬 편집' : '씬 추가'}
@@ -181,19 +180,11 @@ function SceneEditor(props: { initial: Partial<Scene>; onClose: () => void }): R
         </div>
         <label className="flex flex-col gap-1 text-xs text-dim">
           해상도
-          <Select
-            label="해상도"
-            value={size ? resIndex : -2}
-            options={[
-              { value: -2, label: '메인 설정을 따름' },
-              ...RESOLUTIONS.map((r, i) => ({ value: i, label: `${r.label} (${r.width}×${r.height})` })),
-              ...(size && resIndex < 0 ? [{ value: -1, label: `${size.width}×${size.height}` }] : [])
-            ]}
-            onChange={(i) => {
-              const r = RESOLUTIONS[i]
-              if (i === -2) setSize(null)
-              else if (r) setSize({ width: r.width, height: r.height })
-            }}
+          <ResolutionSelect
+            width={size?.width ?? 0}
+            height={size?.height ?? 0}
+            none={{ label: '메인 설정을 따름', selected: !size, onPick: () => setSize(null) }}
+            onPick={setSize}
           />
         </label>
       </div>
