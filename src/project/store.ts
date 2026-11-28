@@ -12,6 +12,7 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware'
 import { toast } from '../stores/toast'
+import { AXIS_TEMPLATES, applyAxisTemplate } from './axis-templates'
 import * as cur from './curation'
 import * as model from './model'
 import type {
@@ -52,6 +53,8 @@ interface ProjectsState {
   patchValue: (projectId: string, axisId: string, valueId: string, p: Partial<Omit<AxisValue, 'id'>>) => void
   removeValue: (projectId: string, axisId: string, valueId: string) => void
   moveValue: (projectId: string, axisId: string, valueId: string, dir: -1 | 1) => void
+  /** 축 빠른 시작 세트를 넣는다 (axis-templates.applyAxisTemplate) — 넣은 축 id */
+  applyAxisTemplate: (projectId: string, templateId: string, opts?: { axisId?: string; newAxis?: boolean }) => string | null
 
   // ── 생성 진행 (대기열 연결)
   markQueued: (projectId: string, jobs: readonly { key: string; count: number }[]) => void
@@ -239,6 +242,17 @@ export const useProjects = create<ProjectsState>()(
           })),
         removeValue: (projectId, axisId, valueId) => update(projectId, (p) => model.removeValue(p, axisId, valueId)),
         moveValue: (projectId, axisId, valueId, dir) => update(projectId, (p) => model.moveValue(p, axisId, valueId, dir)),
+        applyAxisTemplate: (projectId, templateId, opts) => {
+          const t = AXIS_TEMPLATES.find((x) => x.id === templateId)
+          if (!t) return null
+          let id: string | null = null
+          update(projectId, (p) => {
+            const r = applyAxisTemplate(p, t, opts)
+            id = r.axisId
+            return r.project
+          })
+          return id
+        },
 
         markQueued: (projectId, jobs) =>
           update(projectId, (p) =>

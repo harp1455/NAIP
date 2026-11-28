@@ -138,6 +138,7 @@ export function ExportView(props: { project: Project }): ReactNode {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-3xl flex-col gap-2 p-3">
+          {summary && <SummaryCard summary={summary} />}
           <Section title="대상">
             <div className="flex flex-col gap-2 pb-2">
               <Segmented
@@ -205,30 +206,10 @@ export function ExportView(props: { project: Project }): ReactNode {
                 <Field label="하위 폴더 ('/'로 단계)">
                   <DraftInput label="폴더 템플릿" value={naming.folderTemplate} onCommit={(folderTemplate) => setNaming({ folderTemplate })} className={cx('font-mono', naming.folderMode === 'flat' && 'opacity-50')} />
                 </Field>
-                <Field label="구분자">
-                  <DraftInput label="구분자" value={naming.separator} onCommit={(separator) => setNaming({ separator: separator.slice(0, 3) })} className="font-mono" />
-                </Field>
-                <Field label="시작 번호">
-                  <NumberInput label="시작 번호" className="w-full" value={naming.startIndex} min={0} max={99999} onCommit={(startIndex) => setNaming({ startIndex: Math.floor(startIndex) })} />
-                </Field>
-                <Field label="번호를 새로 셀 단위">
-                  <Select label="번호 범위" value={naming.indexScope} options={INDEX_SCOPES} onChange={(indexScope) => setNaming({ indexScope })} />
-                </Field>
-                <Field label="같은 이름이 있으면">
-                  <Select label="중복 처리" value={naming.duplicate} options={DUPLICATES} onChange={(duplicate) => setNaming({ duplicate })} />
-                </Field>
-                <Field label="{custom} 값">
-                  <DraftInput label="사용자 지정 글자" value={naming.custom} onCommit={(custom) => setNaming({ custom })} />
-                </Field>
-                <Field label="이름 최대 글자">
-                  <NumberInput label="이름 최대 글자" className="w-full" value={naming.maxLength} min={8} max={120} onCommit={(maxLength) => setNaming({ maxLength: Math.floor(maxLength) })} />
-                </Field>
               </div>
-              <div className="rounded-lg border border-line bg-field px-3">
-                <Row label="값 안의 공백을 구분자로">
-                  <Toggle label="값 안의 공백을 구분자로" checked={naming.replaceSpaces} onChange={(replaceSpaces) => setNaming({ replaceSpaces })} />
-                </Row>
-              </div>
+              <Field label="같은 이름이 있으면">
+                <Select label="중복 처리" value={naming.duplicate} options={DUPLICATES} onChange={(duplicate) => setNaming({ duplicate })} />
+              </Field>
             </div>
           </Section>
 
@@ -273,6 +254,33 @@ export function ExportView(props: { project: Project }): ReactNode {
             </div>
           </Section>
 
+          <Section title="이름 세부 설정" defaultOpen={false} persistKey="project-export-naming-details">
+            <div className="flex flex-col gap-2 pb-2">
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="구분자">
+                  <DraftInput label="구분자" value={naming.separator} onCommit={(separator) => setNaming({ separator: separator.slice(0, 3) })} className="font-mono" />
+                </Field>
+                <Field label="시작 번호">
+                  <NumberInput label="시작 번호" className="w-full" value={naming.startIndex} min={0} max={99999} onCommit={(startIndex) => setNaming({ startIndex: Math.floor(startIndex) })} />
+                </Field>
+                <Field label="번호를 새로 셀 단위">
+                  <Select label="번호 범위" value={naming.indexScope} options={INDEX_SCOPES} onChange={(indexScope) => setNaming({ indexScope })} />
+                </Field>
+                <Field label="이름 최대 글자">
+                  <NumberInput label="이름 최대 글자" className="w-full" value={naming.maxLength} min={8} max={120} onCommit={(maxLength) => setNaming({ maxLength: Math.floor(maxLength) })} />
+                </Field>
+                <Field label="{custom} 값">
+                  <DraftInput label="사용자 지정 글자" value={naming.custom} onCommit={(custom) => setNaming({ custom })} />
+                </Field>
+              </div>
+              <div className="rounded-lg border border-line bg-field px-3">
+                <Row label="값 안의 공백을 구분자로">
+                  <Toggle label="값 안의 공백을 구분자로" checked={naming.replaceSpaces} onChange={(replaceSpaces) => setNaming({ replaceSpaces })} />
+                </Row>
+              </div>
+            </div>
+          </Section>
+
           <Section title="변환">
             <div className="flex flex-col gap-2 pb-2">
               <div className="flex gap-2">
@@ -308,8 +316,6 @@ export function ExportView(props: { project: Project }): ReactNode {
           <Section title="목록 파일 · 이미지 코드" defaultOpen={false}>
             <ManifestEditor project={p} codeList={codeList} />
           </Section>
-
-          {summary && <SummaryCard summary={summary} />}
         </div>
       </div>
       <div className="shrink-0 border-t border-line bg-panel p-3">

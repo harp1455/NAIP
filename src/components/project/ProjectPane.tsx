@@ -3,14 +3,15 @@
  * 프로젝트 상태는 src/project/store.ts(localStorage 'naip-projects')에 있다.
  */
 import { useMemo, useState, type ReactNode } from 'react'
-import { AlertTriangle, ChevronLeft, Copy, FolderKanban, Pencil, Plus, Square, Trash2 } from 'lucide-react'
+import { AlertTriangle, ChevronLeft, ChevronRight, Copy, FolderKanban, Pencil, Plus, Square, Trash2 } from 'lucide-react'
 import { useBackClose } from '../../lib/back'
 import { cx } from '../../lib/util'
-import { expandMatrix, matrixTotals, useProjects, type Project } from '../../project'
+import { describeAction, expandMatrix, matrixTotals, projectGuide, useProjects, type Project } from '../../project'
 import { useGeneration } from '../../stores/generation'
 import { usePrompt } from '../../stores/prompt'
 import { Button, Empty, IconButton, Sheet, TextInput } from '../ui'
 import { formatDate, ProgressBar, Segmented } from './common'
+import { GuideIntro } from './Guide'
 import { MatrixView } from './MatrixView'
 import { ProjectEditor } from './ProjectEditor'
 import { ExportView } from './ExportView'
@@ -62,10 +63,11 @@ function NameSheet(props: { title: string; initial: string; hint?: string; actio
 function ProjectCard(props: { project: Project; onRename: () => void }): ReactNode {
   const p = props.project
   const s = useProjects.getState()
-  const totals = useMemo(() => {
+  const { totals, guide } = useMemo(() => {
     const m = expandMatrix(p)
-    return m.tooMany ? null : matrixTotals(p, m)
+    return { totals: m.tooMany ? null : matrixTotals(p, m), guide: projectGuide(p, m) }
   }, [p])
+  const next = guide.actions[0]
   const images = Object.values(p.items).reduce((n, i) => n + i.images.length, 0)
   return (
     <li className="rounded-xl border border-line bg-panel">
@@ -78,14 +80,19 @@ function ProjectCard(props: { project: Project; onRename: () => void }): ReactNo
           <>
             <div className="mt-1 text-xs text-dim">
               조합 {totals.combos}개 · 채택 {totals.adopted}/{totals.target} · 그림 {images}장
-              {totals.byStatus.review ? ` · 선별 필요 ${totals.byStatus.review}` : ''}
-              {totals.byStatus.redo ? ` · 재생성 필요 ${totals.byStatus.redo}` : ''}
             </div>
             <ProgressBar className="mt-2" value={totals.progress} label={`${p.name} 진행률`} />
           </>
         ) : (
           <div className="mt-1 text-xs text-danger">조합이 너무 많아 진행을 셀 수 없습니다</div>
         )}
+        <div className={cx('mt-2 flex items-center gap-1 text-xs', next.kind === 'done' ? 'text-ok' : 'text-accent')}>
+          <span className="min-w-0 flex-1 truncate">
+            {next.kind === 'done' ? '' : '다음: '}
+            {describeAction(next)}
+          </span>
+          <ChevronRight size={14} className="shrink-0" />
+        </div>
       </button>
       <div className="flex justify-end gap-0.5 border-t border-line px-1 py-0.5">
         <IconButton label={`${p.name} 이름 바꾸기`} onClick={props.onRename}>
@@ -140,9 +147,11 @@ function ProjectList(): ReactNode {
         {projects.length === 0 ? (
           <Empty>
             <FolderKanban size={28} className="mx-auto mb-2 text-dim" />
-            캐릭터 × 의상 × 표정처럼 조합마다 그림을 만들어 고르고, 정해진 이름으로 내보내는 작업 단위입니다.
-            <br />
-            "새 프로젝트"로 시작하세요.
+            캐릭터 × 표정 × 의상처럼 조합마다 그림을 만들어 고르고, 정해 둔 이름으로 내보내는 작업 단위입니다.
+            <GuideIntro />
+            <Button variant="primary" className="mx-auto mt-4" onClick={() => setCreating(true)}>
+              <Plus size={16} />새 프로젝트 만들기
+            </Button>
           </Empty>
         ) : (
           <ul className="mx-auto flex max-w-3xl flex-col gap-2">
@@ -159,7 +168,7 @@ function ProjectList(): ReactNode {
           title="새 프로젝트"
           initial=""
           action="만들기"
-          hint="지금 프롬프트 화면의 모델·해상도·샘플링 설정으로 시작합니다 (나중에 바꿀 수 있습니다)."
+          hint="지금 프롬프트 화면의 모델·해상도·샘플링 설정으로 시작합니다 (나중에 바꿀 수 있습니다). 만든 뒤 캐릭터와 축(표정·의상 …)을 넣습니다."
           onSave={(name) => useProjects.getState().create(name, { ...usePrompt.getState().params })}
           onClose={() => setCreating(false)}
         />
@@ -178,6 +187,13 @@ function ProjectList(): ReactNode {
 }
 
 type View = 'matrix' | 'edit' | 'export'
+
+/** 화면 순서 = 작업 순서 (설정 → 행렬에서 생성·선별 → 내보내기) */
+const VIEWS: { value: View; label: string }[] = [
+  { value: 'edit', label: '설정' },
+  { value: 'matrix', label: '행렬' },
+  { value: 'export', label: '내보내기' }
+]
 
 /** 생성 중일 때 어느 화면에서나 보이는 한 줄 (중지 포함) */
 export function RunStrip(): ReactNode {
@@ -234,17 +250,13 @@ function ProjectView(props: { project: Project }): ReactNode {
           label="프로젝트 화면"
           value={view}
           onChange={setView}
-          options={[
-            { value: 'matrix', label: '행렬' },
-            { value: 'edit', label: '설정' },
-            { value: 'export', label: '내보내기' }
-          ]}
+          options={VIEWS}
           className="mx-auto max-w-3xl"
         />
       </div>
       <div className={cx('flex min-h-0 flex-1 flex-col')}>
-        {view === 'matrix' && <MatrixView project={p} onEdit={() => setView('edit')} />}
-        {view === 'edit' && <ProjectEditor project={p} />}
+        {view === 'matrix' && <MatrixView project={p} onEdit={() => setView('edit')} onExport={() => setView('export')} />}
+        {view === 'edit' && <ProjectEditor project={p} onMatrix={() => setView('matrix')} />}
         {view === 'export' && <ExportView project={p} />}
       </div>
       <RunStrip />
