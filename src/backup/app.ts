@@ -475,7 +475,7 @@ export async function applyRestore(
   const total = useHistory.getState().total
   if (plan.history && limit > 0 && total > limit) {
     summary.warnings.push(
-      `히스토리가 ${total.toLocaleString()}장으로 보관 한도(${limit.toLocaleString()}장)를 넘었습니다 — 다음 생성 때 즐겨찾기를 뺀 오래된 그림부터 앱에서 지워집니다. 지우지 않으려면 설정 → 저장 → 히스토리 보관 한도를 늘리세요.`
+      `히스토리가 ${total.toLocaleString()}장으로 보관 한도(${limit.toLocaleString()}장)를 넘었습니다 — 다음 생성 때 즐겨찾기와 프로젝트 그림(탈락 제외)을 뺀 오래된 그림부터 앱에서 지워집니다. 지우지 않으려면 설정 → 저장 → 히스토리 보관 한도를 늘리세요.`
     )
   }
   const ids = projectImageIds(plan)

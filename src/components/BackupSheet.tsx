@@ -572,8 +572,8 @@ function ConfirmView(props: { src: RestoreSource; plan: RestorePlan; safety: boo
       )}
       {plan.history && historyLimitAfter(plan) > 0 && (
         <Note tone="warn">
-          히스토리 보관 한도가 {historyLimitAfter(plan).toLocaleString()}장입니다. 복원 뒤 한도를 넘으면 다음 생성 때 즐겨찾기를 뺀 오래된 그림부터
-          지워집니다 — 지우지 않으려면 설정 → 저장에서 한도를 늘리세요.
+          히스토리 보관 한도가 {historyLimitAfter(plan).toLocaleString()}장입니다. 복원 뒤 한도를 넘으면 다음 생성 때 즐겨찾기와 프로젝트 그림(탈락 제외)을 뺀 오래된
+          그림부터 지워집니다 — 지우지 않으려면 설정 → 저장에서 한도를 늘리세요.
         </Note>
       )}
       {plan.warnings.length > 0 && (
