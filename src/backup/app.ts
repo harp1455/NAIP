@@ -39,14 +39,42 @@ import {
   type ProgressCallback,
   type SectionId
 } from './types'
-import { estimateBackupSize, writeNaipBackup, type SizeEstimate, type WriteBackupResult } from './write'
+import { estimateBackupSize, selectedSections, writeNaipBackup, type SizeEstimate, type WriteBackupResult } from './write'
 
 export const APP_VERSION: string = __APP_VERSION__
 
-/** 지금 앱의 데이터 (IndexedDB 에서 살아나는 스토어를 기다린 뒤) */
-export async function currentData(): Promise<BackupData> {
-  await waitHydrated()
-  return collectStoreData()
+export interface CurrentData {
+  data: BackupData
+  /** 이 기기에서 불러오지 못해 data 에서 뺀 섹션 (IndexedDB 오류) */
+  unavailable: DataSectionId[]
+}
+
+/**
+ * 지금 앱의 데이터 (IndexedDB 에서 살아나는 스토어를 기다린 뒤).
+ * - 아직 불러오는 중이면 멈춘다 — 그대로 모으면 바이브·레퍼런스·마스크가 빈 채로 백업(자동 백업 포함)되고,
+ *   복원 계획도 빈 목록을 지금 데이터로 보고 세워져 복원이 지금 것을 덮어쓴다.
+ * - 불러오기에 실패한 섹션(이번 실행 내내 빈 채다)은 빼고 모은다: 기다려도 나아지지 않으므로 백업·복원을
+ *   통째로 막지 않는다. 백업은 그 섹션 없이 만들고(빈 목록으로 담지 않는다), 복원은 그 섹션을 건너뛴다(planFor).
+ */
+export async function currentData(timeoutMs = 15_000): Promise<CurrentData> {
+  const { pending, failed } = await waitHydrated(timeoutMs)
+  if (pending.length) {
+    throw new Error('바이브·레퍼런스·마스크를 아직 불러오는 중입니다 — 잠시 뒤 다시 시도하세요')
+  }
+  const data = collectStoreData()
+  for (const id of failed) delete data[id]
+  return { data, unavailable: failed }
+}
+
+/** 불러오지 못한 섹션 안내 */
+export function unavailableText(ids: readonly DataSectionId[]): string {
+  return `이 기기의 ${ids.map((id) => SECTION_LABELS[id]).join('·')}을(를) 저장소에서 불러오지 못했습니다 (앱을 다시 시작하면 다시 불러옵니다)`
+}
+
+function without(data: BackupData, ids: readonly DataSectionId[]): BackupData {
+  const out = { ...data }
+  for (const id of ids) delete out[id]
+  return out
 }
 
 async function ports() {
@@ -73,10 +101,12 @@ export interface BackupEstimate {
   historyCount: number
   /** 섹션별 지금 항목 수 (고르기 화면용) */
   counts: Partial<Record<SectionId, number>>
+  /** 고른 섹션 중 이 기기에서 불러오지 못해 백업에 넣지 못하는 것 */
+  unavailable: DataSectionId[]
 }
 
 export async function estimateBackup(choice: BackupChoice): Promise<BackupEstimate> {
-  const [data, p] = await Promise.all([currentData(), ports()])
+  const [{ data, unavailable }, p] = await Promise.all([currentData(), ports()])
   const [estimate, free, stats] = await Promise.all([
     estimateBackupSize(data, { ...choice, history: p.exportPort }),
     freeSpace(true),
@@ -84,15 +114,17 @@ export async function estimateBackup(choice: BackupChoice): Promise<BackupEstima
   ])
   const counts: Partial<Record<SectionId, number>> = { history: stats.count, historyOriginals: stats.count }
   for (const id of DATA_SECTION_IDS) if (data[id] != null) counts[id] = countSection(id, data[id])
-  return { estimate, free, historyCount: stats.count, counts }
+  const wanted = selectedSections(choice.mode, choice.sections)
+  return { estimate, free, historyCount: stats.count, counts, unavailable: unavailable.filter((id) => wanted.includes(id)) }
 }
 
 /** 저장할 곳을 고르게 하고 백업을 쓴다. 고르기를 취소하면 null. 쓰다가 취소·실패하면 만든 파일을 지우고 BackupError */
 export async function createBackupFile(
   choice: BackupChoice,
   opts: { onProgress?: ProgressCallback; signal?: AbortSignal; onFileChosen?: (name: string) => void } = {}
-): Promise<{ fileName: string; result: WriteBackupResult } | null> {
-  const [data, p] = await Promise.all([currentData(), ports()])
+): Promise<{ fileName: string; result: WriteBackupResult; unavailable: DataSectionId[] } | null> {
+  // 불러오지 못한 섹션은 빼고 쓴다 — 빈 목록으로 담으면 그 백업을 덮어쓰기로 복원할 때 지금 것이 지워진다
+  const [{ data, unavailable }, p] = await Promise.all([currentData(), ports()])
   const file = await createFile(backupFileName(), BACKUP_MIME)
   if (!file) return null
   opts.onFileChosen?.(file.name)
@@ -103,13 +135,15 @@ export async function createBackupFile(
     onProgress: opts.onProgress,
     signal: opts.signal
   })
-  return { fileName: file.name, result }
+  const wanted = selectedSections(choice.mode, choice.sections)
+  return { fileName: file.name, result, unavailable: unavailable.filter((id) => wanted.includes(id)) }
 }
 
 // ── 자동 백업 (복원 전) ──────────────────────────────────────────────────
 
 export async function createSafetyBackup(note: string): Promise<SafetyBackup> {
-  const [data, { files }] = await Promise.all([currentData(), ports()])
+  // 불러오지 못한 섹션은 담지 않는다 — 복원도 그 섹션을 건너뛰므로(planFor) 되돌릴 것이 없다
+  const [{ data }, { files }] = await Promise.all([currentData(), ports()])
   const sink = safetySink(files, safetyName(), note)
   await writeNaipBackup(data, sink, { mode: 'light', appVersion: APP_VERSION })
   await pruneSafetyBackups(files).catch(() => 0)
@@ -257,8 +291,10 @@ export interface RestoreChoice {
   originals: boolean
 }
 
+/** 미리보기 — 이 기기에서 불러오지 못한 섹션은 복원하지 않으므로 보여 주지 않는다 (planFor 가 경고를 단다) */
 export async function previewFor(src: RestoreSource): Promise<SectionPreview[]> {
-  return previewRestore(await currentData(), src.data)
+  const { data, unavailable } = await currentData()
+  return previewRestore(data, without(src.data, unavailable))
 }
 
 /** 지금 데이터로 계획을 세운다 (확인 화면에 보여 주고, 그 계획 그대로 적용한다) */
@@ -267,13 +303,21 @@ export async function planFor(src: RestoreSource, choice: RestoreChoice): Promis
   const hasHistory = !!src.history && !!src.reader && choice.history !== 'skip'
   sections.history = choice.history === 'replace' ? 'overwrite' : choice.history === 'merge' ? 'merge' : 'skip'
   if (!choice.originals) sections.historyOriginals = 'skip'
-  return planRestore(await currentData(), src.data, {
+  const { data, unavailable } = await currentData()
+  // 불러오지 못한 섹션은 지금 것이 무엇인지 모른다 — 합치기·덮어쓰기 모두 저장된 것을 바꿔 쓰게 되므로 건너뛴다
+  const blocked = unavailable.filter((id) => src.data[id] != null)
+  const plan = planRestore(data, without(src.data, blocked), {
     mode: choice.mode,
     sections,
     newId: uid,
     hasHistory,
     hasOriginals: hasHistory && (src.history?.originals ?? 0) > 0
   })
+  if (blocked.length) {
+    plan.unavailable = blocked
+    plan.warnings.unshift(`${unavailableText(blocked)} — 저장된 것을 덮어쓰지 않도록 백업의 그 항목은 복원하지 않습니다`)
+  }
+  return plan
 }
 
 /** 계획이 지금 데이터를 바꾸거나 지우는지 (자동 백업 경고용) */
@@ -352,7 +396,12 @@ export async function applyRestore(
   for (const id of DATA_SECTION_IDS) {
     const s = plan.sections[id]
     if (s && applied.has(id)) summary.applied.push({ section: id, label: SECTION_LABELS[id], action: s.action, stats: s.stats, notes: s.notes })
-    else if (src.data[id] != null) summary.skipped.push({ section: id, label: SECTION_LABELS[id], reason: s ? '이 앱에 아직 넣을 곳이 없음' : '고르지 않음' })
+    else if (src.data[id] != null)
+      summary.skipped.push({
+        section: id,
+        label: SECTION_LABELS[id],
+        reason: plan.unavailable?.includes(id) ? '이 기기의 지금 것을 불러오지 못함' : s ? '이 앱에 아직 넣을 곳이 없음' : '고르지 않음'
+      })
   }
   for (const id of src.damaged) summary.skipped.push({ section: id, label: SECTION_LABELS[id], reason: '파일 손상 — 읽지 못함' })
 
@@ -406,8 +455,11 @@ export async function applyRestore(
 // ── NAIS3 로 내보내기 ────────────────────────────────────────────────────
 
 export async function nais3Plan(sections: readonly Nais3ExportSection[]): Promise<{ data: BackupData; plan: Nais3ExportPlan }> {
-  const data = await currentData()
-  return { data, plan: naipToNais3(data, { sections }) }
+  const { data, unavailable } = await currentData()
+  const plan = naipToNais3(data, { sections })
+  const missed = unavailable.filter((id) => (sections as readonly string[]).includes(id))
+  for (const id of missed) plan.lost.unshift({ scope: SECTION_LABELS[id], text: '이 기기에서 불러오지 못해 내보내지 않음 (앱을 다시 시작하면 다시 불러옵니다)' })
+  return { data, plan }
 }
 
 export async function writeNais3File(

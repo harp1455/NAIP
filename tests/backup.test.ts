@@ -138,6 +138,16 @@ describe('zip-slip and zip-bomb defenses', () => {
     await expectCode(ZipReader.open(bytesSource(bomb)), 'suspicious-ratio')
   })
 
+  it('rejects a bomb made of many small entries just under the per-entry ratio check', async () => {
+    // 항목마다 1MB-1 (항목별 압축률 검사 밖) — 합치면 파일 크기의 수백 배가 풀린다
+    const zeros = new Uint8Array(1024 * 1024 - 1)
+    const bomb = craftZip(Array.from({ length: 300 }, (_, i) => ({ name: `z${i}.bin`, data: zeros, method: 8 as const })))
+    await expectCode(ZipReader.open(bytesSource(bomb)), 'suspicious-ratio')
+    // 평범한(잘 압축되는) 작은 아카이브는 그대로 받는다
+    const ok = craftZip(Array.from({ length: 20 }, (_, i) => ({ name: `j${i}.json`, data: zeros.subarray(0, 50_000), method: 8 as const })))
+    expect((await ZipReader.open(bytesSource(ok))).paths()).toHaveLength(20)
+  })
+
   it('stops inflating as soon as data exceeds the declared size', async () => {
     // 100 바이트라고 속이고 2MB 가 풀리는 항목
     const liar = craftZip([{ name: 'liar.bin', data: new Uint8Array(2 * 1024 * 1024), method: 8, declaredSize: 100 }])

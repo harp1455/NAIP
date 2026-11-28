@@ -15,9 +15,9 @@ import { useProjects } from '../project/store'
 import type { Project } from '../project/types'
 import { migrateCharacters, useCharacters } from '../stores/characters'
 import { useFragments } from '../stores/fragments'
-import { useMasks } from '../stores/masks'
+import { masksLoadFailed, useMasks } from '../stores/masks'
 import { usePrompt } from '../stores/prompt'
-import { useRefs } from '../stores/refs'
+import { refsLoadFailed, useRefs } from '../stores/refs'
 import { useScenes } from '../stores/scenes'
 import { useSettings } from '../stores/settings'
 import { useTagUsage } from '../stores/tagUsage'
@@ -52,16 +52,30 @@ function safePatch(state: object, patch: Obj): Obj {
   return out
 }
 
-/** 바이브·레퍼런스·마스크(IndexedDB)가 살아날 때까지 기다린다 (최대 timeoutMs) */
-export async function waitHydrated(timeoutMs = 5000): Promise<void> {
+export interface HydrationStatus {
+  /** 기다려도 아직 불러오는 중인 섹션 */
+  pending: DataSectionId[]
+  /**
+   * 이번 실행에서 불러오지 못한 섹션 (IndexedDB 열기 실패·손상된 값) — 스토어가 빈 채라 그 내용을
+   * 지금 데이터로 볼 수 없다. 기다려도 바뀌지 않는다 (앱을 다시 시작하면 다시 불러 본다)
+   */
+  failed: DataSectionId[]
+}
+
+/** 바이브·레퍼런스·마스크(IndexedDB)가 살아나거나 불러오기에 실패할 때까지 기다린다 (최대 timeoutMs) */
+export async function waitHydrated(timeoutMs = 5000): Promise<HydrationStatus> {
+  const masksDone = (): boolean => (useMasks.persist?.hasHydrated?.() ?? true) || masksLoadFailed()
   const wait = (ready: () => boolean, subscribe: (fn: () => void) => () => void): Promise<void> =>
     ready()
       ? Promise.resolve()
       : new Promise<void>((resolve) => {
           const timer = setTimeout(done, timeoutMs)
+          // zustand 는 불러오기 실패를 알려 주지 않는다 (onFinishHydration 은 성공 때만) — 실패는 짧게 들여다본다
+          const poll = setInterval(() => ready() && done(), 100)
           const off = subscribe(() => ready() && done())
           function done(): void {
             clearTimeout(timer)
+            clearInterval(poll)
             off()
             resolve()
           }
@@ -71,11 +85,14 @@ export async function waitHydrated(timeoutMs = 5000): Promise<void> {
       () => useRefs.getState().hydrated,
       (fn) => useRefs.subscribe(fn)
     ),
-    wait(
-      () => useMasks.persist?.hasHydrated?.() ?? true,
-      (fn) => useMasks.persist?.onFinishHydration?.(fn) ?? (() => {})
-    )
+    wait(masksDone, (fn) => useMasks.persist?.onFinishHydration?.(fn) ?? (() => {}))
   ])
+  const status: HydrationStatus = { pending: [], failed: [] }
+  if (!useRefs.getState().hydrated) status.pending.push('vibes', 'charRefs')
+  else if (refsLoadFailed()) status.failed.push('vibes', 'charRefs')
+  if (!masksDone()) status.pending.push('masks')
+  else if (masksLoadFailed()) status.failed.push('masks')
+  return status
 }
 
 export function collectStoreData(): BackupData {

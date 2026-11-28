@@ -129,7 +129,10 @@ export const RESTORE_SCHEMA: { sections: Record<DataSectionId, SectionSchema>; r
     // 에셋 프로젝트 → 캐릭터 라이브러리·바이브·레퍼런스 (libraryId 가 없어지면 null = 프로젝트 전용 캐릭터)
     { section: 'projects', path: 'projects[].characters[].libraryId', target: { section: 'characters', key: 'characters' } },
     { section: 'projects', path: 'projects[].characters[].vibeIds[]', target: { section: 'vibes', key: 'vibes' } },
-    { section: 'projects', path: 'projects[].characters[].refIds[]', target: { section: 'charRefs', key: 'charRefs' } }
+    { section: 'projects', path: 'projects[].characters[].refIds[]', target: { section: 'charRefs', key: 'charRefs' } },
+    // 프로젝트 전체에 쓰는 바이브·레퍼런스 (project/run.ts 가 캐릭터별 것과 함께 쓴다)
+    { section: 'projects', path: 'projects[].vibeIds[]', target: { section: 'vibes', key: 'vibes' } },
+    { section: 'projects', path: 'projects[].refIds[]', target: { section: 'charRefs', key: 'charRefs' } }
   ]
 }
 
@@ -177,6 +180,8 @@ export interface RestorePlan {
   /** 히스토리: replace = 비우고 백업으로, merge = 없는 것만 더함 */
   history: { action: 'replace' | 'merge'; originals: boolean } | null
   warnings: string[]
+  /** 이 기기의 지금 데이터를 불러오지 못해 복원하지 않는 섹션 (app.ts planFor 가 채운다) */
+  unavailable?: DataSectionId[]
 }
 
 export interface PlanOptions {

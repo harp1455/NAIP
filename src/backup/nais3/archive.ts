@@ -154,6 +154,7 @@ export async function readNaisArchive(source: ByteSource, opts: { limits?: Parti
       continue
     }
     const rows: Nais3Row[] = []
+    const seen = new Set<number>()
     for (const [i, value] of parsed.entries()) {
       if (!isObj(value)) {
         problems.push({ path, kind: 'invalid-json', detail: `${i + 1}번째 행이 객체가 아닙니다` })
@@ -172,10 +173,13 @@ export async function readNaisArchive(source: ByteSource, opts: { limits?: Parti
         }
       }
       if (typeof row.id !== 'number') bad ??= '숫자 id 가 없습니다'
+      // NAIS3 는 id 가 겹치는 표를 받지 않는다 (PRIMARY KEY) — 두 행이 한 NAIP 항목으로 합쳐지지 않게 뒤의 것은 건너뛴다
+      else if (seen.has(row.id)) bad ??= `id ${row.id} 인 행이 이미 있습니다 — 건너뜁니다`
       if (bad) {
         problems.push({ path, kind: 'invalid-json', detail: `${i + 1}번째 행: ${bad}` })
         continue
       }
+      seen.add(row.id as number)
       rows.push(row)
     }
     tables[table] = rows
@@ -204,11 +208,17 @@ export function nais3ArchiveFromLegacyJson(raw: unknown): Nais3Archive {
     if (!Array.isArray(src)) continue
     included.push(table)
     const rows: Nais3Row[] = []
+    const seen = new Set<number>()
     for (const value of src) {
       if (!isObj(value) || typeof value.id !== 'number') {
         problems.push({ path: `tables.${table}`, kind: 'invalid-json', detail: '잘못된 행을 건너뜁니다' })
         continue
       }
+      if (seen.has(value.id)) {
+        problems.push({ path: `tables.${table}`, kind: 'invalid-json', detail: `id ${value.id} 인 행이 이미 있습니다 — 건너뜁니다` })
+        continue
+      }
+      seen.add(value.id)
       const row: Nais3Row = {}
       for (const [column, v] of Object.entries(value)) {
         if (column === '__image') continue

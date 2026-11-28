@@ -21,6 +21,15 @@ interface MasksState {
   rename: (id: number, name: string) => void
 }
 
+/**
+ * 이번 실행에서 IndexedDB 의 마스크를 불러오지 못했는지 (열기 실패·손상된 값).
+ * 그러면 스토어는 빈 채로 남는다 — 백업·복원이 그 빈 목록을 "지금 마스크"로 보지 않게 알린다.
+ */
+let loadFailed = false
+export function masksLoadFailed(): boolean {
+  return loadFailed
+}
+
 export const useMasks = create<MasksState>()(
   persist(
     (set) => ({
@@ -30,6 +39,16 @@ export const useMasks = create<MasksState>()(
       rename: (id, name) =>
         set((s) => ({ masks: s.masks.map((m) => (m.id === id ? { ...m, name: name.trim() || m.name } : m)) }))
     }),
-    { name: 'naip-masks', storage: debouncedIdbStorage<Pick<MasksState, 'masks'>>() }
+    {
+      name: 'naip-masks',
+      storage: debouncedIdbStorage<Pick<MasksState, 'masks'>>(),
+      // 실패하면 zustand 는 hasHydrated() 를 false 로 둔다 — "아직 불러오는 중"과 가르려고 따로 적는다
+      onRehydrateStorage: () => {
+        loadFailed = false
+        return (state, error) => {
+          loadFailed = !state || error !== undefined
+        }
+      }
+    }
   )
 )

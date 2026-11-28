@@ -11,7 +11,8 @@
  *            nais3: { data, report } = await importNais3(opened.archive, { processImage, newId: uid })
  *            preview = previewRestore(collectStoreData(), data)
  *            plan = planRestore(current, data, { mode, sections, newId: uid, hasHistory, hasOriginals })
- *            applyRestorePlan(plan)  (stores.ts) + restoreHistory(reader, historyPort, plan.history)
+ *            applyRestorePlan(plan)  (stores.ts) + restoreHistorySafely(reader, historyPort, plan.history)  (ports.ts —
+ *            restoreHistory 의 replace 는 먼저 비우므로 앱에서 직접 부르지 않는다)
  * NAIS3로:  naipToNais3(data) 로 잃는 것 확인 → exportNais3(data, sink, { appVersion })
  *
  * ── Phase 4 UI: 앱 연결은 app.ts (화면이 동적 import), 히스토리 포트는 ports.ts (Phase 3 SQLite + 파일),
