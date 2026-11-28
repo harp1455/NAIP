@@ -364,6 +364,8 @@ export const useGeneration = create<GenerationState>()((set, get) => {
       base = {
         ...base,
         ...(regen.snap.params as Partial<GenerationRequest>),
+        // 이 칸이 생기기 전의 기록에는 없다 — 지금 화면의 배경 투명이 섞이지 않게 그 그림대로(없으면 끔)
+        transparentBackground: regen.snap.params?.transparentBackground === true,
         prompt: regen.sent?.prompt ?? mergePromptParts(regen.snap),
         negativePrompt: regen.sent?.negative ?? regen.snap.negative,
         characterPrompts: chars.map((c) => ({

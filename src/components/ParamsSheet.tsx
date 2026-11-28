@@ -1,9 +1,16 @@
 import { useState, type ReactNode } from 'react'
 import { ArrowLeftRight, Dices } from 'lucide-react'
 import { MODELS, NOISE_SCHEDULES, RESOLUTIONS, SAMPLERS, UC_PRESET_OPTIONS } from '../nai/constants'
-import { isMediumEffortModel, isV5Model, MEDIUM_EFFORT_FIXED, modelCapabilities } from '../nai/models'
+import {
+  isMediumEffortModel,
+  isV5Model,
+  MEDIUM_EFFORT_FIXED,
+  modelCapabilities,
+  sendsTransparentBackground
+} from '../nai/models'
 import { fitNaiGenerationResolution } from '../nai/resolution'
 import { usePrompt } from '../stores/prompt'
+import { useSource } from '../stores/source'
 import { ResolutionSelect } from './ResolutionSelect'
 import { IconButton, Row, Select, Sheet, SliderRow, TextInput, Toggle } from './ui'
 
@@ -12,6 +19,9 @@ export function ParamsSheet(props: { onClose: () => void }): ReactNode {
   const { params } = p
   const caps = modelCapabilities(params.model)
   const medium = isMediumEffortModel(params.model)
+  // 배경 투명은 V5만 — 인페인트 중이면 실제로 보낼 인페인트 모델 기준
+  const inpaint = useSource((s) => !!(s.image && s.mask))
+  const alpha = sendsTransparentBackground(params.model, inpaint)
   const [w, setW] = useState(String(params.width))
   const [h, setH] = useState(String(params.height))
   // 목록에 없는 크기면 처음부터 사용자 지정 입력을 펼친다
@@ -181,6 +191,23 @@ export function ParamsSheet(props: { onClose: () => void }): ReactNode {
             checked={caps.variety && params.variety}
             disabled={!caps.variety}
             onChange={(variety) => p.patchParams({ variety })}
+          />
+        </Row>
+        <Row
+          label="배경 투명 (V5)"
+          hint={
+            alpha
+              ? '배경 없이 캐릭터만 투명 PNG로 받습니다'
+              : isV5Model(params.model)
+                ? '이 모델의 인페인트에서는 쓸 수 없습니다'
+                : 'V5 모델에서만 쓸 수 있습니다'
+          }
+        >
+          <Toggle
+            label="배경 투명 (V5)"
+            checked={alpha && !!params.transparentBackground}
+            disabled={!alpha}
+            onChange={(transparentBackground) => p.patchParams({ transparentBackground })}
           />
         </Row>
       </div>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react'
 
 const MAX_SCALE = 8
 const DOUBLE_TAP_SCALE = 2.5
@@ -20,6 +20,8 @@ export function ZoomImage(props: {
   onZoomChange: (zoomed: boolean) => void
   /** 한 손가락으로 움직이지 않고 꾹 눌렀을 때 */
   onLongPress?: () => void
+  /** 그림에 줄 스타일 (투명 배경 그림 뒤의 체크무늬 등 — 그림과 함께 확대·이동된다) */
+  imgStyle?: CSSProperties
 }): ReactNode {
   const box = useRef<HTMLDivElement>(null)
   const img = useRef<HTMLImageElement>(null)
@@ -201,6 +203,7 @@ export function ZoomImage(props: {
         src={props.src}
         alt={props.alt}
         draggable={false}
+        style={props.imgStyle}
         className="h-full w-full select-none object-contain will-change-transform"
       />
     </div>

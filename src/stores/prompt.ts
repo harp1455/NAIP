@@ -16,6 +16,8 @@ export interface Params {
   variety: boolean
   qualityToggle: boolean
   ucPreset: UcPresetIndex
+  /** V5 배경 투명 (straight_alpha) — 이 칸이 생기기 전에 저장한 설정·프리셋에는 없다 (없으면 끔) */
+  transparentBackground?: boolean
 }
 
 export interface PromptPreset {
@@ -61,7 +63,13 @@ const DEFAULT_PARAMS: Params = {
   noiseSchedule: 'karras',
   variety: false,
   qualityToggle: true,
-  ucPreset: 0
+  ucPreset: 0,
+  transparentBackground: false
+}
+
+/** 저장된 params에 빠진 칸(예전 버전에서 저장한 것)을 기본값으로 채운다 */
+export function withParamDefaults(params: Partial<Params> | null | undefined): Params {
+  return { ...DEFAULT_PARAMS, ...(params && typeof params === 'object' ? params : {}) }
 }
 
 export const usePrompt = create<PromptState>()(
@@ -139,7 +147,14 @@ export const usePrompt = create<PromptState>()(
           activePresetId: s.activePresetId === id ? null : s.activePresetId
         }))
     }),
-    { name: 'naip-prompt' }
+    {
+      name: 'naip-prompt',
+      // 예전에 저장한 params에는 새 칸(배경 투명 등)이 없다 — 기본값으로 채워 읽는다
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<PromptState>
+        return { ...current, ...p, params: withParamDefaults(p.params) }
+      }
+    }
   )
 )
 

@@ -29,7 +29,8 @@ const PARAM_GROUPS: Record<'model' | 'size' | 'sampling' | 'quality', (keyof Par
   model: ['model'],
   size: ['width', 'height'],
   sampling: ['steps', 'cfgScale', 'cfgRescale', 'sampler', 'noiseSchedule', 'variety'],
-  quality: ['qualityToggle', 'ucPreset']
+  // 배경 투명은 프롬프트에 붙는 태그라 퀄리티 태그와 함께 다룬다
+  quality: ['qualityToggle', 'ucPreset', 'transparentBackground']
 }
 
 /** 이 앱이 만든 이미지의 스냅샷 (조각 치환 전 원본 프롬프트 3분할 그대로) */
@@ -39,7 +40,8 @@ export function fromSnapshot(snap: SettingsSnapshot, seed?: number): Importable 
     additional: snap.additional,
     detail: snap.detail,
     negative: snap.negative,
-    params: snap.params as Partial<Params>,
+    // 배경 투명 칸이 생기기 전의 기록은 끈 채로 만든 것이다 (없으면 끔 — 지금 켜 둔 값이 남지 않게)
+    params: { ...(snap.params as Partial<Params>), transparentBackground: snap.params?.transparentBackground === true },
     ...(seed ? { seed } : {}),
     chars: snap.chars
   }
@@ -65,6 +67,7 @@ export function fromMetadata(m: ImportedSettings): Importable {
         ? { noiseSchedule: m.noiseSchedule }
         : {}),
       ...(m.variety !== undefined ? { variety: m.variety } : {}),
+      transparentBackground: m.transparentBackground,
       ...(size ?? {})
     },
     ...(m.seed !== undefined ? { seed: m.seed } : {}),

@@ -124,6 +124,14 @@ export function modelCapabilities(model: string): NaiModelCapabilities {
   }
 }
 
+/**
+ * 배경 투명(straight_alpha)이 실제로 실리는지 — V5 계열만. 인페인트면 실제로 보낼 인페인트 모델 기준
+ * (V5 Curated 인페인트는 V4.5 Curated 인페인트 모델로 가서 실리지 않는다)
+ */
+export function sendsTransparentBackground(model: string, inpaint = false): boolean {
+  return modelCapabilities(inpaint ? inpaintingModelFor(model) : model).transparency
+}
+
 export function canEnableAnotherCharacter(model: string, enabledCount: number): boolean {
   return enabledCount < modelCapabilities(model).maxCharacters
 }

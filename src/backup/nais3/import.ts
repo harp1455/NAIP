@@ -11,7 +11,7 @@
  * | scene_presets / gen_scenes           | scenes.folders(묶음) / scenes.scenes (묶음 캐릭터 지정은 뺌)        |
  * | vibe_images (+인코딩 캐시, .nais3vibe) | vibes.vibes (encodings `${model}|${ie}`)                       |
  * | charref_images (V5 종류 포함)          | charRefs.charRefs (type + sameOutfit)                          |
- * | data/settings.json mainParams        | prompt (작업 중인 프롬프트)                                      |
+ * | data/settings.json mainParams        | prompt (작업 중인 프롬프트, 투명 배경 포함)                        |
  * | vibe/charref 폴더, library_*, delta 레퍼런스, 썸네일, 기본 해상도 등 | 보고서의 "옮기지 못한 것"                |
  */
 import { fromUtf8, sniffImage, toBase64 } from '../bytes'
@@ -62,6 +62,14 @@ const PARAM_TYPES: Record<keyof Params, 'string' | 'number' | 'boolean'> = {
   variety: 'boolean',
   qualityToggle: 'boolean',
   ucPreset: 'number'
+}
+
+/**
+ * 값이 없을 수도 있는 파라미터 — NAIS3 는 켠 적이 없으면 저장하지 않는다. 있으면(맞는 타입일 때만) 옮기고,
+ * 없으면 칸을 만들지 않는다 (NAIP 도 없으면 끔으로 읽는다). "저장되지 않은 파라미터"로 알리지 않는다
+ */
+const OPTIONAL_PARAM_TYPES: Record<string, 'string' | 'number' | 'boolean'> = {
+  transparentBackground: 'boolean'
 }
 
 /** NAIS3 정밀 레퍼런스 종류 → NAIP (shared/precise-reference.ts 의 토글 규칙) */
@@ -146,6 +154,12 @@ function mapParams(src: Record<string, unknown>): { params: Params; missing: str
       continue
     }
     ;(params as Record<string, unknown>)[key] = v
+  }
+  for (const [key, type] of Object.entries(OPTIONAL_PARAM_TYPES)) {
+    const v = src[key]
+    if (v === undefined || v === null) continue
+    if (typeof v !== type) invalid.push(key)
+    else (params as Record<string, unknown>)[key] = v
   }
   return { params, missing, invalid }
 }
@@ -279,7 +293,7 @@ export async function importNais3(archive: Nais3Archive, opts: Nais3ImportOption
         params = m.params
         if (m.missing.length) rb.transformed('프롬프트 프리셋', `저장되지 않은 파라미터(${m.missing.join(', ')})는 NAIP 기본값으로`, name)
         if (m.invalid.length) rb.notImported('프롬프트 프리셋', `값이 잘못된 파라미터(${m.invalid.join(', ')}) — 기본값을 씀`, name)
-        const extra = Object.keys(rawParams.value).filter((k) => !(k in PARAM_TYPES))
+        const extra = Object.keys(rawParams.value).filter((k) => !(k in PARAM_TYPES) && !(k in OPTIONAL_PARAM_TYPES))
         if (extra.length) rb.notImported('프롬프트 프리셋', `NAIP 프리셋에 없는 파라미터(${extra.join(', ')})`, name)
       } else if (rawParams.broken) {
         rb.notImported('프롬프트 프리셋', '파라미터를 읽을 수 없어 NAIP 기본값을 씀', name)
@@ -502,7 +516,7 @@ export async function importNais3(archive: Nais3Archive, opts: Nais3ImportOption
     if (typeof main.seed === 'number' && main.seed >= 0) {
       rb.transformed('작업 중인 프롬프트', '시드 고정 여부는 .nais 에 없어 무작위(빈 칸)로', `시드 ${main.seed}`)
     }
-    const known = new Set([...Object.keys(PARAM_TYPES), 'prompt', 'promptParts', 'negativePrompt', 'seed', 'useCoords', 'characterPrompts'])
+    const known = new Set([...Object.keys(PARAM_TYPES), ...Object.keys(OPTIONAL_PARAM_TYPES), 'prompt', 'promptParts', 'negativePrompt', 'seed', 'useCoords', 'characterPrompts'])
     for (const [k, v] of Object.entries(main)) {
       if (known.has(k) || v === undefined || v === null || v === false) continue
       rb.notImported('작업 중인 프롬프트', `NAIP 에 없는 생성 설정(${k})`)

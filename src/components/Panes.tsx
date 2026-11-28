@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Check, CheckSquare, Copy, Download, Search, Share2, Star, Trash2, X } from 'lucide-react'
 import type { HistoryMeta } from '../lib/db'
+import { checkerStyle, hasAlphaBackground } from '../lib/alpha'
 import { useLongPress } from '../lib/longpress'
 import { copyImage, shareHistoryImages } from '../lib/share'
 import { cx } from '../lib/util'
@@ -86,6 +87,7 @@ export function PreviewPane(): ReactNode {
             src={url ?? meta.thumb}
             alt={`생성 이미지 seed ${meta.seed}`}
             draggable={false}
+            style={url && hasAlphaBackground(meta) ? checkerStyle(meta.width, meta.height) : undefined}
             className={cx('absolute inset-0 h-full w-full object-contain', !url && 'blur-sm')}
           />
         </button>

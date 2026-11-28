@@ -1,5 +1,6 @@
 import * as db from './db'
 import type { HistoryMeta } from './db'
+import { generatedTransparent } from './alpha'
 import { copyImageToClipboard, copyText, fileNameFor, haptic, isNative, shareImages } from './native'
 import { copyStoredImage, shareStoredImages } from '../storage/export'
 import { stripMetadata } from './strip'
@@ -77,7 +78,8 @@ export function describeImage(meta: HistoryMeta): string {
       meta.model,
       params.steps !== undefined && `${params.steps}스텝`,
       params.cfgScale !== undefined && `CFG ${params.cfgScale}`,
-      params.sampler
+      params.sampler,
+      generatedTransparent(meta) && '배경 투명'
     ]
       .filter(Boolean)
       .join(' · ')

@@ -18,6 +18,7 @@ import {
   X
 } from 'lucide-react'
 import * as db from '../lib/db'
+import { checkerStyle, generatedTransparent, hasAlphaBackground } from '../lib/alpha'
 import { fromMetadata, fromSnapshot } from '../lib/apply'
 import { useBackClose } from '../lib/back'
 import { readImageSettings } from '../lib/metadata'
@@ -182,6 +183,7 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
             onSwipe={go}
             onZoomChange={setZoomed}
             onLongPress={() => void copyImage(meta, { haptic: true })}
+            imgStyle={hasAlphaBackground(meta) ? checkerStyle(meta.width, meta.height) : undefined}
           />
         ) : (
           meta.thumb && <img src={meta.thumb} alt="" className="h-full w-full object-contain opacity-60 blur-sm" />
@@ -217,6 +219,7 @@ export function ImageViewer(props: { onUseSource: () => void }): ReactNode {
         <div className="scroll-thin max-h-[32vh] shrink-0 select-text overflow-y-auto border-t border-line bg-panel p-3 text-xs">
           <p className="text-dim">
             {meta.model} · {meta.kind}
+            {generatedTransparent(meta) ? ' · 배경 투명' : ''}
             {meta.sceneName ? ` · 씬 ${meta.sceneName}` : ''} · {new Date(meta.ts).toLocaleString('ko-KR')}
           </p>
           {meta.saved && <p className="mt-1 text-ok">저장 위치: Pictures/NAIP/{meta.saved}</p>}

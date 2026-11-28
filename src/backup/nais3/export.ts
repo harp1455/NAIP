@@ -48,6 +48,8 @@ function joinPrompt(...parts: string[]): string {
 }
 
 const PARAM_KEYS = ['model', 'width', 'height', 'steps', 'cfgScale', 'cfgRescale', 'sampler', 'noiseSchedule', 'variety', 'qualityToggle', 'ucPreset']
+/** NAIS3 메인 화면(GenerationRequest)에는 있지만 프리셋(PresetParams)에는 없는 파라미터 */
+const MAIN_ONLY_PARAM_KEYS = ['transparentBackground']
 
 class Lost {
   readonly lines: ReportLine[] = []
@@ -178,6 +180,7 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
       const params = isObj(p.params) ? Object.fromEntries(PARAM_KEYS.filter((k) => p.params && (p.params as Obj)[k] !== undefined).map((k) => [k, (p.params as Obj)[k]])) : null
       const extra = extraKeys(p, ['id', 'name', 'base', 'detail', 'negative', 'params'])
       if (extra.length) lost.add('프롬프트 프리셋', `NAIP 전용 프리셋 항목(${extra.join(', ')})`, name)
+      if (isObj(p.params) && p.params.transparentBackground === true) lost.add('프롬프트 프리셋', '배경 투명 — NAIS3 프리셋에는 이 설정이 없음', name)
       return {
         id: i + 1,
         name,
@@ -399,7 +402,7 @@ export function naipToNais3(data: BackupData, opts: { sections?: readonly Nais3E
       prompt: joinPrompt(s(prompt.base), s(prompt.additional), s(prompt.detail)),
       promptParts: { base: s(prompt.base), additional: s(prompt.additional), detail: s(prompt.detail) },
       negativePrompt: s(prompt.negative),
-      ...Object.fromEntries(PARAM_KEYS.filter((k) => params[k] !== undefined).map((k) => [k, params[k]])),
+      ...Object.fromEntries([...PARAM_KEYS, ...MAIN_ONLY_PARAM_KEYS].filter((k) => params[k] !== undefined).map((k) => [k, params[k]])),
       seed: s(prompt.seed).trim() && Number.isInteger(seedNum) && seedNum >= 0 ? seedNum : -1,
       useCoords: anyCenter
     }
