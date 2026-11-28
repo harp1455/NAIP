@@ -7,6 +7,7 @@ import {
   addAxis,
   addCharacter,
   addValue,
+  carryItemKeys,
   characterCode,
   characterCodes,
   classify,
@@ -102,7 +103,7 @@ describe('combination keys follow axis changes', () => {
     return { p: adoptOne(p, key, 7), expr: e.id, key }
   }
 
-  it('moves existing work into the first value of a new axis and back when that value is removed', () => {
+  it('moves existing work into the first value of a new axis, and leaves it out of the matrix when that value is removed', () => {
     const { p, key } = started()
     const o = addAxis(p, 'outfit')
     expect(o.project.items[key]).toBeDefined()
@@ -119,15 +120,15 @@ describe('combination keys follow axis changes', () => {
     // 두 번째 값은 키를 바꾸지 않는다
     const two = addValue(v.project, o.id, { label: '수영복', prompt: 'swimsuit' })
     expect(Object.keys(two.project.items)).toEqual([combos[0].key])
-    // 하나뿐인 값을 지우면 원래 키로 돌아온다
+    // 하나뿐인 값을 지우면 옮기지 않고 빠진 조합으로 (다음에 넣는 값이 넘겨받지 않게)
     const back = removeValue(v.project, o.id, v.id)
-    expect(Object.keys(back.items)).toEqual([key])
-    expect(orphanItems(back)).toEqual([])
-    // 축째 지워도 (값이 하나뿐이면) 마찬가지
-    expect(Object.keys(removeAxis(v.project, o.id).items)).toEqual([key])
+    expect(Object.keys(back.items)).toEqual([combos[0].key])
+    expect(orphanItems(back).map((i) => i.key)).toEqual([combos[0].key])
+    // 축째 지워도 (값이 하나뿐이어도) 마찬가지
+    expect(Object.keys(removeAxis(v.project, o.id).items)).toEqual([combos[0].key])
   })
 
-  it('moves work made without characters into the first character and back', () => {
+  it('moves work made without characters into the first character, and not back when it is removed', () => {
     let p = createProject('봄')
     const e = addAxis(p, 'expression')
     p = addValue(e.project, e.id, { label: '웃음', prompt: 'smile' }).project
@@ -137,7 +138,9 @@ describe('combination keys follow axis changes', () => {
     const live = expandMatrix(c.project).combos[0].key
     expect(live).not.toBe(key)
     expect(Object.keys(c.project.items)).toEqual([live])
-    expect(Object.keys(removeCharacter(c.project, c.id).items)).toEqual([key])
+    const gone = removeCharacter(c.project, c.id)
+    expect(Object.keys(gone.items)).toEqual([live])
+    expect(orphanItems(gone).map((i) => i.key)).toEqual([live])
   })
 
   it('does not move items while a batch is queued for them, or merge into an existing item', () => {
@@ -146,15 +149,15 @@ describe('combination keys follow axis changes', () => {
     const o = addAxis(busy, 'outfit')
     const v = addValue(o.project, o.id, { label: '교복' })
     expect(Object.keys(v.project.items)).toEqual([key])
-    // 옮길 자리에 이미 항목이 있으면 합치지 않는다
+    // 옮길 자리에 이미 항목이 있으면 합치지 않는다 (값을 껐다 다시 더한 경우 등)
     const ax = addAxis(p, 'outfit')
-    const free = addValue(ax.project, ax.id, { label: '교복' })
-    const movedKey = expandMatrix(free.project).combos[0].key
-    expect(Object.keys(free.project.items)).toEqual([movedKey])
-    const both = { ...free.project, items: { ...free.project.items, [key]: addImage(emptyItem(key), { id: 8, ts: 8 }, { fromQueue: false }) } }
-    const back = removeValue(both, ax.id, free.id)
-    expect(Object.keys(back.items).sort()).toEqual([key, movedKey].sort())
-    expect(back.items[key].images.map((i) => i.id)).toEqual([8])
+    const off = { ...ax.project, axes: ax.project.axes.map((a) => (a.id === ax.id ? { ...a, values: [{ id: 'u1', label: '교복', prompt: '' }] } : a)) }
+    const movedKey = expandMatrix(off).combos[0].key
+    const taken = { ...ax.project, items: { ...ax.project.items, [movedKey]: addImage(emptyItem(movedKey), { id: 8, ts: 8 }, { fromQueue: false }) } }
+    const blocked = carryItemKeys(taken, { ...taken, axes: off.axes })
+    expect(Object.keys(blocked.items).sort()).toEqual([key, movedKey].sort())
+    expect(blocked.items[movedKey].images.map((i) => i.id)).toEqual([8])
+    expect(blocked.items[key].images.map((i) => i.id)).toEqual([7])
   })
 })
 

@@ -6,9 +6,12 @@ import { composeCaption } from '../../nai/cast'
 import { cx } from '../../lib/util'
 import {
   AXIS_KIND_LABEL,
+  addCharacter,
+  addValue,
   characterCode,
   keyedAxes,
   newId,
+  orphanedByEdit,
   parseValueLines,
   projectAxes,
   useProjects,
@@ -26,17 +29,22 @@ import { Chip, DraftArea, DraftInput, Field, patchLatest } from './common'
 
 /**
  * 켜고 끄기로 조합 키에 들어가는 축이 바뀌면(마지막 켠 값을 끄거나, 다 꺼진 축의 값을 켬) 지금까지의 그림이
- * 모두 "행렬에서 빠진 조합"으로 옮겨진다 — 그림은 남고 되돌리면 돌아오지만, 모르고 누르지 않게 먼저 묻는다.
- * (값·캐릭터를 더하거나 지울 때는 model.carryItemKeys가 키를 옮겨 준다)
+ * "행렬에서 빠진 조합"으로 옮겨진다 — 그림은 남고 되돌리면 돌아오지만, 모르고 누르지 않게 먼저 묻는다.
+ * 첫 값·첫 캐릭터를 더할 때는 model.carryItemKeys가 키를 옮겨 주지만, 생성 대기·생성 중인 그림이 있으면
+ * 옮기지 못하니 그때도 묻는다 (adding). next는 편집 결과 — 더하기는 model.addValue·addCharacter로 미리 만든 것.
+ * 지울 때는 지우기 확인 창이 그림이 빠진 조합에 남는다고 알린다
  */
-function confirmKeyChange(p: Project, next: Pick<Project, 'characters' | 'axes'>, what: string): boolean {
-  const images = Object.values(p.items).reduce((n, i) => n + i.images.length, 0)
-  if (!images) return true
+export function confirmKeyChange(p: Project, next: Project, what: string, adding = false): boolean {
   const before = [...keyedAxes(p).keys()].sort().join('|')
   const after = [...keyedAxes(next).keys()].sort().join('|')
   if (before === after) return true
+  const images = orphanedByEdit(p, next)
+  if (!images) return true
+  const busy = adding && Object.values(p.items).some((i) => i.queued > 0 || i.generating > 0)
   return window.confirm(
-    `${what} 행렬의 축이 바뀌어 지금까지 만든 그림 ${images}장이 모두 "행렬에서 빠진 조합"으로 옮겨집니다. 그림은 지워지지 않고, 다시 되돌리면 돌아옵니다. 계속할까요?`
+    `${what} 행렬의 축이 바뀌어 지금까지 만든 그림 ${images}장이 "행렬에서 빠진 조합"으로 옮겨집니다.` +
+      (busy ? ' 생성 대기·생성 중인 그림이 있어 새 조합으로 옮기지 못합니다 (생성이 끝난 뒤에 더하면 첫 값의 조합으로 들어갑니다).' : '') +
+      ' 그림은 지워지지 않고, 다시 되돌리면 돌아옵니다. 계속할까요?'
   )
 }
 
@@ -115,9 +123,10 @@ export function LibraryPickerSheet(props: { project: Project; onClose: () => voi
           className="flex-1"
           disabled={!picked.size}
           onClick={() => {
-            for (const c of characters.filter((x) => picked.has(x.id))) {
-              useProjects.getState().addCharacter(props.project.id, { name: c.name, libraryId: c.id })
-            }
+            const adds = characters.filter((x) => picked.has(x.id)).map((c) => ({ name: c.name, libraryId: c.id }))
+            const next = adds.reduce((acc, c) => addCharacter(acc, c).project, props.project)
+            if (!confirmKeyChange(props.project, next, `캐릭터 ${adds.length}명을 더하면`, true)) return
+            for (const c of adds) useProjects.getState().addCharacter(props.project.id, c)
             props.onClose()
           }}
         >
@@ -335,7 +344,9 @@ export function AxisEditSheet(props: { project: Project; axisId: string; onClose
             variant="ghost"
             className="px-2 text-xs"
             onClick={() => {
-              const id = s.addValue(p.id, axis.id, { label: `값 ${axis.values.length + 1}` })
+              const v = { label: `값 ${axis.values.length + 1}` }
+              if (!confirmKeyChange(p, addValue(p, axis.id, v).project, `"${v.label}"을(를) 더하면`, true)) return
+              const id = s.addValue(p.id, axis.id, v)
               if (id) setValueId(id)
             }}
           >
@@ -366,6 +377,8 @@ export function AxisEditSheet(props: { project: Project; axisId: string; onClose
               variant="primary"
               disabled={!parsed.length}
               onClick={() => {
+                const next = parsed.reduce((acc, v) => addValue(acc, axis.id, v).project, p)
+                if (!confirmKeyChange(p, next, `값 ${parsed.length}개를 더하면`, true)) return
                 for (const v of parsed) s.addValue(p.id, axis.id, v)
                 setBulk(null)
               }}

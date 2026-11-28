@@ -2,11 +2,11 @@
  * 프로젝트 만들기·고치기 순수 함수 — 축·값·캐릭터를 지울 때 그것을 가리키는 제외 규칙·덮어쓰기·분류 규칙도
  * 함께 정리한다 (조건이 사라진 덮어쓰기·제외 규칙이 엉뚱하게 넓어지지 않도록 규칙째 지운다).
  * 에셋 항목(그림)은 지우지 않는다 — 행렬에서 빠진 항목은 matrix.orphanItems로 따로 보여 준다.
- * 축이 조합 키에 새로 들어오거나 빠질 때(첫 값·첫 캐릭터 추가, 하나뿐인 값·캐릭터 삭제)는 carryItemKeys가
- * 지금까지의 그림을 새 키로 옮겨 행렬에 남긴다.
+ * 축이 조합 키에 새로 들어올 때(첫 값·첫 캐릭터 추가)는 carryItemKeys가 지금까지의 그림을 새 키로 옮겨
+ * 행렬에 남긴다. 하나뿐인 값·캐릭터를 지우면 그 그림은 "행렬에서 빠진 조합"으로 간다 (옮기지 않는다).
  */
 import { emptyItem } from './curation'
-import { comboKey, parseComboKey, projectAxes } from './matrix'
+import { comboKey, excludedBy, parseComboKey, projectAxes } from './matrix'
 import {
   CHARACTER_AXIS,
   DEFAULT_AXIS_TARGET,
@@ -262,14 +262,21 @@ export function keyedAxes(p: Pick<Project, 'characters' | 'axes'>): Map<string, 
   return out
 }
 
+/** 키의 축·값이 이 행렬 모양(켠 값이 있는 축 전부, 그 축의 켠 값)에 맞는가 */
+function fitsKeyedAxes(keyed: Map<string, string[]>, coords: Record<string, string>): boolean {
+  const axes = Object.keys(coords)
+  return axes.length === keyed.size && axes.every((a) => keyed.get(a)?.includes(coords[a]))
+}
+
 /**
- * 조합 키는 켠 값이 있는 축 전부로 만들어서, 빈 축에 첫 값을 넣거나(첫 캐릭터 포함) 하나뿐인 값을 지우면
- * 모든 키가 바뀌고 지금까지의 그림·선별·코드가 통째로 "행렬에서 빠진 조합"으로 밀려난다.
- * 그 경우(키에 들어가는 축이 하나 늘거나 줄고, 그 축의 켠 값이 하나뿐일 때)만 항목을 새 키로 옮긴다:
- *   - 축이 생김 → 지금 행렬 모양의 항목에 그 값을 붙인다 (지금까지의 그림 = 첫 값의 조합)
- *   - 축이 빠짐 → 그 값을 가진 항목에서 축을 뗀다
+ * 조합 키는 켠 값이 있는 축 전부로 만들어서, 빈 축에 첫 값을 넣으면(첫 캐릭터 포함) 모든 키가 바뀌고
+ * 지금까지의 그림·선별·코드가 통째로 "행렬에서 빠진 조합"으로 밀려난다.
+ * 그 경우(키에 들어가는 축이 하나 늘고, 그 축의 켠 값이 하나뿐일 때)만 지금 행렬 모양의 항목에 그 값을 붙여
+ * 새 키로 옮긴다 (지금까지의 그림 = 첫 값의 조합 — 화면에도 그렇게 안내한다).
+ * 축이 빠질 때(하나뿐인 값·캐릭터 삭제)는 옮기지 않는다 — 떼어 두면 다음에 넣는 값·캐릭터가 지운 값의 그림을
+ * 자기 것으로 넘겨받는다 (교복 그림이 수영복 채택으로, 민지 그림이 하늘 것으로). 그 그림은 빠진 조합에 남는다.
  * 옮길 자리에 이미 항목이 있으면 합치지 않고 그대로 둔다. 생성 대기·생성 중인 항목이 있으면(대기열이 옛 키로
- * 결과를 넣는다) 옮기지 않는다. 그림은 지우지 않는다.
+ * 결과를 넣는다) 옮기지 않는다 — 화면은 orphanedByEdit로 먼저 묻는다. 그림은 지우지 않는다.
  */
 export function carryItemKeys(prev: Project, next: Project): Project {
   const entries = Object.values(next.items)
@@ -278,27 +285,19 @@ export function carryItemKeys(prev: Project, next: Project): Project {
   const after = keyedAxes(next)
   const added = [...after.keys()].filter((a) => !before.has(a))
   const removed = [...before.keys()].filter((a) => !after.has(a))
-  if (added.length + removed.length !== 1) return next
-  const axisId = added[0] ?? removed[0]
-  const values = added.length ? after.get(axisId)! : before.get(axisId)!
+  if (added.length !== 1 || removed.length) return next
+  const axisId = added[0]
+  const values = after.get(axisId)!
   if (values.length !== 1) return next
   const valueId = values[0]
-  // 지금(prev) 행렬 모양인 키만 — 이미 빠져 있던 항목은 건드리지 않는다
-  const shaped = (coords: Record<string, string>): boolean => {
-    const axes = Object.keys(coords)
-    return axes.length === before.size && axes.every((a) => before.get(a)?.includes(coords[a]))
-  }
   const items = { ...next.items }
   const counters = { ...next.exportCounters }
   let moved = false
   for (const item of entries) {
     const coords = parseComboKey(item.key)
-    if (!shaped(coords)) continue
-    const target = { ...coords }
-    if (added.length) target[axisId] = valueId
-    else delete target[axisId]
-    if (!Object.keys(target).length) continue
-    const key = comboKey(target)
+    // 지금(prev) 행렬 모양인 키만 — 이미 빠져 있던 항목은 건드리지 않는다
+    if (!fitsKeyedAxes(before, coords)) continue
+    const key = comboKey({ ...coords, [axisId]: valueId })
     if (key === item.key || items[key]) continue
     delete items[item.key]
     items[key] = { ...item, key }
@@ -311,6 +310,24 @@ export function carryItemKeys(prev: Project, next: Project): Project {
     moved = true
   }
   return moved ? { ...next, items, exportCounters: counters } : next
+}
+
+/**
+ * 편집(prev → next, 키 옮기기까지 한 결과)으로 행렬 안에서 "행렬에서 빠진 조합"으로 밀려나는 그림 장수.
+ * 확인 창용 — 켜고 끄기로 축이 바뀔 때, 생성 대기 중이라 carryItemKeys가 옮기지 못할 때
+ */
+export function orphanedByEdit(prev: Project, next: Project): number {
+  const before = keyedAxes(prev)
+  const after = keyedAxes(next)
+  let n = 0
+  for (const item of Object.values(next.items)) {
+    if (!item.images.length) continue
+    const coords = parseComboKey(item.key)
+    const liveBefore = fitsKeyedAxes(before, coords) && !excludedBy(coords, prev.exclusions)
+    const liveAfter = fitsKeyedAxes(after, coords) && !excludedBy(coords, next.exclusions)
+    if (liveBefore && !liveAfter) n += item.images.length
+  }
+  return n
 }
 
 /**

@@ -7,6 +7,7 @@ import { fitNaiGenerationResolution } from '../../nai/resolution'
 import { cx } from '../../lib/util'
 import {
   AXIS_KIND_LABEL,
+  addCharacter,
   characterCode,
   useProjects,
   type AxisKind,
@@ -25,6 +26,7 @@ import { DraftArea, DraftInput, Field, NumberInput, patchLatest, Segmented } fro
 import {
   AxisEditSheet,
   CharacterEditSheet,
+  confirmKeyChange,
   describeMatch,
   ExclusionSheet,
   LibraryPickerSheet,
@@ -83,7 +85,9 @@ export function ProjectEditor(props: { project: Project }): ReactNode {
                 variant="ghost"
                 className="px-2 text-xs"
                 onClick={() => {
-                  const id = s.addCharacter(p.id, { name: `캐릭터 ${p.characters.length + 1}` })
+                  const c = { name: `캐릭터 ${p.characters.length + 1}` }
+                  if (!confirmKeyChange(p, addCharacter(p, c).project, `"${c.name}"을(를) 더하면`, true)) return
+                  const id = s.addCharacter(p.id, c)
                   if (id) setCharSheet(id)
                 }}
               >

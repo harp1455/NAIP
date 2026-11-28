@@ -5,7 +5,7 @@
 import { adoptedImages } from './curation'
 import { buildCodeList, assignImageCodes, columnSpecs, letterCode, type ManifestRow } from './manifest'
 import { buildJob, expandMatrix, joinPrompt, type Combination, type MatrixSelection } from './matrix'
-import { previewPaths, renderTemplate, type NamingPreview, type PathEntry, type TemplateVars } from './template'
+import { pathKey, previewPaths, renderTemplate, type NamingPreview, type PathEntry, type TemplateVars } from './template'
 import { CHARACTER_AXIS, type AssetImage, type AxisKind, type Project, type ProjectCharacter } from './types'
 
 export interface ExportCandidate {
@@ -175,17 +175,22 @@ export interface ExportPlanOptions extends CandidateOptions {
  * 지난번 내보낸 경로 — 그림 자신의 기록, 없으면 이 그림이 교체한 이전 버전들의 기록, 그것도 없으면
  * 이 그림이 받은 채택 칸에 마지막으로 내보낸 경로(item.slotPaths). 교체한 새 그림이나 채택을 풀었다가
  * 다른 그림을 채택해 같은 칸(= 같은 코드)을 받은 그림이 같은 파일을 새로 쓰게 해서, 코드의 파일에
- * 탈락한 그림이 남지 않고 이름·코드가 바뀌지 않는다
+ * 탈락한 그림이 남지 않고 이름·코드가 바뀌지 않는다.
+ * 다만 다른 칸으로 다시 채택된 그림이 아직 쓰고 있는 파일은 물려받지 않는다 (덮어쓰면 그 그림의 파일이 사라진다)
  */
 export function previousExportPath(project: Project, key: string, image: AssetImage): string | undefined {
   const item = project.items[key]
-  const byId = new Map((item?.images ?? []).map((i) => [i.id, i]))
+  const images = item?.images ?? []
+  const byId = new Map(images.map((i) => [i.id, i]))
+  const heldByOther = (path: string): boolean =>
+    images.some((i) => i.id !== image.id && i.mark === 'adopted' && i.exported !== undefined && pathKey(i.exported.path) === pathKey(path))
   const seen = new Set<number>()
   for (let cur: AssetImage | undefined = image; cur && !seen.has(cur.id); cur = cur.replaces !== undefined ? byId.get(cur.replaces) : undefined) {
     seen.add(cur.id)
-    if (cur.exported) return cur.exported.path
+    if (cur.exported) return cur === image || !heldByOther(cur.exported.path) ? cur.exported.path : undefined
   }
-  return image.slot !== undefined ? item?.slotPaths?.[String(image.slot)] : undefined
+  const slotPath = image.slot !== undefined ? item?.slotPaths?.[String(image.slot)] : undefined
+  return slotPath !== undefined && !heldByOther(slotPath) ? slotPath : undefined
 }
 
 function extOf(mime: string | undefined): string {
