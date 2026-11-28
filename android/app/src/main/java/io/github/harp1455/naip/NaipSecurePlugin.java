@@ -17,9 +17,9 @@ import javax.crypto.SecretKey;
 
 /**
  * 인증정보(NovelAI·GitHub 토큰) 보관소.
- * Android Keystore에 만든 AES-256-GCM 키(기기 밖으로 꺼낼 수 없음)로 암호화해 SharedPreferences에 둔다.
+ * Android Keystore에 만든 AES-256-GCM 키(기기 밖으로 꺼낼 수 없음, 값마다 하나)로 암호화해 SharedPreferences에 둔다.
  * 평문은 메모리에서만 다루고 로그에 남기지 않는다. 앱 백업(allowBackup=false)에도 포함되지 않는다.
- * 암호화·보관 규칙은 SecretVault에 있다.
+ * 암호화·보관 규칙(키를 언제 만들고 지우는지)은 SecretVault에 있다.
  */
 @CapacitorPlugin(name = "NaipSecure")
 public class NaipSecurePlugin extends Plugin {
