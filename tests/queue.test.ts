@@ -235,6 +235,36 @@ describe('persisted queue + generation store', () => {
     expect(useGeneration.getState().queue).toEqual([])
   }, 20000)
 
+  it('never offers a batch started in this run as unfinished from the last run', async () => {
+    // 앱을 열자마자 "생성"을 눌러 저장소 부팅(히스토리 → 대기열 읽기)보다 먼저 배치가 기록된 경우.
+    // 그 배치를 "끝나지 않은 생성"으로 물으면 이어서 하기 = 같은 장을 두 번, 버리기 = 도는 배치의 기록 삭제
+    const { generateImage } = await import('../src/nai/client')
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let sent!: () => void
+    const inFlight = new Promise<void>((r) => (sent = r))
+    vi.mocked(generateImage).mockImplementationOnce(async (_t, request) => {
+      sent()
+      await gate
+      return {
+        image: new Blob([new Uint8Array(8)], { type: 'image/png' }),
+        payload: { input: request.prompt, parameters: {} },
+        stats: { waitMs: 1, downloadMs: 1, sentBytes: 1, receivedBytes: 1 }
+      } as never
+    })
+    useSettings.setState({ delayMin: 1, delayMax: 1 })
+    const { usePrompt } = await import('../src/stores/prompt')
+    usePrompt.setState({ count: 2 })
+    const run = useGeneration.getState().start()
+    await inFlight
+    // 첫 장은 "보냄", 둘째 장은 아직 — 부팅이 지금 대기열을 읽는다
+    expect(await loadResume()).toEqual([])
+    release()
+    await run
+    expect(calls).toHaveLength(1)
+    expect(useHistory.getState().items).toHaveLength(2)
+  }, 20000)
+
   it('forgets progress rows whose batch was never written', async () => {
     const { getStorage } = await import('../src/storage')
     const s = await getStorage()

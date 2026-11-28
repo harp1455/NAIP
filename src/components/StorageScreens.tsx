@@ -4,6 +4,7 @@ import { formatBytes } from '../storage'
 import { useGeneration } from '../stores/generation'
 import { discardResume } from '../stores/queue-persist'
 import { useStorageBoot } from '../stores/storage'
+import { useSettings } from '../stores/settings'
 import { Button, Sheet, Toggle } from './ui'
 
 /** 예전 히스토리 옮기기 화면 (진행·공간 부족·실패) */
@@ -89,7 +90,9 @@ function ResumeSheet(): ReactNode {
   const { phase, resume, closeResume } = useStorageBoot()
   const [withUncertain, setWithUncertain] = useState(false)
   const [busy, setBusy] = useState(false)
-  if (phase !== 'ready' || !resume?.length) return null
+  // 토큰을 다 읽기 전에 "이어서 생성"을 누르면 저장된 토큰이 있어도 "토큰을 먼저 설정" 오류로 닫힌다
+  const secretsLoaded = useSettings((s) => s.secretsLoaded)
+  if (phase !== 'ready' || !resume?.length || !secretsLoaded) return null
   const remaining = resume.reduce((a, e) => a + e.remaining.length, 0)
   const uncertain = resume.reduce((a, e) => a + e.uncertain.length, 0)
   const sending = remaining + (withUncertain ? uncertain : 0)
