@@ -273,6 +273,40 @@ describe('history limit pruning', () => {
     expect(left).toEqual([1, 3, 6])
     expect(project(id).items[key].images.map((i) => i.id).sort()).toEqual([1, 3])
   }, 20000)
+
+  /** 프로젝트 그림(미선별) 1·2·3이 보관 한도 3을 다 채운 상태 */
+  async function fullOfKeptImages(): Promise<{ id: string; key: string; ids: () => Promise<number[]> }> {
+    const id = makeProject()
+    const key = planJobs(project(id), 'all').jobs[0].key
+    const h = useHistory.getState()
+    for (const n of [1, 2, 3]) await h.add(meta(n), png())
+    for (const n of [1, 2, 3]) useProjects.getState().addImage(id, key, { id: n, ts: n }, { fromQueue: false })
+    useSettings.setState({ historyLimit: 3 })
+    const { history } = await getStorage()
+    const ids = async (): Promise<number[]> => (await history.list({}, 50)).map((m) => m.id).sort((x, y) => x - y)
+    return { id, key, ids }
+  }
+
+  it('never prunes the image just added, even when kept project images fill the whole limit', async () => {
+    const { ids } = await fullOfKeptImages()
+    // 지울 수 있는 것이 방금 만든 그림뿐이면 아무것도 지우지 않는다 (한도를 잠시 넘긴다)
+    await useHistory.getState().add(meta(10), png())
+    expect(await ids()).toEqual([1, 2, 3, 10])
+    await useHistory.getState().add(meta(11), png())
+    // 다음 그림이 들어오면 그 전 그림(10)부터 정리한다
+    expect(await ids()).toEqual([1, 2, 3, 11])
+  }, 20000)
+
+  it('a project image generated into a full history stays, and the project never points at a deleted image', async () => {
+    const { id, key, ids } = await fullOfKeptImages()
+    expect(enqueueCombo(project(id), key, 1)).toMatchObject({ images: 1 })
+    await idle()
+    expect(calls).toHaveLength(1)
+    const imgs = project(id).items[key].images.map((i) => i.id)
+    expect(imgs).toHaveLength(4)
+    expect(await ids()).toEqual([...imgs].sort((x, y) => x - y))
+    expect(counts(id)).toEqual({ queued: 0, generating: 0, images: 4 })
+  }, 20000)
 })
 
 describe('double taps', () => {
@@ -402,6 +436,30 @@ describe('project images in history', () => {
     await history.add(meta(late + 1), png())
     expect(await loadResume()).toEqual([])
     expect(project(id).items[key].images.map((i) => i.id)).toEqual([late])
+  }, 20000)
+
+  it('a late boot that puts back an image of the running batch first does not leave it counted as generating', async () => {
+    const id = makeProject()
+    const key = planJobs(project(id), 'all').jobs[0].key
+    // 앱을 연 뒤 저장소 준비가 늦게 끝나, 빠진 그림 찾기(loadResume)가 히스토리 저장과 프로젝트 기록 사이에 돈다
+    const add = useHistory.getState().add
+    let adopted = 0
+    useHistory.setState({
+      add: async (m, blob) => {
+        await add(m, blob)
+        await loadResume()
+        if (m.project && project(id).items[m.project.key].images.some((i) => i.id === m.id)) adopted++
+      }
+    })
+    try {
+      expect(enqueueCombo(project(id), key, 2)).toMatchObject({ images: 2 })
+      await idle()
+    } finally {
+      useHistory.setState({ add })
+    }
+    expect(calls).toHaveLength(2)
+    expect(adopted).toBe(2)
+    expect(counts(id)).toEqual({ queued: 0, generating: 0, images: 2 })
   }, 20000)
 })
 

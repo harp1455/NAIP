@@ -205,7 +205,8 @@ export async function loadResume(): Promise<ResumeEntry[]> {
   const own = new Set(live)
   const { queue, history } = await getStorage()
   // ── Phase 5: 히스토리에는 분류 표시와 함께 들어갔는데 프로젝트 기록(localStorage — 늦게 디스크에 쓰인다)이
-  // 저장되기 전에 앱이 죽어 빠진 그림을 다시 넣는다. 대기열 기록이 이미 끝났거나 지워진 장도 있어 대기열과 따로 찾는다
+  // 저장되기 전에 앱이 죽어 빠진 그림을 다시 넣는다. 대기열 기록이 이미 끝났거나 지워진 장도 있어 대기열과 따로 찾는다.
+  // 지금 도는 배치의 그림을 프로젝트 기록 직전에 먼저 넣어도 projectItemLanded가 그 장의 생성 중 장수를 돌려준다
   const cutoff = adoptCutoff()
   if (cutoff !== null) {
     try {

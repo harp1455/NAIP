@@ -76,7 +76,17 @@ export function projectItemLanded(item: Carrier, image: NewAssetImage): void {
   states.set(item, 'landed')
   // 멈춘 뒤에 늦게 도착한 장은 이미 생성 중 장수를 되돌렸다 — 그림만 넣는다
   const fromQueue = state === 'started' || state === undefined
-  useProjects.getState().addImage(p.tag.projectId, p.tag.key, image, { fromQueue })
+  const s = useProjects.getState()
+  const current = s.projects.find((x) => x.id === p.tag.projectId)?.items[p.tag.key]
+  if (fromQueue && current?.images.some((i) => i.id === image.id)) {
+    // 앱을 연 뒤 늦게 돈 빠진 그림 찾기(adoptTaggedImages)가 히스토리 저장과 이 기록 사이에 이 그림을 먼저 넣었다 —
+    // 그쪽은 장수를 건드리지 않으므로, 그림은 그대로 두고 이 장의 생성 중(없으면 대기) 장수만 돌려준다
+    const generating = current.generating > 0 ? 1 : 0
+    const queued = generating === 0 && current.queued > 0 ? 1 : 0
+    if (generating || queued) s.releaseRuntime(p.tag.projectId, [{ key: p.tag.key, queued, generating }])
+    return
+  }
+  s.addImage(p.tag.projectId, p.tag.key, image, { fromQueue })
 }
 
 /** 이 장은 실패했다 (시작한 장만) */

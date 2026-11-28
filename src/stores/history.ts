@@ -137,7 +137,11 @@ export const useHistory = create<HistoryState>()((set, get) => ({
     const limit = useSettings.getState().historyLimit
     const over = limit > 0 ? get().total - limit : 0
     if (over > 0) {
-      const ids = await (await getStorage()).history.oldestIds(over, projectKeptImageIds())
+      // 방금 넣은 그림도 지우지 않는다 — 프로젝트 그림은 이 함수가 끝난 뒤에야 프로젝트에 들어가고,
+      // 남길 그림이 한도를 다 채웠을 때 가장 오래된 "지울 수 있는" 그림이 바로 이것이다 (그때는 한도를 잠시 넘긴다)
+      const keep = projectKeptImageIds()
+      keep.add(meta.id)
+      const ids = await (await getStorage()).history.oldestIds(over, keep)
       if (ids.length) await get().remove(ids)
     }
   },
