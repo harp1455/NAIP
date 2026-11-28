@@ -186,6 +186,35 @@ describe('gallery export', () => {
     expect(rest.entries.map((e) => e.candidate.image.id)).toEqual([801])
   })
 
+  it('does not send that image back onto the overwritten file through its slot path once the names are split', async () => {
+    const { id, keys } = setup('겹', ['웃음', '울음'])
+    useProjects.getState().patch(id, { naming: { ...project(id).naming, fileTemplate: '{character}', duplicate: 'overwrite' } })
+    const only = { ...all, onlyNotExported: true }
+    await adopt(id, keys[0], [801])
+    await run(id, only)
+    await adopt(id, keys[1], [802])
+    await run(id, only)
+    // 그 파일은 이제 802 — 801의 칸도 그 경로를 더는 제 파일로 기억하지 않는다
+    expect(project(id).items[keys[0]].slotPaths?.['1']).toBeUndefined()
+    expect(project(id).items[keys[1]].slotPaths?.['1']).toBe('겹/민지/민지.png')
+    // 표정마다 따로 이름을 짓고 더는 덮어쓰지 않게 바꾼 뒤 "새 것만"
+    useProjects.getState().patch(id, { naming: { ...project(id).naming, fileTemplate: '{character}_{emotion}', duplicate: 'suffix' } })
+    const plan = planExport(project(id), { onlyNotExported: true, existing: [...gallery.values()].map((g) => g.path) })
+    expect(plan.entries.map((e) => ({ id: e.candidate.image.id, path: e.path.path, status: e.path.status }))).toEqual([
+      { id: 801, path: '겹/민지/민지_웃음.png', status: 'ok' }
+    ])
+    const saved: string[] = []
+    onSave = (p) => saved.push(p)
+    expect(await run(id, only)).toMatchObject({ saved: 1, failed: 0 })
+    expect(saved).toEqual(['겹/민지/민지_웃음.png'])
+    expect(project(id).items[keys[1]].images[0].exported?.path).toBe('겹/민지/민지.png')
+    expect(project(id).items[keys[0]].images[0].exported?.path).toBe('겹/민지/민지_웃음.png')
+    // 다음 "새 것만"은 보낼 것이 없다 (두 조합이 서로 덮어쓰지 않는다)
+    saved.length = 0
+    expect(await run(id, only)).toMatchObject({ saved: 0 })
+    expect(saved).toEqual([])
+  })
+
   it('keeps a character\'s code letter after characters are reordered', async () => {
     const s = useProjects.getState()
     const id = s.create('글자')
