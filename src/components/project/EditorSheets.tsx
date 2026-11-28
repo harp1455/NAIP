@@ -26,6 +26,7 @@ import { useRefs } from '../../stores/refs'
 import { ResolutionSelect } from '../ResolutionSelect'
 import { Button, Empty, IconButton, Row, Select, Sheet, TextArea, TextInput, Toggle } from '../ui'
 import { Chip, DraftArea, DraftInput, Field, patchLatest } from './common'
+import { TemplateLinesPicker } from './TemplatePicker'
 
 /**
  * 켜고 끄기로 조합 키에 들어가는 축이 바뀌면(마지막 켠 값을 끄거나, 다 꺼진 축의 값을 켬) 지금까지의 그림이
@@ -222,13 +223,16 @@ export function CharacterEditSheet(props: { project: Project; charId: string; on
           <Field label="이름">
             <DraftInput label="캐릭터 이름" value={c.name} onCommit={(name) => patch({ name: name.trim() || c.name })} />
           </Field>
-          <Field label="파일 이름용 (slug)">
+          <Field label="파일 이름 (영문)">
             <DraftInput label="캐릭터 slug" value={c.slug ?? ''} placeholder={c.name} onCommit={(slug) => patch({ slug: slug.trim() || undefined })} />
           </Field>
-          <Field label="코드">
+          <Field label="코드 글자">
             <DraftInput label="코드 글자" value={c.code ?? ''} placeholder={characterCode(p, c)} onCommit={(code) => patch({ code: code.trim() || undefined })} />
           </Field>
         </div>
+        <p className="-mt-1.5 text-[11px] text-dim">
+          파일 이름은 내보낼 때 {'{character}'} 자리에(비우면 이름), 코드 글자는 이미지 코드 앞에 씁니다 (A → A001).
+        </p>
         <Field label="라이브러리 캐릭터" hint="생성할 때 라이브러리의 고정·가변·디테일 칸을 읽어 앞에 붙입니다 (변형 그룹은 쓰지 않음 — 의상·표정은 축으로)">
           <Select
             label="라이브러리 캐릭터"
@@ -242,8 +246,8 @@ export function CharacterEditSheet(props: { project: Project; charId: string; on
             {lib ? composeCaption(lib, []) || '(라이브러리 프롬프트가 비어 있음)' : '라이브러리에서 지워졌습니다 — 아래 조각만 보냅니다'}
           </p>
         )}
-        <Field label="이 프로젝트에서 덧붙일 캐릭터 프롬프트">
-          <DraftArea label="캐릭터 추가 프롬프트" value={c.prompt ?? ''} onCommit={(prompt) => patch({ prompt })} placeholder="solo, upper body" />
+        <Field label="이 프로젝트에서 덧붙일 캐릭터 프롬프트" hint={c.libraryId === null ? '직접 추가한 캐릭터는 이 칸이 캐릭터 프롬프트입니다' : undefined}>
+          <DraftArea label="캐릭터 추가 프롬프트" value={c.prompt ?? ''} onCommit={(prompt) => patch({ prompt })} placeholder={c.libraryId === null ? '1girl, black hair, school uniform' : 'solo, upper body'} />
         </Field>
         <Field label="캐릭터 네거티브">
           <DraftArea label="캐릭터 추가 네거티브" rows={2} value={c.negative ?? ''} onCommit={(negative) => patch({ negative })} />
@@ -315,13 +319,13 @@ export function AxisEditSheet(props: { project: Project; axisId: string; onClose
               onChange={(kind) => patch({ kind })}
             />
           </Field>
-          <Field label="이름 (변수 {이름})">
+          <Field label="이름" hint={`파일 이름 규칙에서 {${axis.name}}`}>
             <DraftInput label="축 이름" value={axis.name} onCommit={(name) => patch({ name: name.trim() || axis.name })} />
           </Field>
-          <Field label="영문 변수 (예: hair)">
+          <Field label="영문 변수 (선택)" hint="예: hair → {hair}">
             <DraftInput label="축 key" value={axis.key ?? ''} placeholder="비우면 이름만" onCommit={(key) => patch({ key: key.trim() || undefined })} />
           </Field>
-          <Field label="넣을 곳">
+          <Field label="태그를 넣을 곳" hint="의상·표정은 보통 캐릭터 프롬프트">
             <Select
               label="프롬프트 위치"
               value={axis.target}
@@ -335,7 +339,9 @@ export function AxisEditSheet(props: { project: Project; axisId: string; onClose
         </div>
 
         <div className="flex items-center">
-          <h3 className="flex-1 text-xs font-semibold">값 {axis.values.length}개</h3>
+          <h3 className="flex-1 text-xs font-semibold">
+            값 {axis.values.length}개 <span className="font-normal text-dim">— 값마다 그림이 따로</span>
+          </h3>
           <Button variant="ghost" className="px-2 text-xs" onClick={() => setBulk(bulk === null ? '' : null)}>
             <ListPlus size={14} />
             여러 줄 추가
@@ -356,6 +362,7 @@ export function AxisEditSheet(props: { project: Project; axisId: string; onClose
         </div>
         {bulk !== null && (
           <div className="flex flex-col gap-2 rounded-lg border border-line bg-field p-2">
+            <TemplateLinesPicker axis={axis} text={bulk} onChange={setBulk} />
             <TextArea label="여러 값 붙여넣기" rows={5} value={bulk} onChange={setBulk} placeholder={'웃음: smile, open mouth\n울음 (cry): crying, tears\nangry, frown'} />
             <p className="text-[11px] text-dim">
               한 줄에 하나 — "이름: 프롬프트"(콜론 뒤 띄어쓰기), 괄호 안은 파일 이름용, 이름이 없으면 첫 조각을 이름으로. artist:이름 같은 태그는
@@ -388,9 +395,12 @@ export function AxisEditSheet(props: { project: Project; axisId: string; onClose
           </div>
         )}
         {axis.values.length === 0 ? (
-          <p className="py-4 text-center text-xs text-dim">
-            값이 없으면 이 축은 행렬에서 빠집니다. 첫 값을 넣으면 지금까지 만든 그림은 그 값의 조합으로 들어갑니다
-          </p>
+          <div className="flex flex-col items-center gap-2 py-4 text-center text-xs text-dim">
+            <p>
+              값이 없으면 이 축은 행렬에서 빠집니다. 첫 값을 넣으면 지금까지 만든 그림은 그 값의 조합으로 들어갑니다
+            </p>
+            {bulk === null && <TemplateLinesPicker axis={axis} text="" onChange={setBulk} />}
+          </div>
         ) : (
           <ul className="flex flex-col gap-1.5" aria-label={`${axis.name} 값`}>
             {axis.values.map((v, i) => (
@@ -466,11 +476,12 @@ function ValueEditSheet(props: { project: Project; axis: Axis; valueId: string; 
           <Field label="표시 이름">
             <DraftInput label="값 이름" value={v.label} onCommit={(label) => patch({ label: label.trim() || v.label })} />
           </Field>
-          <Field label="파일 이름용 (slug)">
+          <Field label="파일 이름 (영문)">
             <DraftInput label="값 slug" value={v.slug ?? ''} placeholder={v.label} onCommit={(slug) => patch({ slug: slug.trim() || undefined })} />
           </Field>
         </div>
-        <Field label="프롬프트 조각">
+        <p className="-mt-1.5 text-[11px] text-dim">파일 이름은 내보낼 때 {`{${props.axis.name}}`} 자리에 씁니다 (비우면 표시 이름). 예: smile</p>
+        <Field label="프롬프트 조각" hint="이 값을 고른 조합에만 붙는 태그">
           <DraftArea label="값 프롬프트" value={v.prompt} onCommit={(prompt) => patch({ prompt })} placeholder="smile, open mouth" />
         </Field>
         <Field label="네거티브 조각 (선택)">

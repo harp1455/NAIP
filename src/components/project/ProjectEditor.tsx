@@ -1,5 +1,5 @@
-/** 프로젝트 설정 — 기본, 캐릭터, 스타일, 생성 설정, 축, 제외 규칙, 덮어쓰기, 경고 기준 */
-import { useState, type ReactNode } from 'react'
+/** 프로젝트 설정 — 작업 순서대로: 캐릭터, 축과 값, 화풍, 장수와 목표, 생성 설정, 그리고 고급(제외 규칙, 덮어쓰기, 경고 기준, 이름) */
+import { useMemo, useState, type ReactNode } from 'react'
 import { ArrowLeftRight, Download, Plus, UserPlus } from 'lucide-react'
 import { MODELS, NOISE_SCHEDULES, SAMPLERS, UC_PRESET_OPTIONS } from '../../nai/constants'
 import { generationDefaultsForModel, isMediumEffortModel, isV5Model, MEDIUM_EFFORT_FIXED, modelCapabilities } from '../../nai/models'
@@ -10,8 +10,9 @@ import {
   AXIS_KIND_LABEL,
   addCharacter,
   characterCode,
+  describeMatrixSize,
+  expandMatrix,
   useProjects,
-  type AxisKind,
   type ComboOverride,
   type ExclusionRule,
   type PlanLimits,
@@ -35,71 +36,82 @@ import {
   OverrideSheet,
   RefPicker
 } from './EditorSheets'
+import { AxisAddSheet, AxisQuickStart } from './AxisAddSheet'
+import { MatrixSizeRow, SetupChecklist } from './Guide'
 
-const NEW_AXIS_KINDS: AxisKind[] = ['expression', 'outfit', 'situation', 'location', 'action', 'custom']
+/** 구역 맨 위 한 줄 설명 */
+function Hint(props: { children: ReactNode }): ReactNode {
+  return <p className="pb-1.5 text-[11px] text-dim">{props.children}</p>
+}
 
-export function ProjectEditor(props: { project: Project }): ReactNode {
+export function ProjectEditor(props: { project: Project; onMatrix: () => void }): ReactNode {
   const p = props.project
   const s = useProjects.getState()
   const library = useCharacters((x) => x.characters)
   const [charSheet, setCharSheet] = useState<string | null>(null)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [axisSheet, setAxisSheet] = useState<string | null>(null)
-  const [newKind, setNewKind] = useState<AxisKind>('expression')
+  const [axisAdd, setAxisAdd] = useState(false)
   const [exclusion, setExclusion] = useState<ExclusionRule | 'new' | null>(null)
   const [override, setOverride] = useState<ComboOverride | 'new' | null>(null)
   const patch = (x: Parameters<typeof s.patch>[1]): void => s.patch(p.id, x)
+  const { characters, axes, exclusions, overrides, defaults, limits } = p
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const matrix = useMemo(() => expandMatrix(p), [characters, axes, exclusions, overrides, defaults, limits])
+  const started = Object.values(p.items).some((i) => i.images.length > 0)
+  const values = p.axes.reduce((n, a) => n + a.values.length, 0)
+  const addOwn = (): void => {
+    const c = { name: `캐릭터 ${p.characters.length + 1}` }
+    if (!confirmKeyChange(p, addCharacter(p, c).project, `"${c.name}"을(를) 더하면`, true)) return
+    const id = s.addCharacter(p.id, c)
+    if (id) setCharSheet(id)
+  }
 
   return (
     <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto flex max-w-3xl flex-col gap-2 p-3">
-        <Section title="기본">
-          <div className="flex flex-col gap-2 pb-2">
-            <div className="grid grid-cols-2 gap-2">
-              <Field label="프로젝트 이름">
-                <DraftInput label="프로젝트 이름" value={p.name} onCommit={(name) => name.trim() && patch({ name: name.trim() })} />
-              </Field>
-              <Field label="파일 이름용 (slug)">
-                <DraftInput label="프로젝트 slug" value={p.slug ?? ''} placeholder={p.name} onCommit={(slug) => patch({ slug: slug.trim() || undefined })} />
-              </Field>
-            </div>
-            <div className="rounded-lg border border-line bg-field px-3">
-              <Row label="조합마다 생성 장수" hint="전체 생성 계획에서 한 조합을 몇 장">
-                <Stepper label="조합마다 생성 장수" value={p.defaults.count} min={1} max={99} onChange={(count) => patch({ defaults: { ...p.defaults, count } })} />
-              </Row>
-              <Row label="채택 목표" hint="조합마다 채택할 장수">
-                <Stepper label="채택 목표" value={p.defaults.target} min={1} max={20} onChange={(target) => patch({ defaults: { ...p.defaults, target } })} />
-              </Row>
-            </div>
-          </div>
-        </Section>
+        {!started && (
+          <SetupChecklist
+            characters={p.characters.length}
+            values={values}
+            style={!!p.stylePrompt.trim()}
+            combos={matrix.combos.length}
+            onMatrix={props.onMatrix}
+          />
+        )}
 
         <Section
           title={`캐릭터 ${p.characters.length}`}
           right={
-            <>
-              <Button variant="ghost" className="px-2 text-xs" onClick={() => setLibraryOpen(true)} disabled={!library.length}>
-                <UserPlus size={14} />
-                라이브러리
-              </Button>
-              <Button
-                variant="ghost"
-                className="px-2 text-xs"
-                onClick={() => {
-                  const c = { name: `캐릭터 ${p.characters.length + 1}` }
-                  if (!confirmKeyChange(p, addCharacter(p, c).project, `"${c.name}"을(를) 더하면`, true)) return
-                  const id = s.addCharacter(p.id, c)
-                  if (id) setCharSheet(id)
-                }}
-              >
-                <Plus size={14} />
-                전용
-              </Button>
-            </>
+            p.characters.length > 0 && (
+              <>
+                <Button variant="ghost" className="px-2 text-xs" onClick={() => setLibraryOpen(true)} disabled={!library.length}>
+                  <UserPlus size={14} />
+                  라이브러리
+                </Button>
+                <Button variant="ghost" className="px-2 text-xs" onClick={addOwn}>
+                  <Plus size={14} />
+                  직접 추가
+                </Button>
+              </>
+            )
           }
         >
+          <Hint>캐릭터마다 조합이 따로 생깁니다. 라이브러리 캐릭터는 그 프롬프트를 그대로 씁니다.</Hint>
           {p.characters.length === 0 ? (
-            <p className="pb-2 text-xs text-dim">캐릭터가 없으면 캐릭터 축 없이 다른 축만으로 조합을 만듭니다</p>
+            <div className="flex flex-col gap-1.5 pb-2">
+              <div className="grid grid-cols-2 gap-1.5">
+                <Button variant="default" className="px-2" onClick={() => setLibraryOpen(true)} disabled={!library.length}>
+                  <UserPlus size={15} />
+                  라이브러리에서
+                </Button>
+                <Button variant="default" className="px-2" onClick={addOwn}>
+                  <Plus size={15} />
+                  직접 추가
+                </Button>
+              </div>
+              <p className="text-[11px] text-dim">캐릭터가 없으면 캐릭터 없이 다른 축만으로 조합을 만듭니다.</p>
+            </div>
           ) : (
             <ul className="flex flex-col gap-1.5 pb-2" aria-label="프로젝트 캐릭터">
               {p.characters.map((c, i) => {
@@ -112,7 +124,7 @@ export function ProjectEditor(props: { project: Project }): ReactNode {
                       <span className="flex h-7 min-w-7 shrink-0 items-center justify-center rounded-md bg-raised px-1 font-mono text-xs">{characterCode(p, c)}</span>
                     }
                     title={c.name}
-                    sub={`${c.libraryId === null ? '프로젝트 전용' : lib ? `라이브러리: ${lib.name}` : '라이브러리에서 지워짐'}${c.prompt ? ` · + ${c.prompt}` : ''}${c.vibeIds.length + c.refIds.length ? ` · 레퍼런스 ${c.vibeIds.length + c.refIds.length}` : ''}`}
+                    sub={`${c.libraryId === null ? '직접 추가' : lib ? `라이브러리: ${lib.name}` : '라이브러리에서 지워짐'}${c.prompt ? ` · + ${c.prompt}` : ''}${c.vibeIds.length + c.refIds.length ? ` · 레퍼런스 ${c.vibeIds.length + c.refIds.length}` : ''}`}
                     editLabel={`${c.name} 편집`}
                     onEdit={() => setCharSheet(c.id)}
                     onUp={i > 0 ? () => s.moveCharacter(p.id, c.id, -1) : undefined}
@@ -124,59 +136,21 @@ export function ProjectEditor(props: { project: Project }): ReactNode {
           )}
         </Section>
 
-        <Section title="공통 스타일 · 네거티브">
-          <div className="flex flex-col gap-2 pb-2">
-            <Field label="스타일·작가 프롬프트 (모든 조합의 메인 프롬프트)">
-              <DraftArea label="스타일 프롬프트" value={p.stylePrompt} onCommit={(stylePrompt) => patch({ stylePrompt })} placeholder="artist:..., masterpiece, simple background" />
-            </Field>
-            <Segmented
-              label="스타일 위치"
-              value={p.stylePosition}
-              onChange={(stylePosition) => patch({ stylePosition })}
-              options={[
-                { value: 'start', label: '조합 조각 앞' },
-                { value: 'end', label: '조합 조각 뒤' }
-              ]}
-            />
-            <Field label="공통 네거티브">
-              <DraftArea label="공통 네거티브" rows={2} value={p.negative} onCommit={(negative) => patch({ negative })} />
-            </Field>
-            <Field label="모든 조합에 쓸 바이브·정밀 레퍼런스">
-              <RefPicker vibeIds={p.vibeIds} refIds={p.refIds} onChange={(x) => patch(x)} />
-            </Field>
-          </div>
-        </Section>
-
-        <Section title="생성 설정">
-          <ParamsEditor project={p} />
-        </Section>
-
         <Section
-          title={`축 ${p.axes.length}`}
+          title={`축과 값 ${p.axes.length}`}
           right={
-            <>
-              <Select
-                label="새 축 종류"
-                className="w-24"
-                value={newKind}
-                options={NEW_AXIS_KINDS.map((k) => ({ value: k, label: AXIS_KIND_LABEL[k] }))}
-                onChange={setNewKind}
-              />
-              <Button
-                variant="ghost"
-                className="px-2 text-xs"
-                onClick={() => {
-                  const id = s.addAxis(p.id, newKind)
-                  if (id) setAxisSheet(id)
-                }}
-              >
+            p.axes.length > 0 && (
+              <Button variant="ghost" className="px-2 text-xs" onClick={() => setAxisAdd(true)}>
                 <Plus size={14} />축 추가
               </Button>
-            </>
+            )
           }
         >
+          <Hint>표정·의상처럼 캐릭터와 곱할 항목(축)과 그 값(웃음·울음 …)입니다. 값마다 이름·파일 이름·태그를 정합니다.</Hint>
           {p.axes.length === 0 ? (
-            <p className="pb-2 text-xs text-dim">표정·의상·상황처럼 캐릭터와 곱할 축을 추가하세요</p>
+            <div className="pb-2">
+              <AxisQuickStart project={p} onAdded={setAxisSheet} onMore={() => setAxisAdd(true)} />
+            </div>
           ) : (
             <ul className="flex flex-col gap-1.5 pb-2" aria-label="축">
               {p.axes.map((a, i) => {
@@ -189,7 +163,7 @@ export function ProjectEditor(props: { project: Project }): ReactNode {
                         {a.name} <span className="text-[11px] text-dim">({AXIS_KIND_LABEL[a.kind]} · {a.target === 'character' ? '캐릭터' : '메인'} 프롬프트)</span>
                       </>
                     }
-                    sub={`값 ${on}${on !== a.values.length ? `/${a.values.length}` : ''}개 — ${a.values.map((v) => v.label).join(', ') || '없음'}`}
+                    sub={a.values.length ? `값 ${on}${on !== a.values.length ? `/${a.values.length}` : ''}개 — ${a.values.map((v) => v.label).join(', ')}` : '값이 없습니다 — 눌러서 넣어 주세요'}
                     editLabel={`${a.name} 축 편집`}
                     onEdit={() => setAxisSheet(a.id)}
                     onUp={i > 0 ? () => s.moveAxis(p.id, a.id, -1) : undefined}
@@ -199,6 +173,47 @@ export function ProjectEditor(props: { project: Project }): ReactNode {
               })}
             </ul>
           )}
+          <div className="pb-2">
+            <MatrixSizeRow size={describeMatrixSize(matrix)} combos={matrix.combos.length} tooMany={matrix.tooMany} onMatrix={props.onMatrix} />
+          </div>
+        </Section>
+
+        <Section title="화풍 · 네거티브">
+          <div className="flex flex-col gap-2 pb-2">
+            <Field label="화풍·작가 프롬프트 (모든 조합의 메인 프롬프트)">
+              <DraftArea label="스타일 프롬프트" value={p.stylePrompt} onCommit={(stylePrompt) => patch({ stylePrompt })} placeholder="artist:..., masterpiece, simple background" />
+            </Field>
+            <Segmented
+              label="스타일 위치"
+              value={p.stylePosition}
+              onChange={(stylePosition) => patch({ stylePosition })}
+              options={[
+                { value: 'start', label: '화풍을 앞에' },
+                { value: 'end', label: '화풍을 뒤에' }
+              ]}
+            />
+            <Field label="공통 네거티브">
+              <DraftArea label="공통 네거티브" rows={2} value={p.negative} onCommit={(negative) => patch({ negative })} placeholder="lowres, bad anatomy" />
+            </Field>
+            <Field label="모든 조합에 쓸 바이브·정밀 레퍼런스">
+              <RefPicker vibeIds={p.vibeIds} refIds={p.refIds} onChange={(x) => patch(x)} />
+            </Field>
+          </div>
+        </Section>
+
+        <Section title="장수와 목표">
+          <div className="mb-2 rounded-lg border border-line bg-field px-3">
+            <Row label="조합마다 생성 장수" hint="생성 계획 '전체'에서 한 조합을 몇 장 만들지">
+              <Stepper label="조합마다 생성 장수" value={p.defaults.count} min={1} max={99} onChange={(count) => patch({ defaults: { ...p.defaults, count } })} />
+            </Row>
+            <Row label="채택 목표" hint="조합마다 고를 장수 — 채우면 '채택'">
+              <Stepper label="채택 목표" value={p.defaults.target} min={1} max={20} onChange={(target) => patch({ defaults: { ...p.defaults, target } })} />
+            </Row>
+          </div>
+        </Section>
+
+        <Section title="생성 설정">
+          <ParamsEditor project={p} />
         </Section>
 
         <Section
@@ -211,6 +226,7 @@ export function ProjectEditor(props: { project: Project }): ReactNode {
             </Button>
           }
         >
+          <Hint>만들지 않을 조합을 고릅니다. 예: 하늘 + 수영복</Hint>
           <ul className="flex flex-col gap-1.5 pb-2">
             {p.exclusions.map((r) => (
               <ListRow
@@ -226,7 +242,6 @@ export function ProjectEditor(props: { project: Project }): ReactNode {
                 }}
               />
             ))}
-            {!p.exclusions.length && <p className="text-xs text-dim">예: 이 캐릭터는 수영복 조합을 만들지 않음</p>}
           </ul>
         </Section>
 
@@ -240,6 +255,7 @@ export function ProjectEditor(props: { project: Project }): ReactNode {
             </Button>
           }
         >
+          <Hint>특정 조합만 프롬프트·해상도·장수·목표를 따로 정합니다. 예: 수영복은 가로 그림</Hint>
           <ul className="flex flex-col gap-1.5 pb-2">
             {p.overrides.map((o) => (
               <ListRow
@@ -264,16 +280,28 @@ export function ProjectEditor(props: { project: Project }): ReactNode {
                 }}
               />
             ))}
-            {!p.overrides.length && <p className="text-xs text-dim">특정 조합만 프롬프트·해상도·장수·목표를 바꿉니다</p>}
           </ul>
         </Section>
 
         <Section title="경고 기준" defaultOpen={false}>
+          <Hint>생성 계획이 이 기준을 넘으면 시작 전에 한 번 더 묻습니다.</Hint>
           <LimitsEditor project={p} />
+        </Section>
+
+        <Section title="프로젝트 이름" defaultOpen={false}>
+          <div className="grid grid-cols-2 gap-2 pb-2">
+            <Field label="프로젝트 이름">
+              <DraftInput label="프로젝트 이름" value={p.name} onCommit={(name) => name.trim() && patch({ name: name.trim() })} />
+            </Field>
+            <Field label="파일 이름 (영문)" hint="내보낼 때 {project} 자리에 씁니다">
+              <DraftInput label="프로젝트 slug" value={p.slug ?? ''} placeholder={p.name} onCommit={(slug) => patch({ slug: slug.trim() || undefined })} />
+            </Field>
+          </div>
         </Section>
       </div>
       {charSheet && <CharacterEditSheet project={p} charId={charSheet} onClose={() => setCharSheet(null)} />}
       {libraryOpen && <LibraryPickerSheet project={p} onClose={() => setLibraryOpen(false)} />}
+      {axisAdd && <AxisAddSheet project={p} onAdded={setAxisSheet} onClose={() => setAxisAdd(false)} />}
       {axisSheet && <AxisEditSheet project={p} axisId={axisSheet} onClose={() => setAxisSheet(null)} />}
       {exclusion && <ExclusionSheet project={p} rule={exclusion === 'new' ? null : exclusion} onClose={() => setExclusion(null)} />}
       {override && <OverrideSheet project={p} override={override === 'new' ? null : override} onClose={() => setOverride(null)} />}

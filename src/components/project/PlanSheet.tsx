@@ -13,22 +13,34 @@ import { Segmented } from './common'
 
 const MODES: { value: PlanMode; label: string }[] = [
   { value: 'all', label: '전체' },
-  { value: 'missing', label: '부족분만' },
-  { value: 'failed', label: '실패만' }
+  { value: 'missing', label: '부족한 것만' },
+  { value: 'failed', label: '실패한 것만' }
 ]
 
 const MODE_HINT: Record<PlanMode, string> = {
   all: '조합마다 정한 장수를 모두 생성합니다 (이미 있는 그림과 상관없이)',
-  missing: '채택 목표에서 이미 채택한 장수와 대기·생성 중인 장수를 뺀 만큼만',
+  missing: '채택 목표에서 이미 채택한 장수와 대기·생성 중인 장수를 뺀 만큼만 (미생성 조합도 여기서)',
   failed: '"재생성 필요" 상태인 조합만 (실패했거나, 다 골랐는데 목표에 못 미친 조합)'
 }
 
-export function PlanSheet(props: { project: Project; selection?: MatrixSelection; onClose: () => void }): ReactNode {
+export function PlanSheet(props: {
+  project: Project
+  selection?: MatrixSelection
+  initialMode?: PlanMode
+  /** "부족한 것만"에서 고르지 않은 그림도 채운 것으로 시작 (다음에 할 일 카드 — 카드가 센 조합 수와 같게) */
+  fillUnreviewed?: boolean
+  /**
+   * "행렬에서 거른 조합만"을 켠 채로 시작 (기본 켬). 다음에 할 일 카드는 행렬 전체를 세므로 끈 채로 연다
+   * (켜면 거른 조합만 — 단추는 그대로 남아 있다)
+   */
+  initialScoped?: boolean
+  onClose: () => void
+}): ReactNode {
   const p = props.project
-  const [mode, setMode] = useState<PlanMode>('all')
+  const [mode, setMode] = useState<PlanMode>(props.initialMode ?? 'all')
   const [perMissing, setPerMissing] = useState(1)
-  const [countUnreviewed, setCountUnreviewed] = useState(false)
-  const [scoped, setScoped] = useState(!!props.selection)
+  const [countUnreviewed, setCountUnreviewed] = useState(!!props.fillUnreviewed)
+  const [scoped, setScoped] = useState(!!props.selection && props.initialScoped !== false)
   const running = useGeneration((s) => s.running)
   // 예상에 쓰는 정보가 바뀌면 다시 계산한다
   const sub = useSettings((s) => s.subscription)

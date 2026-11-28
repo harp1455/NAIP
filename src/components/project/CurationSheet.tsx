@@ -14,6 +14,7 @@ import {
   expandMatrix,
   itemStatus,
   representativeOf,
+  reviewState,
   useProjects,
   versionChain,
   type AssetImage,
@@ -39,7 +40,23 @@ const MARK_STYLE: Record<CurationMark, string> = {
 
 type MarkFilter = CurationMark | 'all'
 
-export function CurationSheet(props: { project: Project; itemKey: string; onClose: () => void }): ReactNode {
+/** 다음에 고를 조합 (선별 필요 상태, 행렬 순서로 이어서) */
+export interface NextCombo {
+  key: string
+  label: string
+  /** 남은 조합 수 (이것 포함) */
+  left: number
+}
+
+export function CurationSheet(props: {
+  project: Project
+  itemKey: string
+  /** 열자마자 한 장씩 고르기 (선별하기 · 다음 조합) — 고르기를 닫으면 이 시트도 닫는다 */
+  startReview?: boolean
+  next?: NextCombo
+  onNext?: (key: string) => void
+  onClose: () => void
+}): ReactNode {
   const p = props.project
   const key = props.itemKey
   const s = useProjects.getState()
@@ -50,10 +67,12 @@ export function CurationSheet(props: { project: Project; itemKey: string; onClos
   const counts = curationCounts(item)
   const [filter, setFilter] = useState<MarkFilter>('all')
   const [selected, setSelected] = useState<Set<number> | null>(null)
-  const [review, setReview] = useState<{ index: number; quick: boolean } | null>(null)
   const [more, setMore] = useState(Math.max(1, p.defaults.count))
   // 최신이 앞에
   const images = useMemo(() => [...item.images].sort((a, b) => b.ts - a.ts), [item.images])
+  const [review, setReview] = useState<{ index: number; quick: boolean } | null>(() =>
+    props.startReview && images.length ? { index: Math.max(0, images.findIndex((i) => i.mark === 'unreviewed')), quick: true } : null
+  )
   const shown = filter === 'all' ? images : images.filter((i) => i.mark === filter)
   const metas = useMetas(images.map((i) => i.id))
   const rep = representativeOf(item)
@@ -89,7 +108,7 @@ export function CurationSheet(props: { project: Project; itemKey: string; onClos
           </>
         ) : (
           <>
-            <Button variant="default" disabled={!images.length} onClick={() => setSelected(new Set())}>
+            <Button variant="default" className="px-3" disabled={!images.length} onClick={() => setSelected(new Set())}>
               선택
             </Button>
             <Button
@@ -105,22 +124,25 @@ export function CurationSheet(props: { project: Project; itemKey: string; onClos
               <Layers size={16} />
               빠른 선별{counts.unreviewed ? ` (${counts.unreviewed})` : ''}
             </Button>
+            {props.next && props.onNext && (
+              <Button variant="default" className="px-3" onClick={() => props.onNext!(props.next!.key)}>
+                다음 조합
+                <ChevronRight size={16} />
+              </Button>
+            )}
           </>
         )
       }
     >
       <div className="flex flex-col gap-3">
         <div className="text-xs text-dim">
-          채택 <b className="text-fg">{counts.adopted}</b>/{target} · 그림 {counts.total}장 · 미선별 {counts.unreviewed} · 보류 {counts.hold} · 탈락 {counts.rejected}
+          채택 <b className="text-fg">{counts.adopted}</b>/{target} · 그림 {counts.total}장
           {item.queued + item.generating ? ` · 생성 대기 ${item.queued + item.generating}` : ''}
           {item.failed ? ` · 실패 ${item.failed}` : ''}
           {!combo && ' · 지금 행렬에 없는 조합'}
         </div>
 
         <div className="rounded-lg border border-line bg-field px-3">
-          <Row label="재생성 필요" hint={'다시 만들 조합으로 표시 ("실패만" 계획에 들어감)'}>
-            <Toggle label="재생성 필요" checked={!!item.redo} onChange={(on) => s.setRedo(p.id, key, on)} />
-          </Row>
           {combo && (
             <div className="flex min-h-12 items-center gap-2 py-1.5">
               <span className="flex-1 text-sm">이 조합 더 생성</span>
@@ -138,6 +160,9 @@ export function CurationSheet(props: { project: Project; itemKey: string; onClos
               </Button>
             </div>
           )}
+          <Row label="재생성 필요" hint={'다시 만들 조합으로 표시 ("실패한 것만" 계획에 들어감)'}>
+            <Toggle label="재생성 필요" checked={!!item.redo} onChange={(on) => s.setRedo(p.id, key, on)} />
+          </Row>
         </div>
 
         <div className="scroll-thin flex gap-1.5 overflow-x-auto" role="group" aria-label="표시 거르기">
@@ -202,10 +227,15 @@ export function CurationSheet(props: { project: Project; itemKey: string; onClos
         <ReviewView
           project={p}
           itemKey={key}
+          label={label}
           images={images}
           start={review.index}
           quick={review.quick}
-          onClose={() => setReview(null)}
+          target={target}
+          sequential={!!props.startReview}
+          next={props.next}
+          onNext={props.onNext}
+          onClose={() => (props.startReview ? props.onClose() : setReview(null))}
         />,
           document.body
         )}
@@ -217,9 +247,16 @@ export function CurationSheet(props: { project: Project; itemKey: string; onClos
 function ReviewView(props: {
   project: Project
   itemKey: string
+  /** 조합 이름 ("민지 · 울음") — 무엇을 고르는지 맨 위에 */
+  label: string
   images: AssetImage[]
   start: number
   quick: boolean
+  target: number
+  /** 선별하기로 열었다 (다음 조합이 없으면 다 봤다고 알린다) */
+  sequential: boolean
+  next?: NextCombo
+  onNext?: (key: string) => void
   onClose: () => void
 }): ReactNode {
   const p = props.project
@@ -258,6 +295,17 @@ function ReviewView(props: {
     )
   }
   const adopted = adoptedImages(item).filter((a) => a.id !== img.id)
+  const counts = curationCounts(item)
+  // 이 조합을 다 골랐다 — 목표만큼 채택했거나 미선별 그림이 없다 (보류가 남았으면 그렇다고 알린다 — 아직 고를 조합)
+  const state = reviewState(item, props.target)
+  const showNext = state !== 'open' && (!!props.next || props.sequential)
+  const doneText =
+    state === 'filled' ? '채택 목표를 채웠습니다' : state === 'held' ? `보류 ${counts.hold}장이 남았습니다` : '이 조합의 그림을 다 봤습니다'
+  const leftText = props.next
+    ? `고를 조합 ${props.next.left}개 남음`
+    : state === 'held'
+      ? '보류를 채택·탈락으로 정하면 이 조합이 끝납니다'
+      : '고를 조합을 모두 봤습니다'
   const chain = versionChain(item, img.id)
   const code = img.slot ? item.codes?.[String(img.slot)] : undefined
   const go = (d: number): void => setIndex((i) => Math.min(order.length - 1, Math.max(0, i + d)))
@@ -275,13 +323,21 @@ function ReviewView(props: {
 
   return (
     <div className="safe-top fixed inset-0 z-[55] flex flex-col bg-black" role="dialog" aria-modal="true" aria-label="그림 선별">
-      <header className="flex h-12 shrink-0 items-center gap-1 px-1 text-sm">
+      <header className="flex min-h-12 shrink-0 items-center gap-1 px-1 py-1 text-sm">
         <IconButton label="선별 닫기" onClick={props.onClose}>
           <X size={22} />
         </IconButton>
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-dim">
-          {index + 1}/{order.length} · seed {img.seed ?? '-'}
-          {code ? ` · ${code}` : ''}
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-baseline gap-1.5">
+            <span className="truncate font-semibold text-fg">{props.label}</span>
+            <span className="shrink-0 text-[11px] text-dim">
+              채택 <b className={counts.adopted >= Math.max(1, props.target) ? 'text-ok' : 'text-fg'}>{counts.adopted}</b>/{props.target}
+            </span>
+          </span>
+          <span className="block truncate font-mono text-[11px] text-dim">
+            {index + 1}/{order.length} · seed {img.seed ?? '-'}
+            {code ? ` · ${code}` : ''}
+          </span>
         </span>
         <span className={cx('rounded-full px-2 py-0.5 text-[11px] font-semibold', MARK_STYLE[img.mark])}>
           {CURATION_LABEL[img.mark]}
@@ -310,6 +366,24 @@ function ReviewView(props: {
       </div>
       <div className="safe-bottom shrink-0 border-t border-white/10 bg-panel">
         <div className="flex flex-col gap-2 p-3">
+          {showNext && (
+            <div role="status" className={cx('flex items-center gap-2 rounded-lg py-1.5 pl-3 pr-1.5', state === 'held' ? 'bg-tag-meta/15' : 'bg-ok/15')}>
+              <span className={cx('min-w-0 flex-1 text-xs', state === 'held' ? 'text-tag-meta' : 'text-ok')}>
+                {doneText}
+                <span className="block text-[11px] text-dim">{leftText}</span>
+              </span>
+              {props.next && props.onNext ? (
+                <Button variant="primary" className="h-10 min-w-0 max-w-[62%] px-3 text-xs" onClick={() => props.onNext!(props.next!.key)}>
+                  <span className="truncate">다음: {props.next.label}</span>
+                  <ChevronRight size={15} className="shrink-0" />
+                </Button>
+              ) : (
+                <Button variant="default" className="h-10 px-3 text-xs" onClick={props.onClose}>
+                  닫기
+                </Button>
+              )}
+            </div>
+          )}
           {chain.length > 1 && (
             <div className="scroll-thin flex items-center gap-1 overflow-x-auto text-[11px] text-dim" aria-label="버전">
               {chain.map((v, i) => (
