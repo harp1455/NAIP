@@ -40,6 +40,31 @@ interface HistoryState {
 
 const repaired = new Set<number>()
 
+/**
+ * ── Phase 5: 넣는 중인 그림과, 프로젝트 분류 표시가 있는데 아직 그 프로젝트에 들어가지 않은 그림 (id → 프로젝트 id, 표시가
+ * 없으면 null). 보관 한도 정리에서 지우지 않는다 — 생성한 프로젝트 그림은 add가 끝난 뒤에야 조합에 들어가는데
+ * (projectItemLanded), 그 사이 따로 넣은 그림(디렉터 도구 결과 등)의 정리가 그것을 지우면 과금한 그림이 사라지고
+ * 조합은 지운 그림을 가리킨다
+ */
+const fresh = new Map<number, string | null>()
+
+/** 정리에서 지우지 않을 방금 넣은 그림. 조합에 들어갔거나(그 뒤로는 projectKeptImageIds가 정한다) 프로젝트가 지워진 것은 거둔다 */
+function freshKeep(): number[] {
+  const { projects } = useProjects.getState()
+  const out: number[] = []
+  for (const [id, projectId] of fresh) {
+    if (projectId !== null) {
+      const p = projects.find((x) => x.id === projectId)
+      if (!p || Object.values(p.items).some((i) => i.images.some((img) => img.id === id))) {
+        fresh.delete(id)
+        continue
+      }
+    }
+    out.push(id)
+  }
+  return out
+}
+
 export const useHistory = create<HistoryState>()((set, get) => ({
   items: [],
   total: 0,
@@ -121,29 +146,39 @@ export const useHistory = create<HistoryState>()((set, get) => ({
   },
   add: async (meta, blob) => {
     meta = { ...meta, unsaved: 1 }
-    await (await getStorage()).history.add(meta, blob)
-    const f = get().filter
-    const matches =
-      !f ||
-      'unsaved' in f ||
-      ('sceneId' in f && f.sceneId === meta.sceneId) ||
-      ('search' in f && matchesSearch(searchText(meta), searchTerms(f.search)))
-    set((s) => ({
-      items: matches ? [meta, ...s.items] : s.items,
-      total: s.total + 1,
-      matchCount: matches && s.matchCount !== null ? s.matchCount + 1 : s.matchCount
-    }))
-    // 보관 한도를 넘으면 즐겨찾기를 뺀 오래된 것부터 정리.
-    // ── Phase 5: 프로젝트 그림(탈락 제외)·내보낸 그림은 자동으로 지우지 않는다 — 사용자가 직접 지울 때만
-    const limit = useSettings.getState().historyLimit
-    const over = limit > 0 ? get().total - limit : 0
-    if (over > 0) {
-      // 방금 넣은 그림도 지우지 않는다 — 프로젝트 그림은 이 함수가 끝난 뒤에야 프로젝트에 들어가고,
-      // 남길 그림이 한도를 다 채웠을 때 가장 오래된 "지울 수 있는" 그림이 바로 이것이다 (그때는 한도를 잠시 넘긴다)
-      const keep = projectKeptImageIds()
-      keep.add(meta.id)
-      const ids = await (await getStorage()).history.oldestIds(over, keep)
-      if (ids.length) await get().remove(ids)
+    fresh.set(meta.id, meta.project?.projectId ?? null)
+    let stored = false
+    try {
+      await (await getStorage()).history.add(meta, blob)
+      stored = true
+      const f = get().filter
+      const matches =
+        !f ||
+        'unsaved' in f ||
+        ('sceneId' in f && f.sceneId === meta.sceneId) ||
+        ('search' in f && matchesSearch(searchText(meta), searchTerms(f.search)))
+      set((s) => ({
+        items: matches ? [meta, ...s.items] : s.items,
+        total: s.total + 1,
+        matchCount: matches && s.matchCount !== null ? s.matchCount + 1 : s.matchCount
+      }))
+      // 보관 한도를 넘으면 즐겨찾기를 뺀 오래된 것부터 정리.
+      // ── Phase 5: 프로젝트 그림(탈락 제외)·내보낸 그림은 자동으로 지우지 않는다 — 사용자가 직접 지울 때만
+      const limit = useSettings.getState().historyLimit
+      const over = limit > 0 ? get().total - limit : 0
+      if (over > 0) {
+        // 방금 넣은 그림도 지우지 않는다 — 프로젝트 그림은 이 함수가 끝난 뒤에야 프로젝트에 들어가고,
+        // 남길 그림이 한도를 다 채웠을 때 가장 오래된 "지울 수 있는" 그림이 바로 이것이다 (그때는 한도를 잠시 넘긴다).
+        // 동시에 넣는 다른 그림(넣는 중이거나 아직 조합에 들어가지 않은 프로젝트 그림)도 남긴다
+        const keep = projectKeptImageIds()
+        keep.add(meta.id)
+        for (const id of freshKeep()) keep.add(id)
+        const ids = await (await getStorage()).history.oldestIds(over, keep)
+        if (ids.length) await get().remove(ids)
+      }
+    } finally {
+      // 프로젝트 그림은 조합에 들어갈 때까지 남겨 둔다 (freshKeep이 거둔다)
+      if (!meta.project || !stored) fresh.delete(meta.id)
     }
   },
   remove: async (ids) => {

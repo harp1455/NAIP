@@ -174,6 +174,11 @@ export async function putMeta(meta: HistoryMeta): Promise<void> {
   await (await repo()).put(meta)
 }
 
+/** ── Phase 5: 분류로 프로젝트에 배정하는 그림 id를 적어 둔다 — 프로젝트 기록을 잃어도 다음 실행에서 다시 넣는다 */
+export async function noteAssigned(ids: number[]): Promise<void> {
+  await (await repo()).noteAssigned(ids)
+}
+
 /** 보관 한도 정리용: 즐겨찾기를 뺀 가장 오래된 n장의 id */
 export async function oldestIds(n: number): Promise<number[]> {
   return (await repo()).oldestIds(n)

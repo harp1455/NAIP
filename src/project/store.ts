@@ -130,6 +130,16 @@ function storage(): StateStorage {
 
 type Persisted = Pick<ProjectsState, 'projects' | 'activeId' | 'presets'>
 
+/**
+ * 이 실행(앱 프로세스)에서 조합에 넣은 그림 id — 디스크의 프로젝트 기록에 닿았는지 알 수 없다.
+ * 빠진 그림 찾기의 시작점(project/queue.ts adoptCutoff)은 이것을 빼고 정한다: 앱을 연 뒤 늦게 도는 찾기가 이번 실행에
+ * 들어온 새 그림을 기준으로 삼으면 그보다 먼저(지난 실행에) 빠진 그림을 영영 건너뛴다
+ */
+const addedThisRun = new Set<number>()
+export function addedInThisRun(imageId: number): boolean {
+  return addedThisRun.has(imageId)
+}
+
 export const useProjects = create<ProjectsState>()(
   persist(
     (set, get) => {
@@ -240,7 +250,10 @@ export const useProjects = create<ProjectsState>()(
         markStarted: (projectId, key) =>
           item(projectId, key, (i) => cur.bumpRuntime(i, { queued: i.queued > 0 ? -1 : 0, generating: 1 })),
         cancelStarted: (projectId, key) => item(projectId, key, (i) => cur.bumpRuntime(i, { generating: -1 })),
-        addImage: (projectId, key, image, opts) => item(projectId, key, (i) => cur.addImage(i, image, opts)),
+        addImage: (projectId, key, image, opts) => {
+          addedThisRun.add(image.id)
+          item(projectId, key, (i) => cur.addImage(i, image, opts))
+        },
         markFailed: (projectId, key) =>
           item(projectId, key, (i) =>
             cur.bumpRuntime(i, i.generating > 0 ? { generating: -1, failed: 1 } : { queued: -1, failed: 1 })

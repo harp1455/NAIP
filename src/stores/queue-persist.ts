@@ -43,6 +43,15 @@ const saving = new Map<number, Promise<void>>()
  * (내놓으면 이어서 생성이 같은 장을 한 번 더 보낸다)
  */
 const live = new Set<number>()
+/**
+ * ── Phase 5: 지난 실행에서 남아 이어서 할지 물었는데 아직 고르지 않은 배치 (시트를 X로 닫으면 다음 실행까지 남는다).
+ * 그 프로젝트를 지우며 대기·생성 중인 장도 취소하면 여기서 찾아 버린다 (cancelSavedProject)
+ */
+const offered = new Map<number, ResumeEntry>()
+/** 프로젝트 삭제로 버린 저장 배치 — 이미 읽어 둔 목록으로 "이어서 생성"을 눌러도 다시 보내지 않는다 */
+const cancelledSaved = new Set<number>()
+/** 버린 저장 배치를 지우는 중 — 다시 읽기(loadResume)는 이것이 끝난 뒤에 읽는다 */
+const cancelling = new Set<Promise<void>>()
 
 /** 대기열 기록 — 기록이 실패해도 생성은 멈추지 않는다 (sending만 기다린다) */
 export const queueStore = {
@@ -78,6 +87,7 @@ export const queueStore = {
   /** 지난 실행에서 저장된 배치를 이 실행에서 다시 돌린다 — 이제 이 실행의 배치로 본다 */
   resumed(batchId: number): void {
     live.add(batchId)
+    offered.delete(batchId)
   },
   skip(batchId: number, keys: number[]): Promise<void> {
     return getStorage()
@@ -89,6 +99,7 @@ export const queueStore = {
    * 먼저 지우면 늦게 끝난 save가 행·파일을 다시 남겨, 취소한 배치가 다음 실행에서 "이어서 생성"으로 나온다
    */
   drop(batchId: number): Promise<void> {
+    offered.delete(batchId)
     return (saving.get(batchId) ?? Promise.resolve())
       .then(() => getStorage())
       .then((s) => s.queue.dropBatch(batchId))
@@ -201,6 +212,9 @@ export function planResume(
 
 /** 지난 실행에서 끝나지 않은 대기열 */
 export async function loadResume(): Promise<ResumeEntry[]> {
+  // 프로젝트 삭제로 버린 저장 배치를 다 지운 뒤에 읽는다 (지우기 전에 읽으면 버린 배치를 다시 내놓는다)
+  await Promise.all(cancelling)
+  offered.clear()
   // 읽기 전에 이 실행의 배치를 적어 둔다 — 읽는 사이에 지워진(drop) 배치도 지난 실행의 것으로 착각하지 않게
   const own = new Set(live)
   const { queue, history } = await getStorage()
@@ -214,6 +228,18 @@ export async function loadResume(): Promise<ResumeEntry[]> {
     } catch (e) {
       console.warn('프로젝트 그림을 맞추지 못했습니다', e)
     }
+  }
+  // 분류로 배정한 그림은 id가 오래돼 위에서 찾지 못한다 — 배정할 때 적어 둔 id로 찾는다. 이번에 넣은 그림이 있으면
+  // 적은 것을 남긴다: 이번 기록도 디스크에 닿기 전에 죽을 수 있다. 넣을 것이 없는 실행(기록이 디스크에 있다)에서 지운다
+  try {
+    const notes = await history.assignedNotes()
+    if (notes.length) {
+      const added = new Set(adoptTaggedImages(await history.getMany([...new Set(notes.flatMap((n) => n.ids))])))
+      const settled = notes.filter((n) => !n.ids.some((id) => added.has(id))).map((n) => n.key)
+      if (settled.length) await history.dropAssignedNotes(settled)
+    }
+  } catch (e) {
+    console.warn('분류한 그림을 맞추지 못했습니다', e)
   }
   const loaded = await queue.load()
   // 이 실행에서 저장한 배치(지금 돌거나 대기 중)는 지난 실행의 것이 아니다 — 내놓지도 지우지도 않는다
@@ -234,7 +260,35 @@ export async function loadResume(): Promise<ResumeEntry[]> {
   // ── Phase 5: 보내지 않은 프로젝트 장은 저장된 대기열에 그대로 있다 — 앱을 열면 0이 된 대기 장수를 다시 센다.
   // 세지 않으면 "부족분만" 계획이 같은 장을 또 넣고, 나중에 이어서 생성하면 두 번 생성(과금)된다
   projectItemsQueued(entries.flatMap((e) => e.remaining))
+  for (const e of entries) offered.set(e.batch.id, e)
   return entries
+}
+
+/**
+ * ── Phase 5: 지난 실행에서 남은(이어서 할지 아직 고르지 않은) 배치 중 이 프로젝트의 것을 버린다 — 프로젝트를 지우며
+ * 대기·생성 중인 장도 취소한 경우. 앱을 열 때 대기로 센 장을 돌려주고 저장된 배치를 지운다 (다음 실행에 다시 묻지 않게).
+ * 프로젝트 배치에는 그 프로젝트의 장만 든다 (stores/generation.ts cancelProject와 같이 배치째 버린다). 버린 장수를 돌려준다
+ */
+export function cancelSavedProject(projectId: string): number {
+  let n = 0
+  for (const [id, e] of offered) {
+    if (!e.batch.plan.some((item) => item.project?.tag.projectId === projectId)) continue
+    offered.delete(id)
+    cancelledSaved.add(id)
+    n += e.remaining.length
+    releaseProjectItems(e.remaining)
+    const p = getStorage()
+      .then((s) => s.queue.dropBatch(id))
+      .catch(warn)
+      .finally(() => cancelling.delete(p))
+    cancelling.add(p)
+  }
+  return n
+}
+
+/** 프로젝트 삭제로 버린 저장 배치인지 */
+export function savedBatchCancelled(batchId: number): boolean {
+  return cancelledSaved.has(batchId)
 }
 
 /**
@@ -245,6 +299,7 @@ export async function discardResume(entries: ResumeEntry[]): Promise<void> {
   const { queue } = await getStorage()
   const scenes = new Set(useScenes.getState().scenes.map((s) => s.id))
   for (const e of entries) {
+    offered.delete(e.batch.id)
     for (const item of e.remaining) {
       if (item.scene?.reserved && scenes.has(item.scene.id)) useScenes.getState().bumpReserve([item.scene.id], 1)
     }
