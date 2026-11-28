@@ -243,6 +243,8 @@ export function createHistoryRepo(driver: SqlDriver, files: FileStore) {
   }
   const toMetas = (rows: ImageRow[]): Promise<HistoryMeta[]> =>
     Promise.all(rows.map(async (r) => rowToMeta(r, await thumbUrl(r))))
+  /** ── Phase 5: 이 실행(앱 프로세스)에서 적은 배정 (noteAssigned) — 그 프로젝트 기록이 디스크에 닿았는지 아직 알 수 없다 */
+  const notedThisRun = new Set<string>()
 
   const repo = {
     driver,
@@ -346,10 +348,11 @@ export function createHistoryRepo(driver: SqlDriver, files: FileStore) {
       if (!ids.length) return
       const key = `${ASSIGNED_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
       await driver.exec('INSERT OR REPLACE INTO app_kv (key, value) VALUES (?, ?)', [key, JSON.stringify(ids)])
+      notedThisRun.add(key)
     },
 
-    /** 적어 둔 배정 (열쇠마다 그림 id들). 읽을 수 없는 값은 빈 목록으로 */
-    async assignedNotes(): Promise<{ key: string; ids: number[] }[]> {
+    /** 적어 둔 배정 (열쇠마다 그림 id들, thisRun = 이 실행에서 적은 것). 읽을 수 없는 값은 빈 목록으로 */
+    async assignedNotes(): Promise<{ key: string; ids: number[]; thisRun: boolean }[]> {
       const rows = await driver.query<{ key: string; value: string }>(
         `SELECT key, value FROM app_kv WHERE key LIKE '${ASSIGNED_PREFIX}%'`
       )
@@ -361,7 +364,8 @@ export function createHistoryRepo(driver: SqlDriver, files: FileStore) {
         } catch {
           /* 빈 목록 */
         }
-        return { key: String(r.key), ids }
+        const key = String(r.key)
+        return { key, ids, thisRun: notedThisRun.has(key) }
       })
     },
 
