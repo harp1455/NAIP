@@ -9,6 +9,8 @@
  * - 들어오는 데이터는 normalizeBackupData 를 거친다: 캐릭터는 Phase 2 의 migrateCharacters 로
  *   (예전 prompt 한 칸·cast 목록 → 3분할·고정 슬롯), 설정에서는 실행 중에만 쓰는 값을 뺀다.
  * - 스토어에 넣을 때 그 스토어의 함수(동작) 이름과 겹치는 키는 버린다 (조작된 백업이 앱을 깨지 않게).
+ * - 목록(배열)·맵이어야 할 값이 그 모양이 아니거나 섹션의 주 목록이 없으면 섹션째 넣지 않고 알린다
+ *   (sectionShapeProblem — 열 때 withoutInvalidSections 로 빼고, applyRestorePlan 도 한 번 더 본다).
  */
 import * as projectModel from '../project/model'
 import { useProjects } from '../project/store'
@@ -23,8 +25,8 @@ import { useSettings } from '../stores/settings'
 import { useTagUsage } from '../stores/tagUsage'
 import { stripCredentials } from './credentials'
 import { splitSettings, TRANSIENT_SETTINGS } from './format'
-import type { RestorePlan } from './plan'
-import type { BackupData, BackupItem, DataSectionId } from './types'
+import { RESTORE_SCHEMA, type RestorePlan } from './plan'
+import { DATA_SECTION_IDS, SECTION_LABELS, type BackupData, type BackupItem, type DataSectionId } from './types'
 
 type Obj = Record<string, unknown>
 
@@ -175,6 +177,57 @@ export function normalizeBackupData(data: BackupData): BackupData {
   return out
 }
 
+// ── 섹션 모양 ──────────────────────────────────────────────────────────
+
+/**
+ * 같은 스토어에 들어가는 다른 섹션 — 그 섹션의 목록·맵 키가 섞여 들어와도 모양을 본다
+ * (설정은 저장 폴더와 같은 useSettings, 작업 중인 프롬프트는 프리셋과 같은 usePrompt 에 들어간다)
+ */
+const SHARES_STORE_WITH: Partial<Record<DataSectionId, DataSectionId>> = { settings: 'saveFolders', prompt: 'presets' }
+
+/**
+ * 섹션이 스토어에 넣을 수 있는 모양인지. 아니면 그 이유(사용자에게 보일 문장), 맞으면 null.
+ * - 섹션은 객체여야 한다.
+ * - RESTORE_SCHEMA 의 목록(collections·addMissing·lists)은 배열, 맵은 객체여야 한다 (있을 때).
+ * - 섹션 이름과 같은 주 목록(presets.presets, vibes.vibes, characters.characters …)은 빠져도 안 된다 —
+ *   덮어쓰기가 그 값을 undefined 로 넣거나 "없음"을 "비움"으로 다루지 않게. 이 앱·예전 JSON·NAIS3 변환은 늘 넣는다.
+ */
+export function sectionShapeProblem(id: DataSectionId, value: unknown): string | null {
+  const label = SECTION_LABELS[id]
+  const why = (text: string): string => `${label}: ${text} — 이 항목은 복원하지 않습니다`
+  if (!isObj(value)) return why('형식이 잘못됐습니다')
+  const shared = SHARES_STORE_WITH[id]
+  for (const schema of [RESTORE_SCHEMA.sections[id], ...(shared ? [RESTORE_SCHEMA.sections[shared]] : [])]) {
+    const lists = [...(schema.collections ?? []), ...(schema.addMissing ?? [])].map((c) => c.key).concat(schema.lists ?? [])
+    for (const key of lists) {
+      const v = value[key]
+      if (v === undefined) {
+        if (key === id) return why(`${key} 목록이 없습니다`)
+      } else if (!Array.isArray(v)) {
+        return why(`${key} 이(가) 목록이 아닙니다`)
+      }
+    }
+    for (const { key } of schema.maps ?? []) {
+      if (value[key] !== undefined && !isObj(value[key])) return why(`${key} 모양이 잘못됐습니다`)
+    }
+  }
+  return null
+}
+
+/** 모양이 잘못된 섹션을 뺀 데이터와 뺀 섹션·이유 (백업을 열 때 — 미리보기·계획에 나오지 않게) */
+export function withoutInvalidSections(data: BackupData): { data: BackupData; invalid: { section: DataSectionId; detail: string }[] } {
+  const out: BackupData = { ...data }
+  const invalid: { section: DataSectionId; detail: string }[] = []
+  for (const id of DATA_SECTION_IDS) {
+    if (out[id] == null) continue
+    const detail = sectionShapeProblem(id, out[id])
+    if (!detail) continue
+    delete out[id]
+    invalid.push({ section: id, detail })
+  }
+  return { data: out, invalid }
+}
+
 // ── 스토어에 넣기 ──────────────────────────────────────────────────────
 
 function applyProjects(r: Obj): void {
@@ -187,11 +240,25 @@ function applyProjects(r: Obj): void {
   useProjects.setState(safePatch(state, { ...r, projects, activeId }) as never)
 }
 
+export interface ApplyRestoreResult {
+  /** 스토어에 넣은 섹션 */
+  applied: DataSectionId[]
+  /** 모양이 잘못돼 넣지 않은 섹션과 이유 — 그 스토어는 그대로 둔다 */
+  invalid: { section: DataSectionId; detail: string }[]
+}
+
 /** 복원 계획의 섹션 결과를 스토어에 넣는다 (부분 setState — 결과에 없는 키는 그대로) */
-export function applyRestorePlan(plan: RestorePlan): DataSectionId[] {
+export function applyRestorePlan(plan: RestorePlan): ApplyRestoreResult {
   const applied: DataSectionId[] = []
+  const invalid: ApplyRestoreResult['invalid'] = []
   for (const [id, section] of Object.entries(plan.sections) as [DataSectionId, NonNullable<RestorePlan['sections'][DataSectionId]>][]) {
     const r = section.result
+    // 목록이 없거나 목록이 아닌 섹션은 넣지 않는다 — 스토어를 비우거나 undefined 를 넣지 않게
+    const detail = sectionShapeProblem(id, r)
+    if (detail) {
+      invalid.push({ section: id, detail })
+      continue
+    }
     switch (id) {
       case 'settings':
       case 'saveFolders':
@@ -235,5 +302,5 @@ export function applyRestorePlan(plan: RestorePlan): DataSectionId[] {
     }
     applied.push(id)
   }
-  return applied
+  return { applied, invalid }
 }

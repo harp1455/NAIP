@@ -15,7 +15,7 @@ import { useProjects } from '../project/store'
 import { useHistory } from '../stores/history'
 import { useSettings } from '../stores/settings'
 import { createFile, pickFile, type ReadableFile } from './files'
-import { countSection } from './format'
+import { countSection, sectionPath } from './format'
 import { BACKUP_ACCEPT, backupFileName, openAnyBackup, type OpenedBackup } from './index'
 import type { ByteSource } from './io'
 import { exportNais3, naipToNais3, type Nais3ExportPlan, type Nais3ExportSection } from './nais3/export'
@@ -25,7 +25,7 @@ import { historyExportPort, historyImportPort, restoreHistorySafely, type SafeHi
 import type { NaipBackupReader } from './read'
 import { reportText } from './report'
 import { listSafetyBackups, pruneSafetyBackups, removeSafetyBackup, safetyName, safetySink, safetySource, type SafetyBackup } from './safety'
-import { applyRestorePlan, collectStoreData, normalizeBackupData, waitHydrated } from './stores'
+import { applyRestorePlan, collectStoreData, normalizeBackupData, waitHydrated, withoutInvalidSections } from './stores'
 import {
   BACKUP_MIME,
   BackupError,
@@ -190,7 +190,7 @@ export interface RestoreSource {
   data: BackupData
   /** 무결성 문제 (체크섬이 틀린 항목·빠진 항목·.nais 그림 손상 등) */
   problems: EntryProblem[]
-  /** 백업에 있었지만 손상돼 읽지 못한 섹션 (복원하지 않는다) */
+  /** 백업에 있었지만 손상돼 읽지 못했거나 모양이 잘못된 섹션 (복원하지 않는다) */
   damaged: DataSectionId[]
   /** 이 앱이 모르는 섹션 (더 새로운 앱 또는 예전 생성 대기열) — 건너뛴다 */
   unknownSections: string[]
@@ -211,6 +211,16 @@ export async function pickRestoreFile(): Promise<ReadableFile | null> {
 async function processNais3Image(bytes: Uint8Array, mime: string, kind: 'vibe' | 'charRef'): Promise<{ base64: string; thumb: string }> {
   const { base64 } = await toPngBase64(new Blob([bytes as BlobPart], { type: mime }), kind === 'vibe' ? 1536 : 2048)
   return { base64, thumb: await makeThumb(pngDataUrl(base64), 256) }
+}
+
+/** 모양이 잘못된 섹션(목록이어야 할 값이 없거나 목록이 아님)은 손상된 섹션처럼 빼고 알린다 — 미리보기·계획에 나오지 않는다 */
+function checkedData(data: BackupData): { data: BackupData; damaged: DataSectionId[]; problems: EntryProblem[] } {
+  const checked = withoutInvalidSections(data)
+  return {
+    data: normalizeBackupData(checked.data),
+    damaged: checked.invalid.map((x) => x.section),
+    problems: checked.invalid.map((x) => ({ path: sectionPath(x.section), kind: 'invalid-json' as const, detail: x.detail }))
+  }
 }
 
 function dedupe(problems: EntryProblem[]): EntryProblem[] {
@@ -241,15 +251,16 @@ export async function openRestoreSource(
     if (opened.kind === 'naip') {
       const reader = opened.reader
       const integrity = await reader.verify({ onProgress: opts.onProgress, signal: opts.signal })
-      const { data, problems } = await reader.readData()
-      const all = dedupe([...integrity.problems, ...problems])
-      const damaged = DATA_SECTION_IDS.filter((id) => reader.manifest.sections.includes(id) && data[id] == null)
+      const read = await reader.readData()
+      const checked = checkedData(read.data)
+      const all = dedupe([...integrity.problems, ...read.problems, ...checked.problems])
+      const damaged = DATA_SECTION_IDS.filter((id) => reader.manifest.sections.includes(id) && read.data[id] == null).concat(checked.damaged)
       let originalBytes = 0
       for (const path of reader.zip.paths()) if (path.startsWith('history/originals/')) originalBytes += reader.zip.entry(path).size
       const hasHistory = reader.manifest.sections.includes('history')
       return {
         ...base,
-        data: normalizeBackupData(data),
+        data: checked.data,
         problems: all,
         damaged,
         unknownSections: reader.unknownSections,
@@ -267,11 +278,13 @@ export async function openRestoreSource(
     }
     if (opened.kind === 'naip-json') {
       await close()
-      return { ...base, data: normalizeBackupData(opened.data), problems: [], damaged: [] }
+      const checked = checkedData(opened.data)
+      return { ...base, data: checked.data, problems: checked.problems, damaged: checked.damaged }
     }
     const { data, report } = await importNais3(opened.archive, { processImage: processNais3Image, newId: uid, signal: opts.signal })
     await close()
-    return { ...base, data: normalizeBackupData(data), problems: report.problems, damaged: [], report: reportText(report) }
+    const checked = checkedData(data)
+    return { ...base, data: checked.data, problems: [...report.problems, ...checked.problems], damaged: checked.damaged, report: reportText(report) }
   } catch (error) {
     await close()
     throw error
@@ -392,10 +405,15 @@ export async function applyRestore(
 
   // 2) 섹션 (빠르다 — 스토어에 한 번씩 넣는다)
   opts.onPhase?.('sections')
-  const applied = new Set(applyRestorePlan(plan))
+  const done = applyRestorePlan(plan)
+  const applied = new Set(done.applied)
+  // 모양이 잘못돼 넣지 않은 섹션 (여는 단계에서 이미 빼므로 보통은 없다) — 그 스토어는 그대로다
+  const invalid = new Set(done.invalid.map((x) => x.section))
+  summary.problems.push(...done.invalid.map((x) => ({ path: sectionPath(x.section), kind: 'invalid-json' as const, detail: x.detail })))
   for (const id of DATA_SECTION_IDS) {
     const s = plan.sections[id]
     if (s && applied.has(id)) summary.applied.push({ section: id, label: SECTION_LABELS[id], action: s.action, stats: s.stats, notes: s.notes })
+    else if (s && invalid.has(id)) summary.skipped.push({ section: id, label: SECTION_LABELS[id], reason: '형식이 잘못됨' })
     else if (src.data[id] != null)
       summary.skipped.push({
         section: id,
