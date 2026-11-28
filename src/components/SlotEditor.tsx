@@ -313,6 +313,9 @@ export function SlotEditor(props: { slotId: number; onClose: () => void }): Reac
   const patch = (p: Partial<Omit<CastSlot, 'id'>>): void => s.patchSlot(slot.id, p)
   const weighted = slot.mode === 'random' || slot.mode === 'chance'
   const totalWeight = slot.candidates.reduce((a, c) => a + Math.max(0, c.weight), 0)
+  // 확률 슬롯만 후보가 없을 때 고정 캐릭터로 뽑는다 (weightedCandidates) — 숨기지 않고 보여 준다
+  const fallback =
+    slot.mode === 'chance' && !slot.candidates.length ? weightedCandidates(slot, s.characters)[0]?.char : undefined
   const moveCandidate = (i: number, dir: -1 | 1): void => {
     const j = i + dir
     if (j < 0 || j >= slot.candidates.length) return
@@ -410,7 +413,9 @@ export function SlotEditor(props: { slotId: number; onClose: () => void }): Reac
                 </h3>
                 {slot.candidates.length === 0 ? (
                   <p className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-xs text-dim">
-                    후보가 없으면 이 슬롯은 비어 있습니다
+                    {fallback
+                      ? `후보가 없어 고정 캐릭터 ${fallback.name}이(가) 확률대로 나옵니다`
+                      : '후보가 없으면 이 슬롯은 비어 있습니다'}
                   </p>
                 ) : (
                   <ul className="flex flex-col gap-1">

@@ -24,6 +24,9 @@ const MODE_HINT: Record<VariationGroup['mode'], string> = {
   off: '이 그룹은 넣지 않습니다'
 }
 
+/** 이름이 아니라 프롬프트 문법인 접두어 (artist:이름, text: 글자, 단부루 분류 접두어) — 줄을 프롬프트 그대로 둔다 */
+const PROMPT_PREFIXES = new Set(['artist', 'text', 'character', 'copyright', 'general', 'meta', 'rating'])
+
 /** "이름: 프롬프트" 또는 프롬프트만 — 한 줄에 항목 하나 */
 export function parseItemLines(text: string): VariationItem[] {
   return text
@@ -31,8 +34,9 @@ export function parseItemLines(text: string): VariationItem[] {
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith('#'))
     .map((line) => {
-      // "교복: school uniform" — 콜론 앞이 짧은 이름일 때만 이름으로 본다 (가중치 문법 1.2::…:: 은 제외)
-      const m = /^([^:,{}[\]<>]{1,24}):(?!:)\s*(.+)$/.exec(line)
+      // "교복: school uniform" — 콜론 앞이 짧은 이름일 때만 이름으로 본다 (가중치 문법 1.2::…:: 과 artist: 같은 접두어는 제외)
+      const found = /^([^:,{}[\]<>]{1,24}):(?!:)\s*(.+)$/.exec(line)
+      const m = found && !PROMPT_PREFIXES.has(found[1].trim().toLowerCase()) ? found : null
       return m
         ? { id: uid(), label: m[1].trim(), prompt: m[2].trim(), weight: 1 }
         : { id: uid(), label: '', prompt: line, weight: 1 }
