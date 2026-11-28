@@ -1,9 +1,11 @@
 import { useState, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, Check, Copy, Folder, Plus, Search, Trash2, User, X } from 'lucide-react'
 import { SLOT_MODES, orderedCandidates, weightedCandidates, type CastSlot, type SlotCandidate } from '../nai/cast'
+import { slotProblem } from '../lib/castSummary'
+import { useSectionOpen } from '../lib/sections'
 import { cx } from '../lib/util'
 import { candidateName, useCharacters, type CharFolder, type Character } from '../stores/characters'
-import { Button, IconButton, Row, Sheet, SliderRow, Stepper, Toggle } from './ui'
+import { Button, IconButton, Row, Section, Sheet, SliderRow, Stepper, Toggle } from './ui'
 
 /** 몇 개 중 하나를 고르는 칩 줄 (모드 선택용) */
 export function Segmented<T extends string>(props: {
@@ -131,6 +133,7 @@ function CandidatePicker(props: { slot: CastSlot; onClose: () => void }): ReactN
     ...folders.map((f) => ({ id: f.id, name: f.name, count: characters.filter((c) => c.folderId === f.id).length })),
     { id: null, name: '미분류', count: characters.filter((c) => c.folderId === null).length }
   ].filter((f) => f.count > 0)
+  const pickedFolders = picked.filter((c) => c.kind === 'folder').length
   const box = (on: boolean): ReactNode => (
     <span
       className={cx(
@@ -160,35 +163,41 @@ function CandidatePicker(props: { slot: CastSlot; onClose: () => void }): ReactN
       }
     >
       {folderRows.length > 0 && (
-        <>
-          <h3 className="mb-1 text-xs text-dim">폴더 통째로 — 그 폴더의 캐릭터 중에서 뽑습니다</h3>
-          <ul className="mb-4 flex flex-col gap-1">
-            {folderRows.map((f) => {
-              const already = has('folder', f.id)
-              const on = isPicked('folder', f.id)
-              return (
-                <li key={f.id ?? 'none'}>
-                  <button
-                    type="button"
-                    role="checkbox"
-                    aria-checked={on}
-                    disabled={already}
-                    onClick={() => toggle('folder', f.id)}
-                    className={cx(
-                      'flex w-full items-center gap-2.5 rounded-md border px-2.5 py-2 text-left disabled:opacity-40',
-                      on ? 'border-accent' : 'border-line'
-                    )}
-                  >
-                    {box(on)}
-                    <Folder size={15} className="shrink-0 text-dim" />
-                    <span className="min-w-0 flex-1 truncate text-sm">{f.name}</span>
-                    <span className="shrink-0 text-[11px] text-dim">{already ? '추가됨' : `${f.count}명`}</span>
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-        </>
+        <div className="mb-3">
+          <Section
+            persistKey="pick.folders"
+            title="폴더 통째로"
+            hint="그 폴더의 캐릭터 중에서 뽑습니다"
+            summary={`${folderRows.length}개${pickedFolders ? ` · ${pickedFolders}개 고름` : ''}`}
+          >
+            <ul className="mb-1 flex flex-col gap-1">
+              {folderRows.map((f) => {
+                const already = has('folder', f.id)
+                const on = isPicked('folder', f.id)
+                return (
+                  <li key={f.id ?? 'none'}>
+                    <button
+                      type="button"
+                      role="checkbox"
+                      aria-checked={on}
+                      disabled={already}
+                      onClick={() => toggle('folder', f.id)}
+                      className={cx(
+                        'flex w-full items-center gap-2.5 rounded-md border px-2.5 py-2 text-left disabled:opacity-40',
+                        on ? 'border-accent' : 'border-line'
+                      )}
+                    >
+                      {box(on)}
+                      <Folder size={15} className="shrink-0 text-dim" />
+                      <span className="min-w-0 flex-1 truncate text-sm">{f.name}</span>
+                      <span className="shrink-0 text-[11px] text-dim">{already ? '추가됨' : `${f.count}명`}</span>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          </Section>
+        </div>
       )}
       <h3 className="mb-1 text-xs text-dim">캐릭터</h3>
       <SearchBox label="캐릭터 찾기" value={lib.query} onChange={lib.setQuery} />
@@ -246,8 +255,10 @@ function CandidatePicker(props: { slot: CastSlot; onClose: () => void }): ReactN
 function FixedPicker(props: { slot: CastSlot }): ReactNode {
   const { characters, folders, patchSlot } = useCharacters()
   const lib = useLibraryFilter(characters)
+  const chosen = characters.find((c) => c.id === props.slot.charId)
   return (
-    <div>
+    <Section persistKey="slot.fixed" title="캐릭터" summary={chosen?.name} warn={chosen ? null : '캐릭터 없음'}>
+      {!chosen && <p className="mb-1.5 text-xs text-danger">캐릭터를 고르세요 — 고르지 않으면 이 슬롯은 비어 있습니다</p>}
       <SearchBox label="캐릭터 찾기" value={lib.query} onChange={lib.setQuery} />
       <div className="scroll-thin -mx-3 mt-2 flex gap-1.5 overflow-x-auto px-3 pb-2">
         <button type="button" className={chipClass(lib.folder === 'all')} onClick={() => lib.setFolder('all')}>
@@ -299,7 +310,7 @@ function FixedPicker(props: { slot: CastSlot }): ReactNode {
           })}
         </ul>
       )}
-    </div>
+    </Section>
   )
 }
 
@@ -308,7 +319,10 @@ export function SlotEditor(props: { slotId: number; onClose: () => void }): Reac
   const s = useCharacters()
   const slot = s.slots.find((x) => x.id === props.slotId)
   const [picking, setPicking] = useState(false)
+  const [candOpen] = useSectionOpen('slot.candidates')
   if (!slot) return null
+  const summary = slotSummary(slot, s.characters, s.folders)
+  const problem = slotProblem({ ...slot, enabled: true }, s.characters)
   const index = s.slots.indexOf(slot)
   const patch = (p: Partial<Omit<CastSlot, 'id'>>): void => s.patchSlot(slot.id, p)
   const weighted = slot.mode === 'random' || slot.mode === 'chance'
@@ -368,8 +382,11 @@ export function SlotEditor(props: { slotId: number; onClose: () => void }): Reac
               <Toggle label="이 슬롯 사용" checked={slot.enabled} onChange={(enabled) => patch({ enabled })} />
             </Row>
           </div>
-          <div>
-            <h3 className="mb-1 text-xs text-dim">누가 나올지</h3>
+          <Section
+            persistKey="slot.mode"
+            title="누가 나올지"
+            summary={SLOT_MODES.find((m) => m.value === slot.mode)?.label}
+          >
             <Segmented label="슬롯 모드" value={slot.mode} options={SLOT_MODES} onChange={setMode} />
             <p className="mt-1.5 text-xs text-dim">
               {slot.mode === 'fixed' && '정한 캐릭터가 매번 나옵니다.'}
@@ -380,42 +397,60 @@ export function SlotEditor(props: { slotId: number; onClose: () => void }): Reac
                   : '후보를 위에서부터 차례로 한 명씩 씁니다. 폴더는 라이브러리 순서로 펼칩니다.')}
               {slot.mode === 'chance' && '정한 확률로만 나옵니다. 나올 때는 후보 중 비중에 따라 한 명을 뽑습니다.'}
             </p>
-          </div>
+          </Section>
 
           {slot.mode === 'fixed' ? (
             <FixedPicker slot={slot} />
           ) : (
             <>
               {slot.mode === 'chance' && (
-                <div className="rounded-lg border border-line bg-field px-3">
-                  <SliderRow
-                    label="나올 확률"
-                    value={slot.chance}
-                    min={0}
-                    max={100}
-                    step={5}
-                    format={(v) => `${v}%`}
-                    onChange={(chance) => patch({ chance })}
-                  />
-                </div>
+                <Section persistKey="slot.chance" title="확률" summary={`${slot.chance}%`}>
+                  <div className="rounded-lg border border-line bg-field px-3">
+                    <SliderRow
+                      label="나올 확률"
+                      value={slot.chance}
+                      min={0}
+                      max={100}
+                      step={5}
+                      format={(v) => `${v}%`}
+                      onChange={(chance) => patch({ chance })}
+                    />
+                  </div>
+                </Section>
               )}
               {slot.mode === 'sequential' && (
-                <div className="rounded-lg border border-line bg-field px-3">
-                  <Row
-                    label="끝까지 가면 처음부터"
-                    hint={slot.wrap ? '후보를 다 쓰면 다시 첫 후보부터' : '후보를 한 바퀴 다 쓰면 그 뒤로는 이 슬롯을 비웁니다'}
-                  >
-                    <Toggle label="끝까지 가면 처음부터" checked={slot.wrap} onChange={(wrap) => patch({ wrap })} />
-                  </Row>
-                </div>
+                <Section persistKey="slot.order" title="순서" summary={slot.wrap ? '끝까지 가면 처음부터' : '한 바퀴만'}>
+                  <div className="rounded-lg border border-line bg-field px-3">
+                    <Row
+                      label="끝까지 가면 처음부터"
+                      hint={slot.wrap ? '후보를 다 쓰면 다시 첫 후보부터' : '후보를 한 바퀴 다 쓰면 그 뒤로는 이 슬롯을 비웁니다'}
+                    >
+                      <Toggle label="끝까지 가면 처음부터" checked={slot.wrap} onChange={(wrap) => patch({ wrap })} />
+                    </Row>
+                  </div>
+                </Section>
               )}
-              <div>
-                <h3 className="mb-1 flex items-center text-xs text-dim">
-                  후보 {slot.candidates.length}
-                  {weighted && <span className="ml-auto">비중 (뽑힐 몫)</span>}
-                </h3>
+              <Section
+                persistKey="slot.candidates"
+                title={`후보 ${slot.candidates.length}`}
+                summary={slot.candidates.length ? summary.title : fallback ? `없음 — ${fallback.name}` : '없음'}
+                warn={problem}
+                right={candOpen && weighted && slot.candidates.length > 0 && <span className="text-dim">비중 (뽑힐 몫)</span>}
+              >
+                {problem && slot.candidates.length > 0 && (
+                  <p className="mb-1 text-xs text-danger">
+                    {problem === '비중이 모두 0'
+                      ? '비중이 모두 0이라 이 슬롯은 비어 있습니다'
+                      : '후보 폴더가 비었거나 지워진 캐릭터라 이 슬롯은 비어 있습니다'}
+                  </p>
+                )}
                 {slot.candidates.length === 0 ? (
-                  <p className="rounded-lg border border-dashed border-line px-3 py-4 text-center text-xs text-dim">
+                  <p
+                    className={cx(
+                      'rounded-lg border border-dashed px-3 py-4 text-center text-xs',
+                      problem ? 'border-danger/50 text-danger' : 'border-line text-dim'
+                    )}
+                  >
                     {fallback
                       ? `후보가 없어 고정 캐릭터 ${fallback.name}이(가) 확률대로 나옵니다`
                       : '후보가 없으면 이 슬롯은 비어 있습니다'}
@@ -478,7 +513,7 @@ export function SlotEditor(props: { slotId: number; onClose: () => void }): Reac
                   <Plus size={16} />
                   후보 추가 (캐릭터·폴더)
                 </Button>
-              </div>
+              </Section>
             </>
           )}
         </div>

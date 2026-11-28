@@ -12,10 +12,42 @@ import {
   type VariationItem,
   type VariationKind
 } from '../nai/cast'
+import {
+  EMPTY_TEXT,
+  textExcerpt,
+  variationGroupSummary,
+  variationProblem,
+  variationsSummary,
+  variationsWarning
+} from '../lib/castSummary'
+import { useSectionOpen, type SectionEntry } from '../lib/sections'
 import { cx, uid } from '../lib/util'
 import { useCharacters, type Character } from '../stores/characters'
 import { Segmented } from './SlotEditor'
-import { Button, IconButton, Row, Select, Sheet, Stepper, TextArea, TextInput, Toggle } from './ui'
+import {
+  Button,
+  FoldAllButton,
+  IconButton,
+  Row,
+  Section,
+  Select,
+  Sheet,
+  Stepper,
+  TextArea,
+  TextInput,
+  Toggle,
+  WarnChip
+} from './ui'
+
+/** 캐릭터 편집의 접는 구역 (열쇠는 'naip-sections'에 기억 — 모든 캐릭터에 같이 적용). 처음엔 모두 펼침 */
+const EDITOR_SECTIONS: readonly SectionEntry[] = [
+  { key: 'charedit.base' },
+  { key: 'charedit.additional' },
+  { key: 'charedit.detail' },
+  { key: 'charedit.negative' },
+  { key: 'charedit.variations' },
+  { key: 'charedit.sample' }
+]
 
 const MODE_HINT: Record<VariationGroup['mode'], string> = {
   fixed: '고른 항목 하나를 매번 씁니다',
@@ -41,6 +73,12 @@ export function parseItemLines(text: string): VariationItem[] {
         ? { id: uid(), label: m[1].trim(), prompt: m[2].trim(), weight: 1 }
         : { id: uid(), label: '', prompt: line, weight: 1 }
     })
+}
+
+/** 접은 프롬프트 칸 요약 — 앞부분을 고정폭으로 (비었으면 "비어 있음") */
+function Excerpt(props: { text: string }): ReactNode {
+  const t = textExcerpt(props.text)
+  return t === EMPTY_TEXT ? <span className="text-dim">{t}</span> : <span className="font-mono">{t}</span>
 }
 
 function ItemRow(props: {
@@ -150,7 +188,7 @@ function GroupCard(props: {
   const set = (p: Partial<VariationGroup>): void => props.onChange({ ...g, ...p })
   const setItems = (items: VariationItem[]): void => set({ items })
   const label = variationGroupLabel(g)
-  const modeLabel = VARIATION_MODES.find((m) => m.value === g.mode)?.label ?? ''
+  const problem = variationProblem(g)
 
   return (
     <li className="rounded-lg border border-line bg-field">
@@ -163,8 +201,9 @@ function GroupCard(props: {
         >
           {open ? <ChevronUp size={16} className="shrink-0 text-dim" /> : <ChevronDown size={16} className="shrink-0 text-dim" />}
           <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
+          {problem && <WarnChip>{problem}</WarnChip>}
           <span className={cx('shrink-0 text-xs', g.mode === 'off' ? 'text-dim' : 'text-accent')}>
-            {modeLabel} · {g.items.length}개
+            {variationGroupSummary(g)}
           </span>
         </button>
         <IconButton label={`${label} 위로`} disabled={props.index === 0} onClick={() => props.onMove(-1)}>
@@ -311,6 +350,7 @@ export function CharacterEditor(props: { initial: Partial<Character>; onClose: (
   const [variations, setVariations] = useState<VariationGroup[]>(props.initial.variations ?? [])
   const [adding, setAdding] = useState(false)
   const [roll, setRoll] = useState(0)
+  const [sampleOpen] = useSectionOpen('charedit.sample')
   const id = props.initial.id
 
   // 지금 고친 내용으로 한 장 뽑아 본 캡션 (조각은 치환 전)
@@ -330,6 +370,7 @@ export function CharacterEditor(props: { initial: Partial<Character>; onClose: (
     <Sheet
       title={id ? '캐릭터 편집' : '캐릭터 추가'}
       onClose={props.onClose}
+      actions={<FoldAllButton sections={EDITOR_SECTIONS} />}
       footer={
         <>
           {id !== undefined && (
@@ -373,27 +414,31 @@ export function CharacterEditor(props: { initial: Partial<Character>; onClose: (
             onChange={(v) => setFolderId(v === 0 ? null : v)}
           />
         </label>
-        <label className="flex flex-col gap-1 text-xs text-dim">
-          고정 — 얼굴·체형·머리 등 이 캐릭터를 알아보게 하는 부분
+        <Section persistKey="charedit.base" title="고정" hint="얼굴·체형·머리 등 알아보게 하는 부분" summary={<Excerpt text={base} />}>
           <TextArea label="캐릭터 고정 프롬프트" rows={4} value={base} onChange={setBase} placeholder="girl, black hair, red eyes, ..." />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-dim">
-          가변 — 복장·표정·자세처럼 그때그때 바꿀 부분 (변형 그룹 뒤에 붙습니다)
+        </Section>
+        <Section
+          persistKey="charedit.additional"
+          title="가변"
+          hint="복장·표정·자세 등 바꿀 부분 (변형 그룹 뒤)"
+          summary={<Excerpt text={additional} />}
+        >
           <TextArea label="캐릭터 가변 프롬프트" rows={2} value={additional} onChange={setAdditional} placeholder="smile, ..." />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-dim">
-          디테일 — 맨 뒤에 붙일 세부 묘사
+        </Section>
+        <Section persistKey="charedit.detail" title="디테일" hint="맨 뒤에 붙일 세부 묘사" summary={<Excerpt text={detail} />}>
           <TextArea label="캐릭터 디테일 프롬프트" rows={2} value={detail} onChange={setDetail} />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-dim">
-          캐릭터 네거티브 (선택)
+        </Section>
+        <Section persistKey="charedit.negative" title="네거티브" hint="선택" summary={<Excerpt text={negative} />}>
           <TextArea label="캐릭터 네거티브" rows={2} value={negative} onChange={setNegative} />
-        </label>
+        </Section>
 
-        <div>
-          <h3 className="mb-1 text-xs text-dim">
-            변형 그룹 {variations.length} — 고정 뒤·가변 앞에 그룹 순서대로 들어갑니다
-          </h3>
+        <Section
+          persistKey="charedit.variations"
+          title={`변형 그룹 ${variations.length}`}
+          hint="고정 뒤·가변 앞에 순서대로 들어갑니다"
+          summary={variationsSummary(variations)}
+          warn={variationsWarning(variations)}
+        >
           {variations.length > 0 && (
             <ul className="flex flex-col gap-1.5">
               {variations.map((g, i) => (
@@ -445,20 +490,27 @@ export function CharacterEditor(props: { initial: Partial<Character>; onClose: (
               변형 그룹 추가 (복장·표정·자세 …)
             </Button>
           )}
-        </div>
+        </Section>
 
-        <div className="rounded-lg border border-line bg-field p-2.5">
-          <div className="mb-1 flex items-center">
-            <span className="flex-1 text-xs text-dim">보낼 캡션 예시 (조각은 생성할 때 치환)</span>
-            <button
-              type="button"
-              className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-accent active:bg-raised"
-              onClick={() => setRoll(roll + 1)}
-            >
-              <RefreshCw size={13} />
-              다시 뽑기
-            </button>
-          </div>
+        <Section
+          card
+          persistKey="charedit.sample"
+          title="보낼 캡션 예시"
+          summary={sample?.prompt ? <Excerpt text={sample.prompt} /> : undefined}
+          warn={sample?.prompt ? null : '빈 캡션'}
+          right={
+            sampleOpen && (
+              <button
+                type="button"
+                className="flex h-9 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-accent active:bg-raised"
+                onClick={() => setRoll(roll + 1)}
+              >
+                <RefreshCw size={13} />
+                다시 뽑기
+              </button>
+            )
+          }
+        >
           {sample?.variations.length ? (
             <div className="mb-1 flex flex-wrap gap-1">
               {sample.variations.map((v) => (
@@ -468,8 +520,11 @@ export function CharacterEditor(props: { initial: Partial<Character>; onClose: (
               ))}
             </div>
           ) : null}
-          <p className="break-words font-mono text-xs">{sample?.prompt || '(빈 캡션 — 보내지 않습니다)'}</p>
-        </div>
+          <p className={cx('break-words font-mono text-xs', !sample?.prompt && 'text-danger')}>
+            {sample?.prompt || '(빈 캡션 — 보내지 않습니다)'}
+          </p>
+          <p className="mt-1 text-[11px] text-dim">조각(&lt;이름&gt;)은 생성할 때 치환합니다</p>
+        </Section>
       </div>
     </Sheet>
   )

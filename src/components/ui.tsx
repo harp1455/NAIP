@@ -1,6 +1,7 @@
-import { useState, type ReactNode } from 'react'
-import { ChevronDown, ChevronUp, Minus, Plus, X } from 'lucide-react'
+import { type ReactNode } from 'react'
+import { ChevronDown, ChevronsDownUp, ChevronsUpDown, ChevronUp, Minus, Plus, TriangleAlert, X } from 'lucide-react'
 import { useBackClose } from '../lib/back'
+import { setSectionsOpen, useAnySectionOpen, useSectionOpen, type SectionEntry } from '../lib/sections'
 import { clamp, cx } from '../lib/util'
 
 export function Sheet(props: {
@@ -101,57 +102,94 @@ export function Button(props: {
   )
 }
 
-const SECTIONS_KEY = 'naip-sections'
-
-/** 접어 둔 구역 기억 (persistKey가 있는 구역만) — 화면을 오가도, 앱을 다시 열어도 다시 누를 때까지 유지 */
-function readFolded(key: string): boolean | undefined {
-  try {
-    const all = JSON.parse(localStorage.getItem(SECTIONS_KEY) ?? '{}') as Record<string, unknown>
-    return typeof all[key] === 'boolean' ? (all[key] as boolean) : undefined
-  } catch {
-    return undefined
-  }
+/** 접은 구역 머리에 띄우는 경고 칩 — 접어 두어도 확인할 것을 놓치지 않게 */
+export function WarnChip(props: { children: ReactNode }): ReactNode {
+  return (
+    <span className="flex min-w-0 max-w-[60%] shrink items-center gap-0.5 rounded-full bg-danger/15 px-1.5 py-0.5 text-[11px] leading-none text-danger">
+      <TriangleAlert size={11} className="shrink-0" />
+      <span className="truncate">{props.children}</span>
+    </span>
+  )
 }
 
-function writeFolded(key: string, open: boolean): void {
-  try {
-    const all = JSON.parse(localStorage.getItem(SECTIONS_KEY) ?? '{}') as Record<string, unknown>
-    all[key] = open
-    localStorage.setItem(SECTIONS_KEY, JSON.stringify(all))
-  } catch {
-    // 기억하지 못해도 접기·펴기는 된다
-  }
-}
-
-/** 접을 수 있는 구역 (스크린샷의 "고정 ^" 헤더). persistKey를 주면 접힘 상태를 기억한다 */
+/**
+ * 접을 수 있는 구역 (스크린샷의 "고정 ^" 헤더). persistKey를 주면 접힘 상태를 기억한다 (src/lib/sections.ts).
+ * - summary: 접었을 때 제목 옆 한 줄 요약 / hint: 펼쳤을 때 제목 옆 짧은 설명
+ * - warn: 접었을 때 머리에 띄울 경고 (펼친 내용 안에서 보이는 경고와 같은 것)
+ * - card: 테두리 카드 모양 (아이콘·큰 머리)
+ */
 export function Section(props: {
-  title: string
+  title: ReactNode
   right?: ReactNode
+  summary?: ReactNode
+  hint?: ReactNode
+  warn?: ReactNode
+  icon?: ReactNode
+  card?: boolean
   defaultOpen?: boolean
   persistKey?: string
   children: ReactNode
 }): ReactNode {
-  const [open, setOpenState] = useState(() => (props.persistKey ? readFolded(props.persistKey) : undefined) ?? props.defaultOpen ?? true)
-  const setOpen = (next: boolean): void => {
-    setOpenState(next)
-    if (props.persistKey) writeFolded(props.persistKey, next)
+  const [open, setOpen] = useSectionOpen(props.persistKey, props.defaultOpen ?? true)
+  const side = open ? props.hint : props.summary
+  const chevron = open ? <ChevronUp size={14} className="shrink-0" /> : <ChevronDown size={14} className="shrink-0" />
+  if (props.card) {
+    return (
+      <section className="rounded-lg border border-line bg-field">
+        <div className="flex items-center pr-1">
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen(!open)}
+            className={cx('flex min-h-11 min-w-0 flex-1 items-center gap-2 text-left text-sm', props.right ? 'pl-3' : 'px-3')}
+          >
+            {props.icon}
+            <span className="shrink-0">{props.title}</span>
+            <span className="min-w-0 flex-1 truncate text-right text-xs text-dim">{side}</span>
+            {!open && props.warn ? <WarnChip>{props.warn}</WarnChip> : null}
+            <span className="text-dim">{chevron}</span>
+          </button>
+          {props.right}
+        </div>
+        {open && <div className="border-t border-line px-3 py-2">{props.children}</div>}
+      </section>
+    )
   }
   return (
     <section>
-      <div className="flex h-8 items-center">
+      <div className="flex min-h-8 items-center gap-2">
         <button
           type="button"
           aria-expanded={open}
           onClick={() => setOpen(!open)}
-          className="flex h-8 items-center gap-1 pr-2 text-xs text-dim"
+          className="flex min-h-8 min-w-0 flex-1 items-center gap-1 text-left text-xs text-dim"
         >
-          {props.title}
-          {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          <span className="shrink-0">{props.title}</span>
+          {chevron}
+          {side ? (
+            <span className={cx('ml-1 min-w-0 flex-1 truncate', open ? 'text-[11px] text-dim/80' : 'text-fg/70')}>{side}</span>
+          ) : null}
+          {!open && props.warn ? <WarnChip>{props.warn}</WarnChip> : null}
         </button>
-        <div className="ml-auto flex items-center gap-2 text-xs">{props.right}</div>
+        {props.right ? <div className="ml-auto flex shrink-0 items-center gap-2 text-xs">{props.right}</div> : null}
       </div>
       {open && props.children}
     </section>
+  )
+}
+
+/** "모두 접기 / 모두 펴기" — 보이는 구역 중 하나라도 펼쳐져 있으면 접기 */
+export function FoldAllButton(props: { sections: readonly SectionEntry[] }): ReactNode {
+  const anyOpen = useAnySectionOpen(props.sections)
+  return (
+    <button
+      type="button"
+      onClick={() => setSectionsOpen(props.sections.map((s) => s.key), !anyOpen)}
+      className="flex h-9 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-dim active:bg-raised"
+    >
+      {anyOpen ? <ChevronsDownUp size={15} /> : <ChevronsUpDown size={15} />}
+      {anyOpen ? '모두 접기' : '모두 펴기'}
+    </button>
   )
 }
 
