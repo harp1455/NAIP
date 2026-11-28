@@ -36,7 +36,7 @@ import {
   type CastSent,
   type DrawState
 } from '../nai/cast'
-import { snapshotCastPlan, useCharacters } from './characters'
+import { cursorEpochOf, snapshotCastPlan, useCharacters } from './characters'
 import { fragmentLibrary, fragmentSourceFrom, type FragmentLibrary } from './fragments'
 import { appendPrompt, useScenes } from './scenes'
 import { primeImageUrl, useHistory } from './history'
@@ -205,11 +205,20 @@ export interface DrawSnapshot {
   states: [string, DrawState][]
   /** 이 배치가 시작할 때의 순서 자리 (continueSequence 배치만) — 이어서 생성은 그사이 넘어간 자리가 아니라 이것으로 뽑는다 */
   cursors?: CastCursors
+  /**
+   * 이 배치가 시작할 때의 되돌리기 세대 (characters 스토어 cursorEpoch, cursors와 함께만) — 앱이 죽은 뒤 되돌렸으면
+   * 이어서 생성한 장이 되돌린 자리를 넘기지 않는다. 없으면(이 칸이 생기기 전 기록) 0
+   */
+  epoch?: number
 }
 
-function drawSnapshot(states: Map<string, DrawState>, cursors?: CastCursors): DrawSnapshot {
+function drawSnapshot(states: Map<string, DrawState>, sequence?: { cursors: CastCursors; epoch: number }): DrawSnapshot {
   return JSON.parse(
-    JSON.stringify({ counters: sequentialCounterEntries(), states: [...states], ...(cursors ? { cursors } : {}) })
+    JSON.stringify({
+      counters: sequentialCounterEntries(),
+      states: [...states],
+      ...(sequence ? { cursors: sequence.cursors, epoch: sequence.epoch } : {})
+    })
   ) as DrawSnapshot
 }
 
@@ -473,10 +482,14 @@ export const useGeneration = create<GenerationState>()((set, get) => {
     )
     // "배치에 한 번" 순차가 이 배치에서 시작할 자리 — 지금 저장된 자리 (앞 배치들이 넘겨 놓았다).
     // 이어서 생성은 처음 돌 때 읽은 자리 그대로 (그사이 이 배치의 첫 그림이 자리를 넘겼어도 같은 후보로)
-    const cursors: CastCursors | undefined =
+    // 되돌리기 세대도 함께 — 그사이 자리를 처음으로 되돌렸거나 백업으로 바꿨으면 이 배치의 그림으로는 넘기지 않는다
+    const sequence: { cursors: CastCursors; epoch: number } | undefined =
       batch.continueSequence && !batch.verbatim
-        ? cleanCursors(resumeDraw ? resumeDraw.cursors : useCharacters.getState().cursors)
+        ? resumeDraw
+          ? { cursors: cleanCursors(resumeDraw.cursors), epoch: cursorEpochOf({ cursorEpoch: resumeDraw.epoch }) }
+          : { cursors: cleanCursors(useCharacters.getState().cursors), epoch: cursorEpochOf() }
         : undefined
+    const cursors = sequence?.cursors
     const castNotes = new Set<string>()
     let loopStarted = 0
     let outcome: BatchOutcome = 'done'
@@ -542,7 +555,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         const key = item.key ?? i
         let reqId = ''
         // 이 장을 뽑기 전 뽑기 상태 — "보냄"과 함께 남겨, 앱이 죽어도 이어서 생성이 같은 자리에서 이어 뽑는다
-        const drawBefore = batch.verbatim ? null : drawSnapshot(drawStates, cursors)
+        const drawBefore = batch.verbatim ? null : drawSnapshot(drawStates, sequence)
         // ── Phase 5: 프로젝트 장은 그 조합의 프롬프트·캐릭터로 (화면 프롬프트를 통째로 대신) — 아래 base·snap은 이 장의 것
         const { base, snap } = item.project ? projectItemRequest(batch, item.project, item.size) : batch
         const seed =
@@ -618,7 +631,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
               key,
               reqId,
               seed,
-              drawBefore ? { idx: key, before: drawBefore, after: drawSnapshot(drawStates, cursors) } : undefined
+              drawBefore ? { idx: key, before: drawBefore, after: drawSnapshot(drawStates, sequence) } : undefined
             )
             const useStream = useSettings.getState().streaming && !streamUnsupported
             const seq = ++previewSeq
@@ -688,7 +701,7 @@ export const useGeneration = create<GenerationState>()((set, get) => {
           const { image, payload } = result
           generated.add(i)
           // 그림이 나왔다 — 이 장이 쓴 "배치에 한 번" 순차를 다음 배치는 다음 차례부터 (그림이 하나도 안 나온 배치는 넘기지 않는다)
-          if (cursors && castRes) useCharacters.getState().commitCursors(castRes.advance)
+          if (sequence && castRes) useCharacters.getState().commitCursors(castRes.advance, sequence.epoch)
           if (item.scene?.reserved) claim(item.scene.id, -1)
           timing.count++
           timing.waitMs += result.stats.waitMs

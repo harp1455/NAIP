@@ -42,6 +42,12 @@ interface CharactersData {
 
 interface CharactersState extends CharactersData {
   cursors: CastCursors
+  /**
+   * 순서 자리를 처음으로 되돌리거나 백업으로 바꿀 때마다 하나씩 는다 (이 기기에만 — 백업에 넣지 않는다).
+   * 배치는 시작할 때의 값을 들고 있다가 값이 바뀌었으면 그 배치의 그림으로 자리를 넘기지 않는다 —
+   * 처음 자리(0)에서 시작한 배치의 남은 장이 되돌린 자리를 다시 1로 넘기지 않게
+   */
+  cursorEpoch: number
   addFolder: (name: string) => number
   renameFolder: (id: number, name: string) => void
   deleteFolder: (id: number, deleteCharacters: boolean) => void
@@ -58,9 +64,13 @@ interface CharactersState extends CharactersData {
   toggleFixed: (charId: number) => void
   clearSlots: () => void
   setOptions: (p: Partial<CastOptions>) => void
-  /** 그림이 나온 장이 쓴 순서 자리를 넘긴다 (resolveCast의 advance — 같은 배치를 다시 넘겨도 한 번만) */
-  commitCursors: (advance: CastCursors) => void
-  /** 배치에 한 번 순차를 다음 배치에 첫 후보·항목부터 */
+  /**
+   * 그림이 나온 장이 쓴 순서 자리를 넘긴다 (resolveCast의 advance — 같은 배치를 다시 넘겨도 한 번만).
+   * epoch = 그 배치가 시작할 때의 cursorEpoch. 그사이 되돌리기·백업 복원이 있었으면 넘기지 않고,
+   * 지운 슬롯·캐릭터·변형 그룹의 자리는 다시 만들지 않는다
+   */
+  commitCursors: (advance: CastCursors, epoch: number) => void
+  /** 배치에 한 번 순차를 다음 배치에 첫 후보·항목부터 (지금 도는 배치가 끝나도 그대로) */
   resetCursors: () => void
 }
 
@@ -191,7 +201,37 @@ export function exportCharacters(): CharactersData & { version: number } {
 
 /** 백업 불러오기 — 예전 형식(prompt 한 칸·cast)도 받는다 */
 export function importCharacters(raw: unknown): void {
-  useCharacters.setState(migrateCharacters(raw))
+  replaceCharacters(migrateCharacters(raw) as unknown as Record<string, unknown>)
+}
+
+/** 저장된 cursorEpoch (없거나 깨졌으면 0) */
+export function cursorEpochOf(s: { cursorEpoch?: unknown } = useCharacters.getState()): number {
+  const v = s.cursorEpoch
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0
+}
+
+const sameCursors = (a: CastCursors, b: CastCursors): boolean => {
+  const ka = Object.keys(a)
+  return ka.length === Object.keys(b).length && ka.every((k) => b[k] === a[k])
+}
+
+/**
+ * 캐릭터 데이터를 백업 것으로 바꾼다 (이미 다듬은 섹션 — 함수 이름과 겹치는 키는 부르는 쪽이 뺀다).
+ * 순서 자리가 바뀌면 cursorEpoch를 올려, 지금 돌거나 이어서 돌릴 배치가 복원한 자리를 넘기지 않게 한다.
+ * cursorEpoch는 이 기기의 것이라 들어온 값은 쓰지 않는다
+ */
+export function replaceCharacters(patch: Record<string, unknown>): void {
+  const { cursorEpoch: _ignored, ...rest } = patch
+  useCharacters.setState((s) => {
+    const moved = 'cursors' in rest && !sameCursors(cleanCursors(s.cursors), cleanCursors(rest.cursors))
+    return { ...rest, ...(moved ? { cursorEpoch: cursorEpochOf(s) + 1 } : {}) } as Partial<CharactersState>
+  })
+}
+
+/** 순서 자리의 열쇠가 가리키는 슬롯·변형 그룹이 아직 있는지 (열쇠는 resolveCast가 만드는 것과 같은 모양) */
+function cursorTargetExists(key: string, s: Pick<CharactersData, 'slots' | 'characters'>): boolean {
+  if (key.startsWith('slot:')) return s.slots.some((x) => `slot:${x.id}` === key)
+  return s.characters.some((c) => key.startsWith(`var:${c.id}:`) && c.variations.some((g) => `var:${c.id}:${g.id}` === key))
 }
 
 /** 지운 슬롯·캐릭터의 순서 자리를 뺀다 (바뀐 것이 없으면 그대로) */
@@ -225,6 +265,7 @@ export const useCharacters = create<CharactersState>()(
       slots: [],
       options: DEFAULT_CAST_OPTIONS,
       cursors: {},
+      cursorEpoch: 0,
       addFolder: (name) => {
         const id = uid()
         set((s) => ({ folders: [...s.folders, { id, name: name.trim() || '새 폴더' }] }))
@@ -318,12 +359,15 @@ export const useCharacters = create<CharactersState>()(
         ),
       clearSlots: () => set((s) => ({ slots: [], cursors: pruneCursors(s.cursors, (k) => !k.startsWith('slot:')) })),
       setOptions: (p) => set((s) => ({ options: { ...s.options, ...p } })),
-      commitCursors: (advance) =>
+      commitCursors: (advance, epoch) =>
         set((s) => {
-          const cursors = advanceCursors(s.cursors, advance)
+          if (epoch !== cursorEpochOf(s)) return s
+          const live: CastCursors = {}
+          for (const [k, v] of Object.entries(advance)) if (cursorTargetExists(k, s)) live[k] = v
+          const cursors = advanceCursors(s.cursors, live)
           return cursors ? { cursors } : s
         }),
-      resetCursors: () => set({ cursors: {} })
+      resetCursors: () => set((s) => ({ cursors: {}, cursorEpoch: cursorEpochOf(s) + 1 }))
     }),
     {
       name: 'naip-characters',

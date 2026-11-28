@@ -172,7 +172,9 @@ function cursorAt(cursors: unknown, key: string): number {
 /**
  * 그림이 나온 장의 advance로 저장된 자리를 한 칸 넘긴다 — 그 배치가 시작한 자리(advance − 1)에 아직 있는 열쇠만.
  * - 같은 배치를 다시 적용해도(같은 배치의 다음 장, 씬마다 따로 뽑기, 이어서 생성) 이미 넘어가 있어 한 번만 넘는다
- * - 배치가 도는 사이 자리를 처음으로 되돌렸거나(백업 복원 등) 다른 값이 됐으면 그 값을 그대로 둔다
+ * - 배치가 도는 사이 자리가 다른 값이 됐으면 그 값을 그대로 둔다. 다만 처음(0)으로 되돌린 자리는 값만으로는
+ *   "아직 안 넘김"과 구별되지 않는다 — 되돌리기·백업 복원·지운 슬롯과 캐릭터는 부르는 쪽(characters 스토어
+ *   commitCursors의 cursorEpoch와 열쇠 확인)이 거른다
  * 바뀐 것이 없으면 null
  */
 export function advanceCursors(cursors: CastCursors, advance: CastCursors | undefined): CastCursors | null {

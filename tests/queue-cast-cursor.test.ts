@@ -84,7 +84,8 @@ import { loadResume } from '../src/stores/queue-persist'
 import { usePrompt } from '../src/stores/prompt'
 import { useSettings } from '../src/stores/settings'
 import { migrateCharacters, useCharacters } from '../src/stores/characters'
-import { normalizeCharactersSection } from '../src/backup/stores'
+import { applyRestorePlan, collectStoreData, normalizeBackupData, normalizeCharactersSection } from '../src/backup/stores'
+import { planRestore } from '../src/backup/plan'
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 const until = async (cond: () => boolean): Promise<void> => {
@@ -259,6 +260,86 @@ describe('once-per-batch sequences continue across batches', () => {
   }, 20000)
 })
 
+describe('a reset, restore or removal made while a batch is running is kept', () => {
+  /** 배치(처음 자리 = 첫 후보)의 둘째 장을 보낼 때 — 첫 장이 자리를 넘긴 뒤 — 무언가를 한다 */
+  async function pressWhileSecondIsSent(count: number, act: () => void): Promise<{ seen: Record<string, number>; sent: string[] }> {
+    let seen: Record<string, number> | null = null
+    hold = async () => {
+      if (calls.length !== 2 || seen) return
+      seen = { ...useCharacters.getState().cursors }
+      act()
+    }
+    const sent = await press(count)
+    hold = null
+    expect(seen).not.toBeNull()
+    return { seen: seen!, sent }
+  }
+
+  it('a confirmed reset after the first image of a batch that started at the first candidate', async () => {
+    cast([seqSlot()], { scope: 'batch' })
+    const { seen, sent } = await pressWhileSecondIsSent(3, () => useCharacters.getState().resetCursors())
+    // 첫 장이 자리를 1로 넘겨 되돌리기가 보였고, 그걸 눌렀다 — 이 배치는 끝까지 A
+    expect(seen).toEqual({ [`slot:${SLOT}`]: 1 })
+    expect(sent).toEqual(['char A', 'char A', 'char A'])
+    // 남은 장이 돌아와도 되돌린 자리를 다시 넘기지 않는다 — 다음 배치는 처음(A)부터
+    expect(useCharacters.getState().cursors).toEqual({})
+    expect(await press(1)).toEqual(['char A'])
+    expect(await press(1)).toEqual(['char B'])
+  }, 20000)
+
+  it('a reset also holds for a sequence the batch had not moved yet', async () => {
+    // B의 변형 그룹은 둘째 장에 처음 나온다 — 그 장이 돌아와도 "다음 배치부터 처음으로"가 지켜진다
+    cast([seqSlot()], { scope: 'image' }, [char(1, 'A', [outfit]), char(2, 'B', [{ ...outfit, id: 6 }]), char(3, 'C')])
+    useCharacters.setState({ cursors: { 'var:1:5': 1 } })
+    const { sent } = await pressWhileSecondIsSent(2, () => useCharacters.getState().resetCursors())
+    expect(sent).toEqual(['char A, swimsuit', 'char B, uniform'])
+    expect(useCharacters.getState().cursors).toEqual({})
+  }, 20000)
+
+  it('an overwrite backup restore', async () => {
+    cast([seqSlot()], { scope: 'batch' })
+    const backup = {
+      characters: {
+        folders: [],
+        characters: [char(1, 'A'), char(2, 'B'), char(3, 'C')],
+        slots: [seqSlot()],
+        options: { ...DEFAULT_CAST_OPTIONS, scope: 'batch' },
+        cursors: {}
+      }
+    } as unknown as Parameters<typeof normalizeBackupData>[0]
+    const { seen } = await pressWhileSecondIsSent(3, () => {
+      applyRestorePlan(planRestore({}, normalizeBackupData(backup), { mode: 'overwrite' }))
+    })
+    expect(seen).toEqual({ [`slot:${SLOT}`]: 1 })
+    expect(useCharacters.getState().cursors).toEqual({})
+    expect(await press(1)).toEqual(['char A'])
+  }, 20000)
+
+  it('a removed slot or a deleted character does not get its position back', async () => {
+    const other: CastSlot = { ...seqSlot(), id: 78, candidates: [2, 3].map((id) => ({ kind: 'char' as const, id, weight: 1 })) }
+    cast([seqSlot(), other], { scope: 'batch' }, [char(1, 'A', [outfit]), char(2, 'B'), char(3, 'C')])
+    const { seen, sent } = await pressWhileSecondIsSent(3, () => {
+      useCharacters.getState().removeSlot(78)
+      useCharacters.getState().deleteCharacter(1)
+    })
+    expect(seen).toEqual({ [`slot:${SLOT}`]: 1, 'slot:78': 1, 'var:1:5': 1 })
+    expect(sent).toEqual(['char A, uniform + char B', 'char A, uniform + char B', 'char A, uniform + char B'])
+    expect(useCharacters.getState().cursors).toEqual({ [`slot:${SLOT}`]: 1 })
+  }, 20000)
+
+  it('a backup never carries or overwrites the reset counter of this device', () => {
+    cast([seqSlot()], { scope: 'batch' })
+    useCharacters.getState().resetCursors()
+    const epoch = (useCharacters.getState() as unknown as { cursorEpoch: number }).cursorEpoch
+    expect(collectStoreData().characters).not.toHaveProperty('cursorEpoch')
+    const incoming = { characters: { folders: [], characters: [], slots: [], options: {}, cursorEpoch: epoch - 5 } }
+    expect(normalizeBackupData(incoming).characters).not.toHaveProperty('cursorEpoch')
+    applyRestorePlan(planRestore({}, normalizeBackupData(incoming), { mode: 'overwrite' }))
+    // 순서 자리가 없는 백업이라 자리도 세대도 그대로
+    expect((useCharacters.getState() as unknown as { cursorEpoch: number }).cursorEpoch).toBe(epoch)
+  })
+})
+
 describe('a batch that produced no image does not use up a turn', () => {
   it('stopped while waiting before its first request', async () => {
     cast([seqSlot()], { scope: 'batch' })
@@ -349,6 +430,26 @@ describe('resume keeps the batch turn and never advances it twice', () => {
       expect(calls.map((c) => c.chars[0])).toEqual(withUncertain ? ['char B', 'char B'] : ['char B'])
       expect(useCharacters.getState().cursors).toEqual({ [`slot:${SLOT}`]: 2 })
       expect(await press(1)).toEqual(['char C'])
+    }, 20000)
+
+    it(`after a reset made once the first image came back, over an app restart (${withUncertain ? 're-sending' : 'skipping'} the unconfirmed one)`, async () => {
+      cast([seqSlot()], { scope: 'batch' })
+      // 처음 자리(A)에서 시작한 배치: 첫 장은 받아 자리가 1로 넘어갔고, 둘째 장을 보낸 채 죽었다
+      await crashWhileSending(2, 3)
+      expect(useCharacters.getState().cursors).toEqual({ [`slot:${SLOT}`]: 1 })
+      useCharacters.getState().resetCursors()
+      // 앱을 다시 연 것처럼 메모리를 잃은 뒤 저장된 것을 다시 읽는다
+      const stored = disk.get('naip-characters') ?? '{}'
+      useCharacters.setState({ cursors: { [`slot:${SLOT}`]: 1 }, cursorEpoch: 0 } as never)
+      disk.set('naip-characters', stored)
+      await useCharacters.persist.rehydrate()
+      expect(useCharacters.getState().cursors).toEqual({})
+      await useGeneration.getState().resume(await loadResume(), withUncertain)
+      await idle()
+      expect(calls.map((c) => c.chars[0])).toEqual(withUncertain ? ['char A', 'char A'] : ['char A'])
+      // 이어서 생성한 장이 돌아와도 되돌린 자리를 다시 넘기지 않는다
+      expect(useCharacters.getState().cursors).toEqual({})
+      expect(await press(1)).toEqual(['char A'])
     }, 20000)
 
     it(`before any image came back (${withUncertain ? 're-sending' : 'skipping'} the unconfirmed one)`, async () => {

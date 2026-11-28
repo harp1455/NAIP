@@ -13,7 +13,7 @@
 import * as projectModel from '../project/model'
 import { useProjects } from '../project/store'
 import type { Project } from '../project/types'
-import { migrateCharacters, useCharacters } from '../stores/characters'
+import { migrateCharacters, replaceCharacters, useCharacters } from '../stores/characters'
 import { useFragments } from '../stores/fragments'
 import { masksLoadFailed, useMasks } from '../stores/masks'
 import { usePrompt } from '../stores/prompt'
@@ -105,7 +105,8 @@ export function collectStoreData(): BackupData {
     saveFolders,
     prompt,
     presets: { presets: (presets as BackupItem[]) ?? [] },
-    characters: dataOf(useCharacters.getState()),
+    // 되돌리기 세대(cursorEpoch)는 이 기기에서 도는 배치를 위한 것이라 백업에 넣지 않는다
+    characters: dataOf(useCharacters.getState(), ['cursorEpoch']),
     scenes: dataOf(useScenes.getState()),
     fragments: dataOf(useFragments.getState()),
     vibes: { vibes: refs.vibes as unknown as BackupItem[] },
@@ -125,7 +126,8 @@ const CHARACTER_KEYS = ['folders', 'characters', 'slots', 'options', 'cursors']
  * 캐릭터 섹션을 지금 형식(Phase 2)으로 — migrateCharacters 를 거친다(잃는 내용 없음):
  * 예전 prompt 한 칸 → 고정(base), 예전 출연 목록 cast → 같은 순서의 고정 슬롯.
  * 캐릭터와 섹션에 있던 모르는 필드(더 새로운 앱이 더한 것)는 그대로 둔다. version·cast 는 뺀다.
- * 배치에 한 번 순차의 순서 자리(cursors)는 백업에 있을 때만 넣는다 — 없는 예전 백업은 지금 자리를 건드리지 않는다
+ * 배치에 한 번 순차의 순서 자리(cursors)는 백업에 있을 때만 넣는다 — 없는 예전 백업은 지금 자리를 건드리지 않는다.
+ * 되돌리기 세대(cursorEpoch)는 이 기기의 것이라 들어와도 뺀다
  */
 export function normalizeCharactersSection(raw: unknown): Obj {
   const r = isObj(raw) ? raw : {}
@@ -140,7 +142,7 @@ export function normalizeCharactersSection(raw: unknown): Obj {
     return { ...extra, ...c }
   })
   const rest: Obj = {}
-  for (const [k, v] of Object.entries(r)) if (![...CHARACTER_KEYS, 'cast', 'version'].includes(k)) rest[k] = v
+  for (const [k, v] of Object.entries(r)) if (![...CHARACTER_KEYS, 'cast', 'version', 'cursorEpoch'].includes(k)) rest[k] = v
   return { ...rest, folders: m.folders, characters, slots: m.slots, options: m.options, ...(m.cursors ? { cursors: m.cursors } : {}) }
 }
 
@@ -207,7 +209,8 @@ export function applyRestorePlan(plan: RestorePlan): DataSectionId[] {
         break
       case 'characters':
         // 계획의 결과도 한 번 더 지금 형식으로 (모르는 키·깨진 항목이 스토어에 들어가지 않게)
-        useCharacters.setState(safePatch(useCharacters.getState(), normalizeCharactersSection(r)) as never)
+        // 순서 자리가 바뀌면 지금 도는 배치가 그 자리를 넘기지 않는다 (replaceCharacters)
+        replaceCharacters(safePatch(useCharacters.getState(), normalizeCharactersSection(r)))
         break
       case 'scenes':
         useScenes.setState(safePatch(useScenes.getState(), r) as never)
