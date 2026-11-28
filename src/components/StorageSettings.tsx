@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { loadImage, makeThumb } from '../lib/image'
 import { readImageSettings } from '../lib/metadata'
 import { clearCache, formatBytes, getStorage, storageInfo } from '../storage'
-import { checkStorage, deleteOrphanOriginals, deleteStoredFiles, recoverOrphans, stillMissingOriginals, type CheckReport } from '../storage/check'
+import { checkStorage, deleteOrphanOriginals, deleteUnusedFiles, recoverOrphans, stillMissingOriginals, type CheckReport } from '../storage/check'
 import { idbLegacySource } from '../storage/legacy'
 import type { StorageInfo } from '../storage/native'
 import { useGeneration } from '../stores/generation'
@@ -173,7 +173,9 @@ export function StorageGroup(): ReactNode {
                 disabled={!!busy}
                 onClick={() =>
                   void run('정리', async () => {
-                    await deleteStoredFiles(await getStorage(), [...report.orphanThumbs, ...report.leftovers])
+                    // 점검 뒤에 기록·대기열이 쓰게 된 파일(복원 등)은 지우지 않는다
+                    const r = await deleteUnusedFiles(await getStorage(), [...report.orphanThumbs, ...report.leftovers])
+                    if (r.skipped) toast(`${r.deleted}개를 지웠습니다 · ${r.skipped}개는 점검 뒤에 쓰이게 된 파일이라 지우지 않았습니다`)
                     await check()
                   })
                 }

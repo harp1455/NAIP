@@ -26,7 +26,7 @@ import { bytesSource, historyExportPort, historyImportPort, memorySink, writeNai
 import { idbStorage, openIdb, type HistoryMeta } from '../src/lib/db'
 import { useProjects } from '../src/project/store'
 import { setStorageForTests } from '../src/storage'
-import { checkStorage, deleteOrphanOriginals, recoverOrphans, stillMissingOriginals } from '../src/storage/check'
+import { checkStorage, deleteOrphanOriginals, deleteUnusedFiles, recoverOrphans, stillMissingOriginals } from '../src/storage/check'
 import { memoryFileStore } from '../src/storage/files'
 import { createHistoryRepo } from '../src/storage/history-repo'
 import { idbLegacySource, migrateLegacy } from '../src/storage/legacy'
@@ -368,5 +368,31 @@ describe('acting on a storage check report that went stale (a restore ran in bet
     // 복원으로 H+1 의 원본이 다시 들어왔다
     await s.repo.add(meta(H + 1), png(400, 1))
     expect(await stillMissingOriginals(s, report.missingOriginals)).toEqual([H + 2])
+  })
+
+  it('does not clean up a thumbnail or queue file that came into use after the check', async () => {
+    const s = await store()
+    // 예전에 지운 기록의 썸네일이 남았다 (기록 지우기는 파일 지우기 실패를 넘긴다) + 정말 남는 것들
+    await s.files.write(`thumbs/${H + 1}.jpg`, THUMB)
+    await s.files.write(`thumbs/${H + 2}.jpg`, THUMB)
+    await s.files.write(`images/${H + 3}.png.123.tmp`, png(10))
+    await s.files.write(`queue/${H + 4}.json`, new Blob(['{}'], { type: 'application/json' }))
+    await s.files.write(`queue/${H + 5}.json`, new Blob(['{}'], { type: 'application/json' }))
+    const report = await checkStorage(s)
+    expect(report.orphanThumbs.sort()).toEqual([`thumbs/${H + 1}.jpg`, `thumbs/${H + 2}.jpg`])
+    expect(report.leftovers.sort()).toEqual([`images/${H + 3}.png.123.tmp`, `queue/${H + 4}.json`, `queue/${H + 5}.json`])
+    // 점검 결과를 띄워 둔 채: H+1 을 기록만 복원(썸네일은 그 파일을 가리키고 원본은 없다), H+4 배치가 대기열에 들어왔다
+    await historyImportPort(s).put(meta(H + 1) as never, null)
+    expect(await s.repo.row(H + 1)).toMatchObject({ thumb: `thumbs/${H + 1}.jpg`, file: null })
+    await s.driver.exec('INSERT INTO queue_batches (id, label, file, created) VALUES (?, ?, ?, ?)', [H + 4, 'batch', `queue/${H + 4}.json`, 1])
+
+    const r = await deleteUnusedFiles(s, [...report.orphanThumbs, ...report.leftovers])
+    expect(r).toEqual({ deleted: 3, skipped: 2 })
+    expect(s.files.files.has(`thumbs/${H + 1}.jpg`)).toBe(true)
+    expect(s.files.files.has(`queue/${H + 4}.json`)).toBe(true)
+    expect(s.files.files.has(`thumbs/${H + 2}.jpg`)).toBe(false)
+    expect(s.files.files.has(`images/${H + 3}.png.123.tmp`)).toBe(false)
+    expect(s.files.files.has(`queue/${H + 5}.json`)).toBe(false)
+    expect(await checkStorage(s)).toMatchObject({ orphanThumbs: [], leftovers: [], missingThumbs: [] })
   })
 })
