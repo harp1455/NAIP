@@ -11,6 +11,7 @@
 import { makeThumb, pngDataUrl, toPngBase64 } from '../lib/image'
 import { uid } from '../lib/util'
 import { freeSpace, getStorage } from '../storage'
+import { forgetLegacy } from '../storage/legacy'
 import { useProjects } from '../project/store'
 import { useHistory } from '../stores/history'
 import { useSettings } from '../stores/settings'
@@ -324,7 +325,9 @@ export async function planFor(src: RestoreSource, choice: RestoreChoice): Promis
     sections,
     newId: uid,
     hasHistory,
-    hasOriginals: hasHistory && (src.history?.originals ?? 0) > 0
+    hasOriginals: hasHistory && (src.history?.originals ?? 0) > 0,
+    // 불러오지 못한 섹션을 가리키는 연결(프로젝트의 바이브·레퍼런스)은 끊지 않는다 — 백업에 그 섹션이 없어도
+    unknown: unavailable
   })
   if (blocked.length) {
     plan.unavailable = blocked
@@ -435,8 +438,13 @@ export async function applyRestore(
         signal: opts.signal
       })
       summary.problems.push(...summary.history.problems)
-      // 바꾸기로 지운 그림은 프로젝트 조합에서도 뺀다 (히스토리 화면에서 지울 때와 같게)
-      if (summary.history.removedIds?.length) useProjects.getState().forgetImages(summary.history.removedIds)
+      // 바꾸기로 지운 그림은 프로젝트 조합에서도, 아직 옮기기가 끝나지 않은 이전 히스토리에서도 뺀다
+      // (히스토리 화면에서 지울 때와 같게 — 그러지 않으면 다음 옮기기가 지운 그림을 다시 옮겨 온다)
+      const removedIds = summary.history.removedIds ?? []
+      if (removedIds.length) {
+        await forgetLegacy(removedIds).catch((e: unknown) => console.warn('이전 히스토리에서 지우지 못했습니다', e))
+        useProjects.getState().forgetImages(removedIds)
+      }
     } catch (error) {
       summary.historyError =
         error instanceof BackupError && error.code === 'aborted'
