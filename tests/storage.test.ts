@@ -426,7 +426,7 @@ describe('review fixes: interrupted moves, orphans and deletes', () => {
     expect(report.orphanOriginals.map((o) => o.path)).toContain('images/6026.png')
     // 아직 옮기지 않은 장은 되살리지 않는다 — 옮기기가 예전 기록 그대로 옮긴다
     const rec = await recoverOrphans(s, report.orphanOriginals, describeStub, idbLegacySource())
-    expect(rec).toEqual({ recovered: 0, waiting: report.orphanOriginals.length })
+    expect(rec).toEqual({ recovered: 0, waiting: report.orphanOriginals.length, present: 0 })
     const r2 = await migrateLegacy({ storage: s, source: idbLegacySource(), freeSpace: async () => 1e12 })
     expect(r2).toMatchObject({ status: 'done', count: 30 })
     for (const m of metas) {
@@ -465,7 +465,7 @@ describe('review fixes: interrupted moves, orphans and deletes', () => {
     const s = await fresh()
     await s.files.write('images/6200.png', png(9))
     const report = await checkStorage(s)
-    expect(await recoverOrphans(s, report.orphanOriginals, describeStub, idbLegacySource())).toEqual({ recovered: 1, waiting: 0 })
+    expect(await recoverOrphans(s, report.orphanOriginals, describeStub, idbLegacySource())).toEqual({ recovered: 1, waiting: 0, present: 0 })
     expect((await s.history.get(6200))!.unsaved).toBe(1)
   })
 

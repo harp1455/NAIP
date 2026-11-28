@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { loadImage, makeThumb } from '../lib/image'
 import { readImageSettings } from '../lib/metadata'
 import { clearCache, formatBytes, getStorage, storageInfo } from '../storage'
-import { checkStorage, deleteStoredFiles, recoverOrphans, type CheckReport } from '../storage/check'
+import { checkStorage, deleteOrphanOriginals, deleteStoredFiles, recoverOrphans, stillMissingOriginals, type CheckReport } from '../storage/check'
 import { idbLegacySource } from '../storage/legacy'
 import type { StorageInfo } from '../storage/native'
 import { useGeneration } from '../stores/generation'
@@ -135,7 +135,8 @@ export function StorageGroup(): ReactNode {
                       const r = await recoverOrphans(await getStorage(), report.orphanOriginals, describe, idbLegacySource())
                       toast(
                         `${r.recovered}장을 히스토리로 되살렸습니다` +
-                          (r.waiting ? ` · ${r.waiting}장은 이전 히스토리 옮기기에서 원래 기록과 함께 옮깁니다` : '')
+                          (r.waiting ? ` · ${r.waiting}장은 이전 히스토리 옮기기에서 원래 기록과 함께 옮깁니다` : '') +
+                          (r.present ? ` · ${r.present}장은 이미 기록이 있어 그대로 두었습니다` : '')
                       )
                       await useHistory.getState().init()
                       await check()
@@ -150,7 +151,9 @@ export function StorageGroup(): ReactNode {
                   onClick={() => {
                     if (!window.confirm(`기록 없는 원본 ${report.orphanOriginals.length}개를 지울까요? 되돌릴 수 없습니다.`)) return
                     void run('원본 지우기', async () => {
-                      await deleteStoredFiles(await getStorage(), report.orphanOriginals.map((o) => o.path))
+                      // 점검 뒤에 기록이 생긴 원본(복원 등)은 지우지 않는다
+                      const r = await deleteOrphanOriginals(await getStorage(), report.orphanOriginals.map((o) => o.path))
+                      if (r.skipped) toast(`${r.deleted}개를 지웠습니다 · ${r.skipped}개는 기록이 있는 그림이라 지우지 않았습니다`)
                       await check()
                     })
                   }}
@@ -187,7 +190,12 @@ export function StorageGroup(): ReactNode {
                 onClick={() => {
                   if (!window.confirm(`원본이 없는 기록 ${report.missingOriginals.length}개를 히스토리에서 지울까요?`)) return
                   void run('기록 지우기', async () => {
-                    await useHistory.getState().remove(report.missingOriginals)
+                    // 점검 뒤에 원본이 다시 생긴 기록(복원 등)은 지우지 않는다 — 기록 지우기는 원본 파일도 지운다
+                    const ids = await stillMissingOriginals(await getStorage(), report.missingOriginals)
+                    if (ids.length) await useHistory.getState().remove(ids)
+                    if (ids.length < report.missingOriginals.length) {
+                      toast(`${ids.length}개를 지웠습니다 · ${report.missingOriginals.length - ids.length}개는 점검 뒤에 원본이 생겨 지우지 않았습니다`)
+                    }
                     await check()
                   })
                 }}

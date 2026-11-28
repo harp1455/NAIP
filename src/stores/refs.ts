@@ -4,6 +4,7 @@ import { debouncedIdbStorage } from '../lib/db'
 import { makeThumb, pngDataUrl, toPngBase64 } from '../lib/image'
 import { uid } from '../lib/util'
 import type { ReferenceType } from '../nai/reference'
+import { toastLoadFailed } from './toast'
 
 export interface Vibe {
   id: number
@@ -63,6 +64,11 @@ let loadFailed = false
 export function refsLoadFailed(): boolean {
   return loadFailed
 }
+/**
+ * 저장된 것을 불러온 뒤에만 저장한다. 불러오기 전이나 실패한 뒤에 저장하면 빈 목록(과 이번에 더한 것)이
+ * 저장된 바이브·레퍼런스를 덮어써, 다시 시작해도 되살릴 수 없다
+ */
+let loaded = false
 
 export const useRefs = create<RefsState>()(
   persist(
@@ -178,13 +184,20 @@ export const useRefs = create<RefsState>()(
     {
       name: 'naip-refs',
       // 강도 슬라이더를 끄는 동안 그림까지 매번 다시 쓰지 않도록 모아서 저장한다
-      storage: debouncedIdbStorage<Pick<RefsState, 'vibes' | 'charRefs'>>(),
+      storage: debouncedIdbStorage<Pick<RefsState, 'vibes' | 'charRefs'>>(400, { canWrite: () => loaded }),
       partialize: (s) => ({ vibes: s.vibes, charRefs: s.charRefs }),
-      // 불러오지 못해도 hydrated 는 true 가 된다(화면은 빈 목록으로 쓴다) — 실패는 refsLoadFailed 로 따로 알린다
+      // 불러오지 못해도 hydrated 는 true 가 된다(화면은 빈 목록으로 쓴다) — 실패는 refsLoadFailed 로 따로 알린다.
+      // 그때는 이번 실행 동안 저장하지 않는다 (저장된 것은 그대로 두고, 다시 시작하면 다시 불러온다)
       onRehydrateStorage: () => {
         loadFailed = false
+        loaded = false
         return (state, error) => {
           loadFailed = !state || error !== undefined
+          loaded = !loadFailed
+          if (loadFailed) {
+            console.warn('바이브·레퍼런스를 불러오지 못했습니다', error)
+            toastLoadFailed('바이브·레퍼런스')
+          }
           useRefs.setState({ hydrated: true })
         }
       }

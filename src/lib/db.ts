@@ -220,8 +220,11 @@ export const idbStorage = {
  * zustand persist용 저장소 — 레퍼런스처럼 큰 그림(base64)을 품은 상태를 위해 쓰기를 모아서 한다.
  * 슬라이더를 끄는 동안 바뀔 때마다 수 MB를 직렬화·저장하면 화면이 끊기므로, 마지막 변경 후
  * 잠깐 조용해지면 한 번만 쓴다. 앱이 뒤로 가면 바로 쓴다.
+ *
+ * canWrite 가 false 인 동안의 쓰기는 버린다 — 저장된 것을 아직(또는 끝내) 불러오지 못한 스토어가
+ * 빈 목록을 저장해 사용자 데이터를 덮어쓰지 않게 한다 (zustand persist 는 setState 마다 저장한다).
  */
-export function debouncedIdbStorage<S>(delayMs = 400): {
+export function debouncedIdbStorage<S>(delayMs = 400, opts: { canWrite?: () => boolean } = {}): {
   getItem: (name: string) => Promise<{ state: S; version?: number } | null>
   setItem: (name: string, value: { state: S; version?: number }) => void
   removeItem: (name: string) => Promise<void>
@@ -246,6 +249,7 @@ export function debouncedIdbStorage<S>(delayMs = 400): {
       return raw ? (JSON.parse(raw) as { state: S; version?: number }) : null
     },
     setItem: (name, value) => {
+      if (opts.canWrite && !opts.canWrite()) return
       pending.set(name, value)
       clearTimeout(timer)
       timer = setTimeout(flush, delayMs)

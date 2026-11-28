@@ -193,6 +193,12 @@ export interface PlanOptions {
   /** 백업에 히스토리 기록·원본이 있는지 (manifest.sections) */
   hasHistory?: boolean
   hasOriginals?: boolean
+  /**
+   * 이 기기에서 불러오지 못해 지금 내용을 모르는 섹션 (복원하지도 않는다 — app.ts planFor).
+   * 그 섹션을 가리키는 백업 안의 연결(프로젝트의 바이브·레퍼런스 등)은 끊지 않고 그대로 둔다:
+   * 지금 목록이 비어 보일 뿐 저장된 항목은 남아 있을 수 있어, 끊으면 다시 불러온 뒤에도 연결이 사라진 채 남는다
+   */
+  unknown?: DataSectionId[]
 }
 
 // ── 참조 경로 ───────────────────────────────────────────────────────────
@@ -348,6 +354,7 @@ export function planRestore(current: BackupData, incoming: BackupData, opts: Pla
 
   const idMaps = new Map<string, Map<number, number>>()
   const finalIds = new Map<string, Set<number>>()
+  const unknown = new Set(opts.unknown ?? [])
   const planned = new Set<DataSectionId>()
   const idsOfTarget = (t: { section: DataSectionId; key: string }): Set<number> => {
     const k = `${t.section}.${t.key}`
@@ -372,11 +379,25 @@ export function planRestore(current: BackupData, incoming: BackupData, opts: Pla
     stats.current = countSection(id, curObj)
     const collectionKeys = new Set((schema.collections ?? []).map((c) => c.key))
     const refs = RESTORE_SCHEMA.refs.filter((r) => r.section === id)
+    /** 대상 섹션을 불러오지 못해 확인하지 않고 그대로 둔 연결 (대상 섹션별 수) */
+    const unverified = new Map<DataSectionId, number>()
+    const noteUnverified = (): void => {
+      if (!unverified.size) return
+      const labels = [...unverified.keys()].map((t) => SECTION_LABELS[t]).join('·')
+      const n = [...unverified.values()].reduce((a, b) => a + b, 0)
+      notes.push(`${SECTION_LABELS[id]}: 이 기기의 ${labels}을(를) 불러오지 못해 그쪽 연결 ${n}곳은 확인하지 않고 그대로 둡니다`)
+    }
 
     const applyRefs = (filter: (firstKey: string) => boolean): void => {
       for (const r of refs) {
         const tokens = parsePath(r.path)
         if (!filter(tokens[0].key)) continue
+        if (unknown.has(r.target.section) && !finalIds.has(`${r.target.section}.${r.target.key}`)) {
+          // 지금 것을 모른다 — 없는 대상으로 보고 끊지 않는다
+          const n = collectRefs(incObj, tokens, r.when).length
+          if (n) unverified.set(r.target.section, (unverified.get(r.target.section) ?? 0) + n)
+          continue
+        }
         const map = idMaps.get(`${r.target.section}.${r.target.key}`)
         const ids = idsOfTarget(r.target)
         incObj = mapRefs(
@@ -427,6 +448,7 @@ export function planRestore(current: BackupData, incoming: BackupData, opts: Pla
           changes.push({ kind: 'removed', collection: c.key, id: bid, name })
         }
       }
+      noteUnverified()
       plan.sections[id] = { section: id, action: 'overwrite', result, stats, changes, notes }
       planned.add(id)
       continue
@@ -590,6 +612,7 @@ export function planRestore(current: BackupData, incoming: BackupData, opts: Pla
       }
     }
     if (keptCurrent) notes.push(`${SECTION_LABELS[id]}: 합치기라 지금 값을 유지한 항목 ${keptCurrent}개 (덮어쓰기를 고르면 백업 값으로 바뀝니다)`)
+    noteUnverified()
     plan.sections[id] = { section: id, action: 'merge', result, stats, changes, notes }
     planned.add(id)
   }
