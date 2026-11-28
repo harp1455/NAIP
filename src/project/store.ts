@@ -12,7 +12,7 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware'
 import { toast } from '../stores/toast'
-import { AXIS_TEMPLATES, applyAxisTemplate } from './axis-templates'
+import { AXIS_TEMPLATES, applyAxisTemplate, type TemplateOptions } from './axis-templates'
 import * as cur from './curation'
 import * as model from './model'
 import type {
@@ -54,7 +54,7 @@ interface ProjectsState {
   removeValue: (projectId: string, axisId: string, valueId: string) => void
   moveValue: (projectId: string, axisId: string, valueId: string, dir: -1 | 1) => void
   /** 축 빠른 시작 세트를 넣는다 (axis-templates.applyAxisTemplate) — 넣은 축 id */
-  applyAxisTemplate: (projectId: string, templateId: string, opts?: { axisId?: string; newAxis?: boolean }) => string | null
+  applyAxisTemplate: (projectId: string, templateId: string, opts?: TemplateOptions) => string | null
 
   // ── 생성 진행 (대기열 연결)
   markQueued: (projectId: string, jobs: readonly { key: string; count: number }[]) => void

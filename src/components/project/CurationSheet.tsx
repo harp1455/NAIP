@@ -14,6 +14,7 @@ import {
   expandMatrix,
   itemStatus,
   representativeOf,
+  reviewState,
   useProjects,
   versionChain,
   type AssetImage,
@@ -225,6 +226,7 @@ export function CurationSheet(props: {
         <ReviewView
           project={p}
           itemKey={key}
+          label={label}
           images={images}
           start={review.index}
           quick={review.quick}
@@ -244,6 +246,8 @@ export function CurationSheet(props: {
 function ReviewView(props: {
   project: Project
   itemKey: string
+  /** 조합 이름 ("민지 · 울음") — 무엇을 고르는지 맨 위에 */
+  label: string
   images: AssetImage[]
   start: number
   quick: boolean
@@ -291,9 +295,16 @@ function ReviewView(props: {
   }
   const adopted = adoptedImages(item).filter((a) => a.id !== img.id)
   const counts = curationCounts(item)
-  // 이 조합을 다 골랐다 — 목표만큼 채택했거나 미선별 그림이 없다
-  const finished = counts.adopted >= Math.max(1, props.target) || counts.unreviewed === 0
-  const showNext = finished && (!!props.next || props.sequential)
+  // 이 조합을 다 골랐다 — 목표만큼 채택했거나 미선별 그림이 없다 (보류가 남았으면 그렇다고 알린다 — 아직 고를 조합)
+  const state = reviewState(item, props.target)
+  const showNext = state !== 'open' && (!!props.next || props.sequential)
+  const doneText =
+    state === 'filled' ? '채택 목표를 채웠습니다' : state === 'held' ? `보류 ${counts.hold}장이 남았습니다` : '이 조합의 그림을 다 봤습니다'
+  const leftText = props.next
+    ? `고를 조합 ${props.next.left}개 남음`
+    : state === 'held'
+      ? '보류를 채택·탈락으로 정하면 이 조합이 끝납니다'
+      : '고를 조합을 모두 봤습니다'
   const chain = versionChain(item, img.id)
   const code = img.slot ? item.codes?.[String(img.slot)] : undefined
   const go = (d: number): void => setIndex((i) => Math.min(order.length - 1, Math.max(0, i + d)))
@@ -311,13 +322,21 @@ function ReviewView(props: {
 
   return (
     <div className="safe-top fixed inset-0 z-[55] flex flex-col bg-black" role="dialog" aria-modal="true" aria-label="그림 선별">
-      <header className="flex h-12 shrink-0 items-center gap-1 px-1 text-sm">
+      <header className="flex min-h-12 shrink-0 items-center gap-1 px-1 py-1 text-sm">
         <IconButton label="선별 닫기" onClick={props.onClose}>
           <X size={22} />
         </IconButton>
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-dim">
-          {index + 1}/{order.length} · seed {img.seed ?? '-'}
-          {code ? ` · ${code}` : ''}
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-baseline gap-1.5">
+            <span className="truncate font-semibold text-fg">{props.label}</span>
+            <span className="shrink-0 text-[11px] text-dim">
+              채택 <b className={counts.adopted >= Math.max(1, props.target) ? 'text-ok' : 'text-fg'}>{counts.adopted}</b>/{props.target}
+            </span>
+          </span>
+          <span className="block truncate font-mono text-[11px] text-dim">
+            {index + 1}/{order.length} · seed {img.seed ?? '-'}
+            {code ? ` · ${code}` : ''}
+          </span>
         </span>
         <span className={cx('rounded-full px-2 py-0.5 text-[11px] font-semibold', MARK_STYLE[img.mark])}>
           {CURATION_LABEL[img.mark]}
@@ -341,10 +360,10 @@ function ReviewView(props: {
       <div className="safe-bottom shrink-0 border-t border-white/10 bg-panel">
         <div className="flex flex-col gap-2 p-3">
           {showNext && (
-            <div role="status" className="flex items-center gap-2 rounded-lg bg-ok/15 py-1.5 pl-3 pr-1.5">
-              <span className="min-w-0 flex-1 text-xs text-ok">
-                {counts.adopted >= Math.max(1, props.target) ? '채택 목표를 채웠습니다' : '이 조합의 그림을 다 봤습니다'}
-                <span className="block text-[11px] text-dim">{props.next ? `고를 조합 ${props.next.left}개 남음` : '고를 조합을 모두 봤습니다'}</span>
+            <div role="status" className={cx('flex items-center gap-2 rounded-lg py-1.5 pl-3 pr-1.5', state === 'held' ? 'bg-tag-meta/15' : 'bg-ok/15')}>
+              <span className={cx('min-w-0 flex-1 text-xs', state === 'held' ? 'text-tag-meta' : 'text-ok')}>
+                {doneText}
+                <span className="block text-[11px] text-dim">{leftText}</span>
               </span>
               {props.next && props.onNext ? (
                 <Button variant="primary" className="h-10 min-w-0 max-w-[62%] px-3 text-xs" onClick={() => props.onNext!(props.next!.key)}>

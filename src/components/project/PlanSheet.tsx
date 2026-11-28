@@ -29,13 +29,18 @@ export function PlanSheet(props: {
   initialMode?: PlanMode
   /** "부족한 것만"에서 고르지 않은 그림도 채운 것으로 시작 (다음에 할 일 카드 — 카드가 센 조합 수와 같게) */
   fillUnreviewed?: boolean
+  /**
+   * "행렬에서 거른 조합만"을 켠 채로 시작 (기본 켬). 다음에 할 일 카드는 행렬 전체를 세므로 끈 채로 연다
+   * (켜면 거른 조합만 — 단추는 그대로 남아 있다)
+   */
+  initialScoped?: boolean
   onClose: () => void
 }): ReactNode {
   const p = props.project
   const [mode, setMode] = useState<PlanMode>(props.initialMode ?? 'all')
   const [perMissing, setPerMissing] = useState(1)
   const [countUnreviewed, setCountUnreviewed] = useState(!!props.fillUnreviewed)
-  const [scoped, setScoped] = useState(!!props.selection)
+  const [scoped, setScoped] = useState(!!props.selection && props.initialScoped !== false)
   const running = useGeneration((s) => s.running)
   // 예상에 쓰는 정보가 바뀌면 다시 계산한다
   const sub = useSettings((s) => s.subscription)

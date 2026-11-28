@@ -5,20 +5,33 @@
 import type { ReactNode } from 'react'
 import { Check, ChevronRight, FileDown, Layers, Loader2, Play, Settings2 } from 'lucide-react'
 import { cx } from '../../lib/util'
-import { GUIDE_STEPS, type NextAction, type ProjectGuide } from '../../project'
+import { GUIDE_STEPS, type NextAction, type ProjectGuide, type StepState } from '../../project'
 import { Button } from '../ui'
 
-/** 다섯 단계 막대 — 끝난 단계는 초록, 지금 단계는 주황 */
-export function StepBar(props: { step: number; className?: string }): ReactNode {
+const STEP_STATE_LABEL: Record<StepState, string> = { done: '끝남', now: '지금', doing: '남은 것 있음', todo: '아직' }
+
+/**
+ * 다섯 단계 막대 — 끝난 단계는 초록, 지금 단계는 주황, 지금 단계는 아니지만 남은 일이 있는 단계는 옅은 주황
+ * (steps를 주지 않으면 step 앞은 끝남, 뒤는 아직)
+ */
+export function StepBar(props: { step: number; steps?: readonly StepState[]; className?: string }): ReactNode {
   return (
     <ol aria-label="진행 단계" className={cx('grid grid-cols-5 gap-1', props.className)}>
       {GUIDE_STEPS.map((name, i) => {
         const n = i + 1
-        const state = n < props.step ? 'done' : n === props.step ? 'now' : 'todo'
+        const state: StepState = props.steps?.[i] ?? (n < props.step ? 'done' : n === props.step ? 'now' : 'todo')
         return (
           <li key={name} aria-current={state === 'now' ? 'step' : undefined} className="min-w-0">
-            <div className={cx('h-1 rounded-full', state === 'done' ? 'bg-ok' : state === 'now' ? 'bg-accent' : 'bg-raised')} />
-            <div className={cx('mt-1 truncate text-center text-[10px]', state === 'now' ? 'font-semibold text-fg' : 'text-dim')}>{name}</div>
+            <div
+              className={cx(
+                'h-1 rounded-full',
+                state === 'done' ? 'bg-ok' : state === 'now' ? 'bg-accent' : state === 'doing' ? 'bg-accent/35' : 'bg-raised'
+              )}
+            />
+            <div className={cx('mt-1 truncate text-center text-[10px]', state === 'now' ? 'font-semibold text-fg' : 'text-dim')}>
+              {name}
+              <span className="sr-only"> ({STEP_STATE_LABEL[state]})</span>
+            </div>
           </li>
         )
       })}
@@ -99,7 +112,7 @@ export function NextStepCard(props: { guide: ProjectGuide; onAction: GuideHandle
   const secondLabel = second ? actionLabel(second) : null
   return (
     <section aria-label="다음에 할 일" className={cx('rounded-xl border border-line bg-panel p-3', props.className)}>
-      <StepBar step={props.guide.step} />
+      <StepBar step={props.guide.step} steps={props.guide.steps} />
       <div className="mt-3 flex items-start gap-2">
         <span className={cx('mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full', first.kind === 'done' ? 'bg-ok text-black' : 'bg-accent/15 text-accent')}>
           {first.kind === 'done' ? <Check size={13} strokeWidth={3} /> : first.kind === 'running' ? <Loader2 size={13} className="animate-spin" /> : <ChevronRight size={14} />}

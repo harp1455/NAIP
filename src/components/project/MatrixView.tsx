@@ -54,8 +54,11 @@ export function MatrixView(props: { project: Project; onEdit: () => void; onExpo
   const [grid, setGrid] = useState(true)
   /** 연 조합 — review: 열자마자 한 장씩 고르기 (선별하기·다음 조합) */
   const [open, setOpen] = useState<{ key: string; review: boolean } | null>(null)
-  /** 연 생성 계획 — fill: 고르지 않은 그림도 채운 것으로 (카드의 "부족한 것만 생성") */
-  const [planning, setPlanning] = useState<{ mode: PlanMode; fill?: boolean } | null>(null)
+  /**
+   * 연 생성 계획 — fill: 고르지 않은 그림도 채운 것으로 (카드의 "부족한 것만 생성"),
+   * whole: 축 값 거르기와 상관없이 행렬 전체로 시작 (카드는 행렬 전체를 세므로 카드의 숫자와 같게)
+   */
+  const [planning, setPlanning] = useState<{ mode: PlanMode; fill?: boolean; whole?: boolean } | null>(null)
   const [classifying, setClassifying] = useState(false)
   const [limit, setLimit] = useState(PAGE)
   const pickStatus = (s: AssetStatus | ''): void => {
@@ -91,9 +94,9 @@ export function MatrixView(props: { project: Project; onEdit: () => void; onExpo
 
   const act = (a: NextAction): void => {
     if (a.kind === 'setup' || a.kind === 'tooMany') props.onEdit()
-    else if (a.kind === 'generate') setPlanning({ mode: 'all' })
-    else if (a.kind === 'missing') setPlanning({ mode: 'missing', fill: true })
-    else if (a.kind === 'redo') setPlanning({ mode: 'failed' })
+    else if (a.kind === 'generate') setPlanning({ mode: 'all', whole: true })
+    else if (a.kind === 'missing') setPlanning({ mode: 'missing', fill: true, whole: true })
+    else if (a.kind === 'redo') setPlanning({ mode: 'failed', whole: true })
     else if (a.kind === 'export') props.onExport()
     else if (a.kind === 'review') {
       const first = reviewQueue(p, matrix.combos)[0]
@@ -167,17 +170,17 @@ export function MatrixView(props: { project: Project; onEdit: () => void; onExpo
           </NextStepCard>
         </div>
 
-        {/* 축 값으로 거르기 · 보기 — 내려도 위에 남는다 */}
+        {/* 축 값으로 거르기 · 보기 — 내려도 위에 남는다. 축이 많으면 거르기 칸이 다음 줄로 (옆으로 숨지 않게) */}
         <div className="sticky top-0 z-10 mt-1 bg-bg/95 backdrop-blur">
-          <div className="mx-auto flex max-w-5xl items-center gap-1 px-3 py-1.5">
-            <div className="scroll-thin flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto" role="group" aria-label="거르기">
+          <div className="mx-auto flex max-w-5xl items-start gap-1 px-3 py-1.5">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5" role="group" aria-label="거르기">
               {axes.map((a) => {
                 const prog = byValue.get(a.id)
                 return (
                   <Select
                     key={a.id}
                     label={`${a.name} 거르기`}
-                    className="w-32 shrink-0 sm:w-44"
+                    className="min-w-0 flex-[1_1_7.5rem] sm:max-w-44"
                     value={filter[a.id] ?? ''}
                     options={[
                       { value: '', label: `모든 ${a.name}` },
@@ -202,7 +205,7 @@ export function MatrixView(props: { project: Project; onEdit: () => void; onExpo
                 aria-label="격자로 보기"
                 aria-pressed={grid}
                 onClick={() => setGrid(true)}
-                className={cx('flex h-10 w-10 items-center justify-center rounded-lg', grid ? 'bg-raised text-fg' : 'text-dim')}
+                className={cx('flex h-11 w-10 items-center justify-center rounded-lg', grid ? 'bg-raised text-fg' : 'text-dim')}
               >
                 <LayoutGrid size={17} />
               </button>
@@ -211,7 +214,7 @@ export function MatrixView(props: { project: Project; onEdit: () => void; onExpo
                 aria-label="목록으로 보기"
                 aria-pressed={!grid}
                 onClick={() => setGrid(false)}
-                className={cx('flex h-10 w-10 items-center justify-center rounded-lg', !grid ? 'bg-raised text-fg' : 'text-dim')}
+                className={cx('flex h-11 w-10 items-center justify-center rounded-lg', !grid ? 'bg-raised text-fg' : 'text-dim')}
               >
                 <List size={17} />
               </button>
@@ -324,7 +327,14 @@ export function MatrixView(props: { project: Project; onEdit: () => void; onExpo
         />
       )}
       {planning && (
-        <PlanSheet project={p} selection={selection} initialMode={planning.mode} fillUnreviewed={planning.fill} onClose={() => setPlanning(null)} />
+        <PlanSheet
+          project={p}
+          selection={selection}
+          initialMode={planning.mode}
+          fillUnreviewed={planning.fill}
+          initialScoped={!planning.whole}
+          onClose={() => setPlanning(null)}
+        />
       )}
       {classifying && <ClassifySheet project={p} onClose={() => setClassifying(false)} />}
     </div>

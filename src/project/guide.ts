@@ -5,7 +5,7 @@
  */
 import { curationCounts, itemStatus } from './curation'
 import { expandMatrix, missingFor, type Combination, type MatrixResult } from './matrix'
-import type { Project } from './types'
+import type { AssetItem, Project } from './types'
 
 /** 안내 단계 이름 (1부터) */
 export const GUIDE_STEPS = ['새 프로젝트', '축과 값', '생성', '선별', '내보내기'] as const
@@ -31,9 +31,17 @@ export type NextAction =
   /** 모든 조합을 채택하고 내보냈다 */
   | { kind: 'done' }
 
+/**
+ * 단계 막대 한 칸 — done: 끝남, now: 지금 할 단계(하나), doing: 아직 남았지만 지금 할 단계는 아님
+ * (선별할 조합이 있어도 미생성 조합이 남았으면 생성은 끝난 것이 아니다), todo: 아직
+ */
+export type StepState = 'done' | 'now' | 'doing' | 'todo'
+
 export interface ProjectGuide {
   /** 지금 단계 (1~5, 모두 끝나면 6) */
   step: number
+  /** 단계 막대 다섯 칸 (GUIDE_STEPS 순서) */
+  steps: StepState[]
   /** 다음에 할 일 — 첫째가 가장 먼저 할 일, 둘째는 함께 보여 줄 다른 일 (최대 2개) */
   actions: NextAction[]
 }
@@ -47,8 +55,9 @@ export function unexportedAdopted(project: Project, combos: readonly Combination
 
 /** 지금 단계와 다음에 할 일. 이미 펼친 행렬이 있으면 넘겨서 다시 펼치지 않게 (선택 없이 펼친 것) */
 export function projectGuide(project: Project, matrix: MatrixResult = expandMatrix(project)): ProjectGuide {
-  if (matrix.tooMany) return { step: 2, actions: [{ kind: 'tooMany' }] }
-  if (!matrix.combos.length) return { step: 2, actions: [{ kind: 'setup' }] }
+  const setupSteps: StepState[] = ['done', 'now', 'todo', 'todo', 'todo']
+  if (matrix.tooMany) return { step: 2, steps: setupSteps, actions: [{ kind: 'tooMany' }] }
+  if (!matrix.combos.length) return { step: 2, steps: setupSteps, actions: [{ kind: 'setup' }] }
   let review = 0
   let reviewImages = 0
   let missing = 0
@@ -99,7 +108,27 @@ export function projectGuide(project: Project, matrix: MatrixResult = expandMatr
   if (missing && first !== 'missing' && first !== 'generate') actions.push({ kind: 'missing', combos: missing })
   if (exportable && first !== 'export') actions.push({ kind: 'export', images: exportable })
   if (inFlight && first !== 'running') actions.push({ kind: 'running', images: inFlight })
-  return { step, actions: actions.slice(0, 2) }
+  // 막대: 지금 단계 말고도 남은 일이 있는 단계는 "진행 중"으로 (초록 = 정말 끝난 단계만)
+  const generateLeft = !touched || missing > 0 || redo > 0 || inFlight > 0
+  const steps: StepState[] = [
+    'done',
+    'done',
+    step === 3 ? 'now' : generateLeft ? 'doing' : 'done',
+    step === 4 ? 'now' : step > 4 ? 'done' : 'todo',
+    step === 5 ? 'now' : step > 5 ? 'done' : exportable ? 'doing' : 'todo'
+  ]
+  return { step, steps, actions: actions.slice(0, 2) }
+}
+
+/**
+ * 한 조합을 고른 정도 (선별 화면의 "다 봤습니다" 알림) — filled: 채택 목표를 채움, open: 미선별이 남음,
+ * held: 미선별은 없지만 보류가 남음 (아직 고를 조합 — itemStatus도 선별 필요), seen: 다 봄 (채택 목표 미달)
+ */
+export function reviewState(item: AssetItem | undefined, target: number): 'filled' | 'open' | 'held' | 'seen' {
+  const c = curationCounts(item)
+  if (c.adopted >= Math.max(1, target)) return 'filled'
+  if (c.unreviewed > 0) return 'open'
+  return c.hold > 0 ? 'held' : 'seen'
 }
 
 /** 다음에 할 일 한 줄 (목록 카드·안내 카드) */

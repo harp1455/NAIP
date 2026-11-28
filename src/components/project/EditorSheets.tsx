@@ -362,7 +362,7 @@ export function AxisEditSheet(props: { project: Project; axisId: string; onClose
         </div>
         {bulk !== null && (
           <div className="flex flex-col gap-2 rounded-lg border border-line bg-field p-2">
-            <TemplateLinesPicker axis={axis} onPick={(lines) => setBulk(bulk.trim() ? `${bulk.replace(/\s+$/, '')}\n${lines}` : lines)} />
+            <TemplateLinesPicker axis={axis} text={bulk} onChange={setBulk} />
             <TextArea label="여러 값 붙여넣기" rows={5} value={bulk} onChange={setBulk} placeholder={'웃음: smile, open mouth\n울음 (cry): crying, tears\nangry, frown'} />
             <p className="text-[11px] text-dim">
               한 줄에 하나 — "이름: 프롬프트"(콜론 뒤 띄어쓰기), 괄호 안은 파일 이름용, 이름이 없으면 첫 조각을 이름으로. artist:이름 같은 태그는
@@ -399,7 +399,7 @@ export function AxisEditSheet(props: { project: Project; axisId: string; onClose
             <p>
               값이 없으면 이 축은 행렬에서 빠집니다. 첫 값을 넣으면 지금까지 만든 그림은 그 값의 조합으로 들어갑니다
             </p>
-            {bulk === null && <TemplateLinesPicker axis={axis} onPick={setBulk} />}
+            {bulk === null && <TemplateLinesPicker axis={axis} text="" onChange={setBulk} />}
           </div>
         ) : (
           <ul className="flex flex-col gap-1.5" aria-label={`${axis.name} 값`}>
