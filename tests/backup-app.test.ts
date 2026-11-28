@@ -728,6 +728,30 @@ describe('sections whose lists are missing or not lists', () => {
     }
   })
 
+  it('gives a section left out for its shape a different skip reason from one that could not be read', async () => {
+    const { setStorageForTests } = await import('../src/storage')
+    const app = await import('../src/backup/app')
+    await setStorageForTests(await createSqlJsDriver(), memoryFileStore())
+    const sink = memorySink()
+    const data = {
+      vibes: { vibes: 'x' },
+      presets: { presets: [{ id: 11, name: 'tampered preset', base: 'lowres', detail: '', negative: '', params: {} }] },
+      scenes: { folders: [], scenes: [{ id: 77, name: 'kept scene', folderId: null, prompt: '', negative: '', size: null, cast: [], reserve: 0 }] }
+    } as unknown as BackupData
+    await writeNaipBackup(data, sink, { mode: 'light', appVersion: '0.12.0' })
+    // 프리셋 섹션은 체크섬이 맞지 않아 읽지 못한다
+    const tampered = await rewriteZip(sink.bytes(), (path, d) => (path === 'sections/presets.json' ? utf8(fromUtf8(d).replace('lowres', 'LOWRES')) : d))
+    const src = await app.openRestoreSource({ name: 'mixed.naipbackup', source: bytesSource(tampered) })
+    expect([...src.damaged].sort()).toEqual(['presets', 'vibes'])
+    await seedStores()
+    const plan = await app.planFor(src, { mode: 'overwrite', sections: {}, history: 'skip', originals: false })
+    const summary = await app.applyRestore(src, plan, { safety: false })
+    expect(summary.skipped).toContainEqual(expect.objectContaining({ section: 'vibes', reason: '형식이 잘못됨' }))
+    expect(summary.skipped).toContainEqual(expect.objectContaining({ section: 'presets', reason: '파일 손상 — 읽지 못함' }))
+    expect(summary.skipped.filter((x) => x.section === 'vibes')).toHaveLength(1)
+    await expectUntouched()
+  })
+
   it('drops junk items (null, numbers, strings) from the lists of a good section, says how many, and restores the rest', async () => {
     const { setStorageForTests } = await import('../src/storage')
     const app = await import('../src/backup/app')

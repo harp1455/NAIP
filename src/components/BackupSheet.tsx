@@ -558,7 +558,7 @@ function ConfirmView(props: { src: RestoreSource; plan: RestorePlan; safety: boo
           {!planned.length && <li className="text-xs text-dim">데이터 항목은 바꾸지 않습니다</li>}
         </ul>
         {skipped.length > 0 && <p className="pt-1 text-xs text-dim">건너뛰는 항목: {skipped.map((id) => LABEL[id]).join(', ')}</p>}
-        {src.damaged.length > 0 && <p className="pt-1 text-xs text-danger">손상돼 복원하지 않는 항목: {src.damaged.map((id) => LABEL[id]).join(', ')}</p>}
+        {src.damaged.length > 0 && <p className="pt-1 text-xs text-danger">손상됐거나 형식이 잘못돼 복원하지 않는 항목: {src.damaged.map((id) => LABEL[id]).join(', ')}</p>}
       </Group>
       {plan.history && (
         <Group title="히스토리">
