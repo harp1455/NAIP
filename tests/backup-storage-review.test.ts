@@ -135,6 +135,63 @@ describe('a failed IndexedDB load does not overwrite the stored data', () => {
   })
 })
 
+describe('a mask saved while the stored masks are still loading', () => {
+  beforeEach(async () => {
+    await useMasks.persist.rehydrate()
+    await settle()
+  })
+
+  /** 불러오기(IndexedDB 읽기)를 붙잡아 둔 채 다시 불러온다 — 업데이트 뒤 첫 실행에서 IndexedDB 올리기가 오래 걸릴 때 */
+  async function slowLoad(during: () => void): Promise<void> {
+    const read = idbStorage.getItem
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    idbStorage.getItem = async (name: string) => {
+      await gate
+      return read(name)
+    }
+    try {
+      const loading = useMasks.persist.rehydrate()
+      during()
+      release()
+      await loading
+    } finally {
+      idbStorage.getItem = read
+    }
+  }
+
+  it('saves it once the load finishes when nothing was stored yet', async () => {
+    await idbStorage.removeItem('naip-masks')
+    useMasks.setState({ masks: [] }, false)
+    await settle()
+    await idbStorage.removeItem('naip-masks')
+    await slowLoad(() => useMasks.getState().add({ name: 'early', width: 8, height: 8, data: 'data:image/png;base64,AA==' }))
+    expect(masksLoadFailed()).toBe(false)
+    expect(useMasks.getState().masks.map((m) => m.name)).toEqual(['early'])
+    await settle()
+    const stored = await idbStorage.getItem('naip-masks')
+    expect(stored).not.toBeNull()
+    expect(JSON.parse(stored!).state.masks.map((m: { name: string }) => m.name)).toEqual(['early'])
+  })
+
+  it('keeps it next to the stored masks instead of losing it when they arrive', async () => {
+    await idbStorage.setItem('naip-masks', JSON.stringify({ state: { masks: [mask(7), mask(8)] }, version: 0 }))
+    await slowLoad(() => useMasks.getState().add({ name: 'early', width: 8, height: 8, data: 'data:image/png;base64,AA==' }))
+    expect(useMasks.getState().masks.map((m) => m.name)).toEqual(['early', 'm7', 'm8'])
+    await settle()
+    expect(JSON.parse((await idbStorage.getItem('naip-masks'))!).state.masks.map((m: { name: string }) => m.name)).toEqual(['early', 'm7', 'm8'])
+  })
+
+  it('does not bring back on the next start a mask from an earlier run that was never saved', async () => {
+    // 불러오기에 실패한 실행에서 더한 마스크는 저장하지 않는다 — 다음 시작에는 저장된 것만
+    await idbStorage.setItem('naip-masks', JSON.stringify({ state: { masks: [mask(7)] }, version: 0 }))
+    await failOnce(useMasks)
+    useMasks.getState().add({ name: 'after failure', width: 8, height: 8, data: 'data:image/png;base64,AA==' })
+    await useMasks.persist.rehydrate()
+    expect(useMasks.getState().masks.map((m) => m.id)).toEqual([7])
+  })
+})
+
 describe('restoring projects while vibes and references failed to load', () => {
   const proj = (id: string) => ({
     id,
