@@ -95,6 +95,9 @@ const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 const num = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : d)
 const idOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+/** 목록에서 객체인 항목만 (손상·조작된 데이터의 null·숫자·문자열은 읽다가 멈추지 않게 뺀다) */
+const objects = (list: unknown[]): Record<string, unknown>[] =>
+  list.filter((x): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x))
 const center = (v: unknown): { x: number; y: number } | null => {
   const c = v as { x?: unknown; y?: unknown } | null
   return c && typeof c.x === 'number' && typeof c.y === 'number' ? { x: c.x, y: c.y } : null
@@ -144,7 +147,7 @@ function normalizeSlot(raw: unknown): CastSlot {
     mode: (modes.includes(r.mode as string) ? r.mode : 'fixed') as CastSlot['mode'],
     charId: idOrNull(r.charId),
     candidates: Array.isArray(r.candidates)
-      ? r.candidates.map((c: Record<string, unknown>) => ({
+      ? objects(r.candidates).map((c) => ({
           kind: c.kind === 'folder' ? ('folder' as const) : ('char' as const),
           id: idOrNull(c.id),
           weight: Math.max(0, num(c.weight, 1))
@@ -164,13 +167,13 @@ function normalizeSlot(raw: unknown): CastSlot {
 export function migrateCharacters(raw: unknown): CharactersData {
   const r = (raw ?? {}) as Record<string, unknown>
   const folders = Array.isArray(r.folders)
-    ? r.folders.map((f: Record<string, unknown>) => ({ id: num(f.id, uid()), name: str(f.name) || '폴더' }))
+    ? objects(r.folders).map((f) => ({ id: num(f.id, uid()), name: str(f.name) || '폴더' }))
     : []
   const characters = Array.isArray(r.characters) ? r.characters.map(normalizeCharacter) : []
   let slots: CastSlot[]
   if (Array.isArray(r.slots)) slots = r.slots.map(normalizeSlot)
   else if (Array.isArray(r.cast)) {
-    slots = r.cast.map((e: Record<string, unknown>) =>
+    slots = objects(r.cast).map((e) =>
       newSlot({ mode: 'fixed', charId: idOrNull(e.charId), enabled: e.enabled !== false, center: center(e.center) })
     )
   } else slots = []

@@ -13,6 +13,8 @@
  *   (sectionShapeProblem — 열 때 withoutInvalidSections 로 빼고, applyRestorePlan 도 한 번 더 본다).
  * - 목록 안의 쓸 수 없는 항목(객체여야 할 자리의 null·숫자·문자열 등)은 섹션째 버리지 않고 그 항목만 뺀다
  *   (withoutJunkItems — 열 때 뺀 수를 알리고, applyRestorePlan 도 한 번 더 뺀다).
+ *   안쪽 목록(출연 슬롯 후보·예전 cast·폴더, 프로젝트 조합 항목)의 그런 항목은 migrateCharacters·normalizeProject 가
+ *   읽으면서 뺀다 — 백업을 열거나 적용하다 멈추지 않게 (따로 세어 알리지는 않는다).
  */
 import * as projectModel from '../project/model'
 import { useProjects } from '../project/store'
