@@ -374,7 +374,10 @@ export function SlotEditor(props: { slotId: number; onClose: () => void }): Reac
             <p className="mt-1.5 text-xs text-dim">
               {slot.mode === 'fixed' && '정한 캐릭터가 매번 나옵니다.'}
               {slot.mode === 'random' && '후보 중 한 명을 비중에 따라 뽑습니다. 폴더는 그 안의 캐릭터가 비중을 나눠 갖습니다.'}
-              {slot.mode === 'sequential' && '후보를 위에서부터 차례로 한 명씩 씁니다. 폴더는 라이브러리 순서로 펼칩니다.'}
+              {slot.mode === 'sequential' &&
+                (s.options.scope === 'batch'
+                  ? '후보를 위에서부터 차례로 한 명씩, 새 배치마다 다음 사람으로 씁니다. 폴더는 라이브러리 순서로 펼칩니다.'
+                  : '후보를 위에서부터 차례로 한 명씩 씁니다. 폴더는 라이브러리 순서로 펼칩니다.')}
               {slot.mode === 'chance' && '정한 확률로만 나옵니다. 나올 때는 후보 중 비중에 따라 한 명을 뽑습니다.'}
             </p>
           </div>

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  advanceCursors,
   checkPeopleCount,
   composeCaption,
   createDrawState,
@@ -13,9 +14,11 @@ import {
   sexOfCaption,
   weightedIndex,
   type CastCharacter,
+  type CastCursors,
   type CastOptions,
   type CastPlan,
   type CastSlot,
+  type DrawState,
   type VariationGroup
 } from '../src/nai/cast'
 import { processWildcards } from '../src/nai/fragments'
@@ -229,6 +232,93 @@ describe('cast: slots', () => {
     const states = new Map()
     const p = plan(seq, LIB, { perScene: true })
     expect(drawStateFor(states, p.options)).toBe(drawStateFor(states, p.options))
+  })
+
+  describe('once-per-batch sequences continue from batch to batch', () => {
+    /** 배치 n개를 돌린다 — 배치마다 새 뽑기 상태, 시작 자리는 지난 배치들이 넘긴 커서. 장마다 (씬, 첫 캐릭터·변형) */
+    function batches(p: CastPlan, scenesPerBatch: (number | undefined)[], n: number, start: CastCursors = {}) {
+      let cursors = start
+      const out: string[][] = []
+      for (let b = 0; b < n; b++) {
+        const states = new Map<string, DrawState>()
+        const shots = scenesPerBatch.map((scene) => resolveCast(p, drawStateFor(states, p.options, scene, cursors), mulberry32(b)))
+        out.push(shots.map((r) => [r.chars[0]?.name ?? '-', ...(r.chars[0]?.variations ?? []).map((v) => v.label)].join('')))
+        // 이 배치에서 그림이 나왔으면 다음 배치는 다음 차례
+        for (const r of shots) cursors = advanceCursors(cursors, r.advance) ?? cursors
+      }
+      return { out, cursors }
+    }
+    const seq = (p: Partial<CastSlot> = {}) => slot({ id: 500, mode: 'sequential', candidates: [cand(1), cand(2), cand(3)], ...p })
+
+    it('a sequential slot drawn once per batch takes the next candidate in every new batch and wraps', () => {
+      const { out, cursors } = batches(plan([seq()], LIB, { scope: 'batch' }), [undefined, undefined], 4)
+      expect(out).toEqual([['A', 'A'], ['B', 'B'], ['C', 'C'], ['A', 'A']])
+      expect(cursors).toEqual({ 'slot:500': 4 })
+    })
+
+    it('reports the next position for every image that used the batch draw, cached or fresh', () => {
+      const p = plan([seq()], LIB, { scope: 'batch' })
+      const state = createDrawState({ 'slot:500': 1 })
+      expect(resolveCast(p, state).advance).toEqual({ 'slot:500': 2 })
+      expect(resolveCast(p, state).advance).toEqual({ 'slot:500': 2 })
+      expect(resolveCast(p, state).chars[0].name).toBe('B')
+    })
+
+    it('without wrap the slot stays empty once every candidate had its batch', () => {
+      const { out } = batches(plan([seq({ wrap: false, candidates: [cand(1), cand(2)] })], LIB, { scope: 'batch' }), [undefined], 3)
+      expect(out).toEqual([['A'], ['B'], ['-']])
+      const res = resolveCast(plan([seq({ wrap: false })], LIB, { scope: 'batch' }), createDrawState({ 'slot:500': 3 }))
+      expect(res.notes.join()).toContain('순서가 끝나')
+    })
+
+    it('a sequential variation group drawn once per batch takes the next item in every new batch', () => {
+      const g: VariationGroup = {
+        id: 8,
+        kind: 'outfit',
+        name: '',
+        mode: 'sequential',
+        fixedId: null,
+        perBatch: true,
+        items: [
+          { id: 1, label: 'x', prompt: 'x', weight: 1 },
+          { id: 2, label: 'y', prompt: 'y', weight: 1 }
+        ]
+      }
+      const p = plan(fixedSlots([1]), [char(1, 'A', { variations: [g] })])
+      const { out, cursors } = batches(p, [undefined, undefined], 3)
+      expect(out).toEqual([['Ax', 'Ax'], ['Ay', 'Ay'], ['Ax', 'Ax']])
+      expect(cursors).toEqual({ 'var:1:8': 3 })
+      // 배치마다 한 번이 아니면 장마다 처음부터 — 커서를 읽지도 넘기지도 않는다
+      const each = batches(plan(fixedSlots([1]), [char(1, 'A', { variations: [{ ...g, perBatch: false }] })]), [undefined, undefined], 2, { 'var:1:8': 1 })
+      expect(each.out).toEqual([['Ax', 'Ay'], ['Ax', 'Ay']])
+      expect(each.cursors).toEqual({ 'var:1:8': 1 })
+    })
+
+    it('per-image sequences ignore the saved position and never move it', () => {
+      const { out, cursors } = batches(plan([seq()], LIB, { scope: 'image' }), [undefined, undefined, undefined], 2, { 'slot:500': 2 })
+      expect(out).toEqual([['A', 'B', 'C'], ['A', 'B', 'C']])
+      expect(cursors).toEqual({ 'slot:500': 2 })
+    })
+
+    it('per-scene draws restart each scene at the batch turn, and the next batch moves every scene on', () => {
+      const { out, cursors } = batches(plan([seq()], LIB, { scope: 'batch', perScene: true }), [10, 10, 20, 20], 2)
+      expect(out).toEqual([['A', 'A', 'A', 'A'], ['B', 'B', 'B', 'B']])
+      expect(cursors).toEqual({ 'slot:500': 2 })
+      // 씬마다 따로 뽑지 않으면 씬이 바뀌어도 배치의 한 번 뽑기를 그대로 쓴다
+      expect(batches(plan([seq()], LIB, { scope: 'batch' }), [10, 20], 2).out).toEqual([['A', 'A'], ['B', 'B']])
+    })
+
+    it('advancing moves only from the turn the batch started at, so replaying a batch (resume) never moves it twice', () => {
+      expect(advanceCursors({ 'slot:1': 2 }, { 'slot:1': 3 })).toEqual({ 'slot:1': 3 })
+      expect(advanceCursors({ 'slot:1': 3 }, { 'slot:1': 2, 'slot:2': 1 })).toEqual({ 'slot:1': 3, 'slot:2': 1 })
+      expect(advanceCursors({ 'slot:1': 3 }, { 'slot:1': 3 })).toBeNull()
+      expect(advanceCursors({ 'slot:1': 3 }, {})).toBeNull()
+      // 배치가 도는 사이 처음으로 되돌렸으면(3번째 차례에서 시작한 배치가 끝나도) 되돌린 자리를 지킨다
+      expect(advanceCursors({}, { 'slot:1': 3 })).toBeNull()
+      // 깨진 값(손상된 저장분·백업)은 처음부터로 친다
+      expect(advanceCursors({ 'slot:1': Number.NaN }, { 'slot:1': 1 })).toEqual({ 'slot:1': 1 })
+      expect(resolveCast(plan([seq()], LIB, { scope: 'batch' }), createDrawState({ 'slot:500': -4 })).chars[0].name).toBe('A')
+    })
   })
 
   it('folder candidates share their weight among members; sequential expands folders in library order', () => {
