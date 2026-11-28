@@ -11,6 +11,8 @@
  * - 스토어에 넣을 때 그 스토어의 함수(동작) 이름과 겹치는 키는 버린다 (조작된 백업이 앱을 깨지 않게).
  * - 목록(배열)·맵이어야 할 값이 그 모양이 아니거나 섹션의 주 목록이 없으면 섹션째 넣지 않고 알린다
  *   (sectionShapeProblem — 열 때 withoutInvalidSections 로 빼고, applyRestorePlan 도 한 번 더 본다).
+ * - 목록 안의 쓸 수 없는 항목(객체여야 할 자리의 null·숫자·문자열 등)은 섹션째 버리지 않고 그 항목만 뺀다
+ *   (withoutJunkItems — 열 때 뺀 수를 알리고, applyRestorePlan 도 한 번 더 뺀다).
  */
 import * as projectModel from '../project/model'
 import { useProjects } from '../project/store'
@@ -218,6 +220,47 @@ export function sectionShapeProblem(id: DataSectionId, value: unknown): string |
   return null
 }
 
+/**
+ * 섹션 목록에서 쓸 수 없는 항목을 뺀다 — 컬렉션(프리셋·캐릭터·폴더·바이브·마스크·프로젝트 …)의 객체가 아닌 항목,
+ * 문자열 목록(저장 폴더)의 문자열이 아닌 항목. 같은 스토어에 들어가는 다른 섹션의 목록도 본다. 뺀 항목 수도 돌려준다
+ */
+function junkFree(id: DataSectionId, value: Obj): { value: Obj; dropped: number } {
+  let out = value
+  let dropped = 0
+  const keep = (key: string, ok: (x: unknown) => boolean): void => {
+    const list = out[key]
+    if (!Array.isArray(list)) return
+    const kept = list.filter(ok)
+    if (kept.length === list.length) return
+    dropped += list.length - kept.length
+    out = { ...out, [key]: kept }
+  }
+  const shared = SHARES_STORE_WITH[id]
+  for (const schema of [RESTORE_SCHEMA.sections[id], ...(shared ? [RESTORE_SCHEMA.sections[shared]] : [])]) {
+    for (const { key } of [...(schema.collections ?? []), ...(schema.addMissing ?? [])]) keep(key, isObj)
+    for (const key of schema.lists ?? []) keep(key, (x) => typeof x === 'string')
+  }
+  return { value: out, dropped }
+}
+
+/**
+ * 목록 안의 쓸 수 없는 항목(손상·조작된 백업의 null·숫자·문자열)을 뺀 데이터와, 섹션마다 뺀 수·알릴 문장.
+ * 섹션째 버리지 않는다 — 나머지 항목은 그대로 복원한다 (모양이 잘못된 섹션은 withoutInvalidSections 가 먼저 뺀다)
+ */
+export function withoutJunkItems(data: BackupData): { data: BackupData; dropped: { section: DataSectionId; count: number; detail: string }[] } {
+  const out: BackupData = { ...data }
+  const dropped: { section: DataSectionId; count: number; detail: string }[] = []
+  for (const id of DATA_SECTION_IDS) {
+    const value = out[id]
+    if (!isObj(value)) continue
+    const r = junkFree(id, value)
+    if (!r.dropped) continue
+    ;(out as Record<DataSectionId, unknown>)[id] = r.value
+    dropped.push({ section: id, count: r.dropped, detail: `${SECTION_LABELS[id]}: 형식이 잘못된 항목 ${r.dropped}개는 빼고 복원합니다` })
+  }
+  return { data: out, dropped }
+}
+
 /** 모양이 잘못된 섹션을 뺀 데이터와 뺀 섹션·이유 (백업을 열 때 — 미리보기·계획에 나오지 않게) */
 export function withoutInvalidSections(data: BackupData): { data: BackupData; invalid: { section: DataSectionId; detail: string }[] } {
   const out: BackupData = { ...data }
@@ -256,13 +299,14 @@ export function applyRestorePlan(plan: RestorePlan): ApplyRestoreResult {
   const applied: DataSectionId[] = []
   const invalid: ApplyRestoreResult['invalid'] = []
   for (const [id, section] of Object.entries(plan.sections) as [DataSectionId, NonNullable<RestorePlan['sections'][DataSectionId]>][]) {
-    const r = section.result
     // 목록이 없거나 목록이 아닌 섹션은 넣지 않는다 — 스토어를 비우거나 undefined 를 넣지 않게
-    const detail = sectionShapeProblem(id, r)
+    const detail = sectionShapeProblem(id, section.result)
     if (detail) {
       invalid.push({ section: id, detail })
       continue
     }
+    // 목록 안의 쓸 수 없는 항목은 빼고 넣는다 (열 때 이미 빼고 알렸다 — 여기서는 한 번 더)
+    const r = junkFree(id, section.result).value
     switch (id) {
       case 'settings':
       case 'saveFolders':

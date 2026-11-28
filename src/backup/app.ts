@@ -25,7 +25,7 @@ import { historyExportPort, historyImportPort, restoreHistorySafely, type SafeHi
 import type { NaipBackupReader } from './read'
 import { reportText } from './report'
 import { listSafetyBackups, pruneSafetyBackups, removeSafetyBackup, safetyName, safetySink, safetySource, type SafetyBackup } from './safety'
-import { applyRestorePlan, collectStoreData, normalizeBackupData, waitHydrated, withoutInvalidSections } from './stores'
+import { applyRestorePlan, collectStoreData, normalizeBackupData, waitHydrated, withoutInvalidSections, withoutJunkItems } from './stores'
 import {
   BACKUP_MIME,
   BackupError,
@@ -213,13 +213,17 @@ async function processNais3Image(bytes: Uint8Array, mime: string, kind: 'vibe' |
   return { base64, thumb: await makeThumb(pngDataUrl(base64), 256) }
 }
 
-/** 모양이 잘못된 섹션(목록이어야 할 값이 없거나 목록이 아님)은 손상된 섹션처럼 빼고 알린다 — 미리보기·계획에 나오지 않는다 */
+/**
+ * 모양이 잘못된 섹션(목록이어야 할 값이 없거나 목록이 아님)은 손상된 섹션처럼 빼고 알린다 — 미리보기·계획에 나오지 않는다.
+ * 온전한 섹션 목록 안의 쓸 수 없는 항목(null·숫자·문자열)은 그 항목만 빼고 섹션마다 뺀 수를 알린다
+ */
 function checkedData(data: BackupData): { data: BackupData; damaged: DataSectionId[]; problems: EntryProblem[] } {
   const checked = withoutInvalidSections(data)
+  const clean = withoutJunkItems(checked.data)
   return {
-    data: normalizeBackupData(checked.data),
+    data: normalizeBackupData(clean.data),
     damaged: checked.invalid.map((x) => x.section),
-    problems: checked.invalid.map((x) => ({ path: sectionPath(x.section), kind: 'invalid-json' as const, detail: x.detail }))
+    problems: [...checked.invalid, ...clean.dropped].map((x) => ({ path: sectionPath(x.section), kind: 'invalid-json' as const, detail: x.detail }))
   }
 }
 
