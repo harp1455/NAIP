@@ -657,6 +657,8 @@ describe('app data collection waits for IndexedDB stores', () => {
   it('refuses to collect (backup, safety backup, restore plan) while vibes and references are not loaded', async () => {
     const app = await import('../src/backup/app')
     const { useRefs } = await import('../src/stores/refs')
+    // 처음 불러오기가 끝난 뒤에 시작한다 — 늦게 끝나면 아래에서 내린 hydrated 를 도로 올려 이 시험이 틀어진다
+    await app.currentData(10_000)
     const was = useRefs.getState().hydrated
     useRefs.setState({ hydrated: false })
     try {
