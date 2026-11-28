@@ -11,7 +11,6 @@
 import { makeThumb, pngDataUrl, toPngBase64 } from '../lib/image'
 import { uid } from '../lib/util'
 import { freeSpace, getStorage } from '../storage'
-import { forgetLegacy } from '../storage/legacy'
 import { useProjects } from '../project/store'
 import { useHistory } from '../stores/history'
 import { useSettings } from '../stores/settings'
@@ -438,13 +437,10 @@ export async function applyRestore(
         signal: opts.signal
       })
       summary.problems.push(...summary.history.problems)
-      // 바꾸기로 지운 그림은 프로젝트 조합에서도, 아직 옮기기가 끝나지 않은 이전 히스토리에서도 뺀다
-      // (히스토리 화면에서 지울 때와 같게 — 그러지 않으면 다음 옮기기가 지운 그림을 다시 옮겨 온다)
+      // 바꾸기로 지운 그림은 프로젝트 조합에서도 뺀다. 아직 옮기기가 끝나지 않은 이전 히스토리에서는
+      // 가져오기 포트(ports.ts historyImportPort.remove)가 지울 때 함께 뺀다
       const removedIds = summary.history.removedIds ?? []
-      if (removedIds.length) {
-        await forgetLegacy(removedIds).catch((e: unknown) => console.warn('이전 히스토리에서 지우지 못했습니다', e))
-        useProjects.getState().forgetImages(removedIds)
-      }
+      if (removedIds.length) useProjects.getState().forgetImages(removedIds)
     } catch (error) {
       summary.historyError =
         error instanceof BackupError && error.code === 'aborted'
