@@ -22,7 +22,7 @@ import { useScenes } from '../stores/scenes'
 import { useSettings } from '../stores/settings'
 import { useTagUsage } from '../stores/tagUsage'
 import { stripCredentials } from './credentials'
-import { splitSettings, TRANSIENT_SETTINGS } from './format'
+import { splitSettings, UNSAVED_SETTINGS } from './format'
 import type { RestorePlan } from './plan'
 import type { BackupData, BackupItem, DataSectionId } from './types'
 
@@ -156,9 +156,10 @@ function normalizeProjectsSection(raw: unknown): Obj {
   }
 }
 
+/** 실행 중 상태(구독 정보 등)와 이 기기에서만 정하는 설정(업데이트 받을 저장소)을 뺀다 */
 function withoutTransient(v: unknown): Obj {
   const out: Obj = { ...(isObj(v) ? v : {}) }
-  for (const k of TRANSIENT_SETTINGS) delete out[k]
+  for (const k of UNSAVED_SETTINGS) delete out[k]
   return out
 }
 
@@ -195,7 +196,8 @@ export function applyRestorePlan(plan: RestorePlan): DataSectionId[] {
     switch (id) {
       case 'settings':
       case 'saveFolders':
-        // 토큰·비밀값은 백업에서 오지 않는다 (읽을 때 이미 지웠지만 한 번 더). 실행 중 상태(구독 정보 등)도 넣지 않는다
+        // 토큰·비밀값은 백업에서 오지 않는다 (읽을 때 이미 지웠지만 한 번 더). 실행 중 상태(구독 정보 등)와
+        // 업데이트 받을 저장소도 넣지 않는다 (남이 만든 백업이 다른 APK를 설치하게 권하지 못하게)
         useSettings.setState(safePatch(useSettings.getState(), withoutTransient(stripCredentials(r).value)) as never)
         break
       case 'prompt':

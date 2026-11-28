@@ -176,6 +176,13 @@ export function countSection(id: SectionId, payload: unknown): number {
 
 /** 설정 스토어 상태 → 백업할 설정과 저장 폴더 섹션. 서버에서 받는 구독 정보는 백업하지 않는다 */
 export const TRANSIENT_SETTINGS = ['subscription', 'subscriptionAt', 'subscriptionError', 'hydrated', 'secretsLoaded', 'secretErrors'] as const
+/**
+ * 이 기기에서만 정하는 설정 — 백업에 넣지 않고, 백업에서 받지도 않는다.
+ * 업데이트 받을 저장소: 남이 만든 백업을 복원했을 때 앱이 내려받아 설치하라고 권할 APK의 출처가 바뀌지 않게
+ */
+export const DEVICE_SETTINGS = ['updateRepo'] as const
+/** 백업에 넣지도, 백업에서 받지도 않는 설정 키 */
+export const UNSAVED_SETTINGS: readonly string[] = [...TRANSIENT_SETTINGS, ...DEVICE_SETTINGS]
 export const SAVE_FOLDER_KEYS = ['saveFolders', 'saveFolder', 'nameMode', 'nameCounters'] as const
 
 export function splitSettings(state: Record<string, unknown>): Pick<BackupData, 'settings' | 'saveFolders'> {
@@ -183,7 +190,7 @@ export function splitSettings(state: Record<string, unknown>): Pick<BackupData, 
   const saveFolders: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(state)) {
     if (typeof v === 'function') continue
-    if ((TRANSIENT_SETTINGS as readonly string[]).includes(k)) continue
+    if (UNSAVED_SETTINGS.includes(k)) continue
     if ((SAVE_FOLDER_KEYS as readonly string[]).includes(k)) saveFolders[k] = v
     else settings[k] = v
   }

@@ -86,7 +86,7 @@ export interface BackupItem {
  * 복원할 때는 스토어에 setState(부분 병합)로 넣는 것을 전제로 한다.
  */
 export interface SectionPayloads {
-  /** 설정 스토어 (토큰·비밀값·서버에서 받은 구독 정보·저장 폴더 키 제외) */
+  /** 설정 스토어 (토큰·비밀값·서버에서 받은 구독 정보·업데이트 받을 저장소·저장 폴더 키 제외) */
   settings: Record<string, unknown>
   /** 작업 중인 프롬프트 — base/additional/detail/negative/params/seed/count/activePresetId */
   prompt: Record<string, unknown>

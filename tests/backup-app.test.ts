@@ -601,6 +601,20 @@ describe('credentials and the generation queue', () => {
     expect(typeof s.patch).toBe('function')
   })
 
+  it('never takes the update source from a backup, so a crafted one cannot point the updater at another APK', () => {
+    useSettings.setState({ updateRepo: 'harp1455/NAIP' })
+    for (const mode of ['merge', 'overwrite'] as const) {
+      const plan = planRestore({}, normalizeBackupData({ settings: { autoSave: true, updateRepo: 'attacker/NAIP' } }), { mode })
+      applyRestorePlan(plan)
+      expect(useSettings.getState().updateRepo, mode).toBe('harp1455/NAIP')
+      // 백업 파일을 거치지 않은 계획 결과로도
+      applyRestorePlan({ ...plan, sections: { settings: { ...plan.sections.settings!, result: { updateRepo: 'attacker/NAIP' } } } })
+      expect(useSettings.getState().updateRepo, mode).toBe('harp1455/NAIP')
+    }
+    // 이 기기에서만 정하는 값이라 백업에도 넣지 않는다
+    expect(Object.keys(collectStoreData().settings!)).not.toContain('updateRepo')
+  })
+
   it('has no queue section: queue data is never written and an old queue section is skipped', async () => {
     const sink = memorySink()
     const r = await writeNaipBackup({ ...sampleData(), queue: { items: [{ base64: 'AAAA' }] } } as BackupData, sink, { mode: 'light', appVersion: '0.12.0' })

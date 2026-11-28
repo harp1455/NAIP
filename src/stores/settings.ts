@@ -234,7 +234,11 @@ export const useSettings = create<SettingsState>()(
   )
 )
 
-/** 암호화 저장소에 쓴다. 실패하면 화면에 알린다 (이번 실행에서만 쓰이고 다음에는 없다) */
+/**
+ * 암호화 저장소에 쓴다 (빈 값이면 지운다). 실패하면 화면에 알린다 — 저장된 값은 그대로라 앱을 다시 열면
+ * 그 값(있으면)이 돌아온다. 예전 평문은 새 값을 저장했거나 사용자가 지웠을 때만 뺀다
+ * (다른 값을 저장하지 못했을 때는 남은 하나뿐인 사본이라 그대로 둔다)
+ */
 async function saveSecret(field: SecretField, value: string): Promise<void> {
   userSet[field] = true
   const errors = (): Partial<Record<SecretField, string>> => ({ ...useSettings.getState().secretErrors })
@@ -248,8 +252,16 @@ async function saveSecret(field: SecretField, value: string): Promise<void> {
     useSettings.setState({ secretErrors: rest })
   } catch {
     if (useSettings.getState()[field] !== value) return
+    const label = SECRET_LABEL[field]
+    // 지운 토큰이 평문으로 남아 다음 실행에 되살아나지 않게 (아래 setState가 naip-settings를 다시 쓴다)
+    if (!value) delete legacyHeld[field]
     useSettings.setState({
-      secretErrors: { ...errors(), [field]: `${SECRET_LABEL[field]}을 기기에 저장하지 못했습니다. 이번 실행에서만 쓰이고 앱을 다시 열면 없어집니다` }
+      secretErrors: {
+        ...errors(),
+        [field]: value
+          ? `${label}을 기기에 저장하지 못했습니다. 이 값은 이번 실행에서만 쓰이고, 앱을 다시 열면 전에 저장된 값이 있으면 그 값을 씁니다`
+          : `${label}을 기기에서 지우지 못했습니다. 앱을 다시 열면 전에 저장된 값이 다시 들어올 수 있으니 다시 지워 주세요`
+      }
     })
   }
 }

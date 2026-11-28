@@ -222,6 +222,70 @@ describe('saving a token', () => {
     expect(JSON.stringify(persisted())).not.toContain('pst-')
   })
 
+  it('says the stored token comes back when clearing it fails', async () => {
+    h.secure.set('githubToken', 'github_pat_storedStored0123456789abcdef')
+    const first = await launch()
+    await boot(first.useSettings)
+    h.writeFails.add('githubToken')
+    first.useSettings.getState().setGithubToken('')
+    await flush()
+    const notice = first.useSettings.getState().secretErrors.githubToken
+    expect(notice).toMatch(/지우지 못했습니다/)
+    expect(notice).toMatch(/다시 들어올 수 있으니 다시 지워 주세요/)
+    expect(notice).not.toMatch(/없어집니다/)
+    // 실제로 다음 실행에 돌아온다 — 알림이 말한 그대로
+    h.writeFails.clear()
+    const second = await launch()
+    await boot(second.useSettings)
+    expect(second.useSettings.getState().githubToken).toBe('github_pat_storedStored0123456789abcdef')
+  })
+
+  it('says a failed save falls back to the value saved before, not that the token disappears', async () => {
+    h.secure.set('naiToken', 'pst-storedStoredStored0123456')
+    const first = await launch()
+    await boot(first.useSettings)
+    h.writeFails.add('naiToken')
+    first.useSettings.getState().setToken('pst-newNewNewNew0123456789')
+    await flush()
+    const notice = first.useSettings.getState().secretErrors.token
+    expect(notice).toMatch(/저장하지 못했습니다/)
+    expect(notice).toMatch(/전에 저장된 값이 있으면 그 값을 씁니다/)
+    h.writeFails.clear()
+    const second = await launch()
+    await boot(second.useSettings)
+    expect(second.useSettings.getState().token).toBe('pst-storedStoredStored0123456')
+  })
+
+  it('drops the plaintext copy when the user clears a token, even if the secure store fails', async () => {
+    legacySettings()
+    // 시작할 때 읽지 못해 예전 평문을 쥐고 있다
+    h.readFails.add('githubToken')
+    const first = await launch()
+    await boot(first.useSettings)
+    expect(persisted().githubToken).toBe(LEGACY_GH)
+    h.writeFails.add('githubToken')
+    first.useSettings.getState().setGithubToken('')
+    await flush()
+    expect(persisted().githubToken).toBeUndefined()
+    h.readFails.clear()
+    h.writeFails.clear()
+    const second = await launch()
+    await boot(second.useSettings)
+    expect(second.useSettings.getState().githubToken).toBe('')
+  })
+
+  it('keeps the plaintext copy when saving a different token fails (it is the only copy left)', async () => {
+    legacySettings()
+    h.readFails.add('naiToken')
+    const { useSettings } = await launch()
+    await boot(useSettings)
+    h.writeFails.add('naiToken')
+    useSettings.getState().setToken('pst-newNewNewNew0123456789')
+    await flush()
+    expect(persisted().token).toBe(LEGACY_NAI)
+    expect(useSettings.getState().secretErrors.token).toMatch(/전에 저장된 값이 있으면 그 값을 씁니다/)
+  })
+
   it('never puts the token notices into a backup', () => {
     const { settings } = splitSettings({ autoSave: true, secretErrors: { token: 'x' }, secretsLoaded: true })
     expect(settings).toEqual({ autoSave: true })

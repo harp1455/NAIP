@@ -166,6 +166,26 @@ describe('gallery export', () => {
     expect([...gallery.values()].map((g) => g.path).sort()).toEqual(['겹침/민지/민지_웃음.png', '겹침/민지/민지_웃음_2.png'])
   })
 
+  it('drops the record of an image from another combination whose file was overwritten', async () => {
+    const { id, keys } = setup('겹', ['웃음', '울음'])
+    useProjects.getState().patch(id, { naming: { ...project(id).naming, fileTemplate: '{character}', duplicate: 'overwrite' } })
+    const only = { ...all, onlyNotExported: true }
+    await adopt(id, keys[0], [801])
+    expect(await run(id, only)).toMatchObject({ saved: 1, failed: 0 })
+    await adopt(id, keys[1], [802])
+    expect(await run(id, only)).toMatchObject({ saved: 1, failed: 0 })
+    expect([...gallery.values()].map((g) => g.path)).toEqual(['겹/민지/민지.png'])
+    // 그 파일은 이제 802 — 801은 갤러리에 없으니 "아직 안 내보낸 것"으로 돌아온다
+    expect(project(id).items[keys[1]].images[0].exported?.path).toBe('겹/민지/민지.png')
+    expect(project(id).items[keys[0]].images[0].exported).toBeUndefined()
+    const manifestPath = [...texts.keys()].find((k) => k.endsWith('_manifest.csv'))!
+    const csv = rows(texts.get(manifestPath)!)
+    expect(csv).toHaveLength(1)
+    expect(csv[0]).toMatch(/,802$/)
+    const rest = planExport(project(id), { onlyNotExported: true, existing: [...gallery.values()].map((g) => g.path) })
+    expect(rest.entries.map((e) => e.candidate.image.id)).toEqual([801])
+  })
+
   it('keeps a character\'s code letter after characters are reordered', async () => {
     const s = useProjects.getState()
     const id = s.create('글자')
@@ -197,6 +217,62 @@ describe('zip export', () => {
     expect(r.saved).toBe(2)
     const zip = await ZipReader.open(bytesSource(sinks[0].sink.bytes()))
     expect([...zip.entries.keys()].filter((k) => k.endsWith('.png')).sort()).toEqual(['압축/민지/민지_웃음.png', '압축/민지/민지_웃음_2.png'])
+  })
+})
+
+describe('an edit that moves the images to a new key while an export runs', () => {
+  /** 민지 + 빈 표정 축 — 그림은 캐릭터만 든 키에 */
+  function bare(name: string): { id: string; axis: string; key: string } {
+    const s = useProjects.getState()
+    const id = s.create(name)
+    s.addCharacter(id, { name: '민지' })
+    const axis = s.addAxis(id, 'expression')!
+    return { id, axis, key: expandMatrix(project(id)).combos[0].key }
+  }
+
+  /** 첫 장을 끝낸 뒤 편집 화면에서 표정 축에 첫 값을 넣는다 (내보내기는 화면 밖에서 계속된다) */
+  const runWithEdit = (id: string, axis: string, s: ExportSettings) => {
+    let edited = false
+    return runExport(project(id), [], s, {
+      signal: new AbortController().signal,
+      onProgress: (done) => {
+        if (done !== 1 || edited) return
+        edited = true
+        useProjects.getState().addValue(id, axis, { label: '웃음', prompt: 'smile' })
+      }
+    })
+  }
+
+  it('keeps the gallery records and numbers on the moved item', async () => {
+    const { id, axis, key } = bare('이동')
+    await adopt(id, key, [901, 902])
+    const r = await runWithEdit(id, axis, all)
+    expect(r).toMatchObject({ saved: 2, failed: 0 })
+    const moved = expandMatrix(project(id)).combos[0].key
+    expect(moved).not.toBe(key)
+    expect(project(id).items[key]).toBeUndefined()
+    expect(project(id).items[moved].images.map((i) => i.exported?.path)).toEqual(['이동/민지/민지_01.png', '이동/민지/민지_02.png'])
+    expect(project(id).exportCounters).toEqual({ [`combination:${moved}`]: 2 })
+    // 다음 내보내기는 같은 두 파일을 고친다 (새 이름으로 두 장을 더 만들지 않는다)
+    const again = planExport(project(id), { existing: [...gallery.values()].map((g) => g.path) })
+    expect(again.entries.map((e) => [e.path.path, e.path.status])).toEqual([
+      ['이동/민지/민지_01.png', 'update'],
+      ['이동/민지/민지_02.png', 'update']
+    ])
+  })
+
+  it('puts the ZIP records and new codes on the moved item, not on a new empty one', async () => {
+    const { id, axis, key } = bare('이동압축')
+    await adopt(id, key, [911, 912])
+    const r = await runWithEdit(id, axis, { ...all, target: 'zip' })
+    expect(r).toMatchObject({ saved: 2, failed: 0, errors: [] })
+    const moved = expandMatrix(project(id)).combos[0].key
+    expect(moved).not.toBe(key)
+    expect(project(id).items[key]).toBeUndefined()
+    const item = project(id).items[moved]
+    expect(item.codes).toEqual({ 1: 'A001', 2: 'A002' })
+    expect(item.images.map((i) => i.exported?.path)).toEqual(['이동압축/민지/민지_01.png', '이동압축/민지/민지_02.png'])
+    expect(project(id).exportCounters).toEqual({ [`combination:${moved}`]: 2 })
   })
 })
 

@@ -126,6 +126,39 @@ export function savedCounters(entries: readonly ExportPlanEntry[]): Record<strin
 }
 
 /**
+ * 계획 때의 조합 키 → 지금 키. 내보내는 동안 편집(빈 축에 첫 값·첫 캐릭터)으로 그림이 새 키로 옮겨졌을 수 있다
+ * (내보내기는 화면을 떠나도 계속된다). 계획 때의 키로 기록하면 그 키에 항목이 없어 내보낸 기록이 사라지고
+ * 코드는 빈 항목이 새로 생겨 거기 붙으며, 번호도 옛 범위에 남아 다음 내보내기가 같은 그림을 새 이름으로 또 저장한다.
+ * 그림 id로 지금 있는 곳을 찾는다 (계획 때의 키에 그 그림이 그대로 있으면 그대로)
+ */
+export function currentKeys(latest: Project, entries: readonly ExportPlanEntry[]): (key: string) => string {
+  let where: Map<number, string> | null = null
+  const moved = new Map<string, string>()
+  for (const e of entries) {
+    const from = e.candidate.key
+    const id = e.candidate.image.id
+    if (moved.has(from) || latest.items[from]?.images.some((i) => i.id === id)) continue
+    if (!where) {
+      where = new Map()
+      for (const it of Object.values(latest.items)) for (const img of it.images) if (!where.has(img.id)) where.set(img.id, it.key)
+    }
+    const to = where.get(id)
+    if (to) moved.set(from, to)
+  }
+  return (key) => moved.get(key) ?? key
+}
+
+/** 번호 범위의 조합 키도 지금 키로 */
+function countersAt(counters: Record<string, number>, keyOf: (key: string) => string): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const [scope, n] of Object.entries(counters)) {
+    const at = scope.startsWith('combination:') ? `combination:${keyOf(scope.slice('combination:'.length))}` : scope
+    out[at] = Math.max(out[at] ?? n, n)
+  }
+  return out
+}
+
+/**
  * 순서 글자(A, B …)로 코드를 처음 받은 캐릭터에 그 글자를 적어 둔다 — 나중에 캐릭터를 빼거나 순서를 바꿔도
  * 같은 캐릭터의 새 코드가 다른 글자로 시작하지 않게 (사용자가 코드를 적어 둔 캐릭터는 그대로)
  */
@@ -292,11 +325,29 @@ export async function runExport(
     return { name: `${stem}_manifest.${m.ext}`, text: m.text, mime: m.mime, codes: projectCodeList(latest, filtered) }
   }
 
+  /** 계획 때의 키 → 지금 키 (내보내는 동안 편집으로 옮겨졌을 때) */
+  const keyNow = (): ((key: string) => string) => {
+    const latest = useProjects.getState().projects.find((p) => p.id === project.id)
+    return latest ? currentKeys(latest, plan.entries) : (key) => key
+  }
+
   /** 새 이미지 코드 저장 (+ 캐릭터 글자 고정) — 코드는 칸에 붙는 고정 이름이라 저장한 파일과 어긋나지 않게 */
   const saveCodes = (): void => {
     if (!plan.newCodes.length) return
     keepCharacterLetters(project, plan)
-    useProjects.getState().setCodes(project.id, plan.newCodes)
+    const keyOf = keyNow()
+    useProjects.getState().setCodes(project.id, plan.newCodes.map((c) => ({ ...c, key: keyOf(c.key) })))
+  }
+
+  /** 내보낸 경로·번호 기록 (지금 키로) */
+  const saveRecords = (list: typeof done): void => {
+    const keyOf = keyNow()
+    useProjects.getState().markExported(
+      project.id,
+      list.map((d) => ({ ...d, key: keyOf(d.key) })),
+      countersAt(savedCounters(doneEntries), keyOf),
+      { onDevice: s.target === 'gallery' }
+    )
   }
 
   if (s.target === 'gallery') {
@@ -318,7 +369,7 @@ export async function runExport(
           if (saved.renamed) warn.add(`${entry.path.path}: 같은 이름의 다른 파일이 있어 기기가 "${saved.name}"(으)로 저장했습니다`)
           record(p, saved.path)
           // 한 장마다 바로 기록 — 화면을 떠나거나 앱이 꺼져도 다음 내보내기가 이 파일을 다른 앱 것으로 보고 _2를 만들지 않게
-          useProjects.getState().markExported(project.id, done.slice(-1), savedCounters(doneEntries))
+          saveRecords(done.slice(-1))
         }
       } catch (e) {
         summary.failed++
@@ -378,7 +429,7 @@ export async function runExport(
     }
     try {
       await writeZip(entries(), new BufferedSink(file), { signal: o.signal })
-      if (done.length) useProjects.getState().markExported(project.id, done, savedCounters(doneEntries))
+      if (done.length) saveRecords(done)
       saveCodes()
     } catch (e) {
       // ZIP은 쓰다 만 파일을 지운다 — 아무것도 내보내지 않은 것으로

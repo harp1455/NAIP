@@ -74,10 +74,15 @@ interface ProjectsState {
 
   // ── 내보내기
   setCodes: (projectId: string, codes: readonly { key: string; slot: number; code: string }[]) => void
+  /**
+   * onDevice: 경로가 기기의 파일 하나(갤러리) — 다른 조합에서 같은 경로를 가리키던 기록도 지운다
+   * (ZIP은 내보낼 때마다 다른 파일이라 그대로 둔다)
+   */
   markExported: (
     projectId: string,
     done: readonly { key: string; imageId: number; path: string; bytes?: number }[],
-    counters?: Record<string, number>
+    counters?: Record<string, number>,
+    opts?: { onDevice?: boolean }
   ) => void
   /** 히스토리에서 지운 그림을 모든 프로젝트에서 뺀다 */
   forgetImages: (historyIds: number[]) => void
@@ -267,13 +272,22 @@ export const useProjects = create<ProjectsState>()(
           update(projectId, (p) =>
             codes.reduce((acc, c) => model.withItem(acc, c.key, (i) => cur.setSlotCodes(i, { [c.slot]: c.code })), p)
           ),
-        markExported: (projectId, done, counters) =>
+        markExported: (projectId, done, counters, opts) =>
           update(projectId, (p) => {
             const at = Date.now()
-            const next = done.reduce(
+            let next = done.reduce(
               (acc, d) => model.withItem(acc, d.key, (i) => cur.markExported(i, d.imageId, d.path, at, d.bytes)),
               p
             )
+            if (opts?.onDevice) {
+              for (const d of done) {
+                for (const [k, it] of Object.entries(next.items)) {
+                  if (k === d.key) continue
+                  const fixed = cur.forgetExportedPath(it, d.path, d.imageId)
+                  if (fixed !== it) next = { ...next, items: { ...next.items, [k]: fixed } }
+                }
+              }
+            }
             return counters ? { ...next, exportCounters: { ...next.exportCounters, ...counters } } : next
           }),
         forgetImages: (historyIds) => {

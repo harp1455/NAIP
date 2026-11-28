@@ -244,6 +244,24 @@ export function markExported(item: AssetItem, id: number, path: string, at: numb
   return next
 }
 
+/**
+ * 이 경로를 가리키던 다른 그림(keep 말고)의 내보낸 기록을 지운다 — 다른 조합의 그림이 기기의 같은 파일을
+ * 덮어썼을 때 (markExported가 한 조합 안에서 하는 정리를 프로젝트 전체로)
+ */
+export function forgetExportedPath(item: AssetItem, path: string, keep: number): AssetItem {
+  const same = pathKey(path)
+  const hit = (i: AssetImage): boolean => i.id !== keep && i.exported !== undefined && pathKey(i.exported.path) === same
+  if (!item.images.some(hit)) return item
+  return {
+    ...item,
+    images: item.images.map((i) => {
+      if (!hit(i)) return i
+      const { exported: _, ...rest } = i
+      return rest
+    })
+  }
+}
+
 /** 생성 대기·생성 중·실패 장수 조정 (음수가 되지 않게) */
 export function bumpRuntime(
   item: AssetItem,
