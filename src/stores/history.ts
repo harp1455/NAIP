@@ -5,7 +5,7 @@ import { getStorage } from '../storage'
 import { filterToQuery, matchesSearch, searchTerms, searchText, thumbPathFor } from '../storage/history-repo'
 import { forgetLegacy, legacyPending } from '../storage/legacy'
 import { useSettings } from './settings'
-import { forgetAllProjectImages, useProjects } from '../project/store' // ── Phase 5
+import { forgetAllProjectImages, projectKeptImageIds, useProjects } from '../project/store' // ── Phase 5
 
 /** 한 번에 읽는 장수 (최신순 커서 페이지) */
 const PAGE = 90
@@ -133,11 +133,16 @@ export const useHistory = create<HistoryState>()((set, get) => ({
       total: s.total + 1,
       matchCount: matches && s.matchCount !== null ? s.matchCount + 1 : s.matchCount
     }))
-    // 보관 한도를 넘으면 즐겨찾기를 뺀 오래된 것부터 정리
+    // 보관 한도를 넘으면 즐겨찾기를 뺀 오래된 것부터 정리.
+    // ── Phase 5: 프로젝트 그림(탈락 제외)·내보낸 그림은 자동으로 지우지 않는다 — 사용자가 직접 지울 때만
     const limit = useSettings.getState().historyLimit
     const over = limit > 0 ? get().total - limit : 0
     if (over > 0) {
-      const ids = await (await getStorage()).history.oldestIds(over)
+      // 방금 넣은 그림도 지우지 않는다 — 프로젝트 그림은 이 함수가 끝난 뒤에야 프로젝트에 들어가고,
+      // 남길 그림이 한도를 다 채웠을 때 가장 오래된 "지울 수 있는" 그림이 바로 이것이다 (그때는 한도를 잠시 넘긴다)
+      const keep = projectKeptImageIds()
+      keep.add(meta.id)
+      const ids = await (await getStorage()).history.oldestIds(over, keep)
       if (ids.length) await get().remove(ids)
     }
   },

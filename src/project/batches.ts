@@ -14,6 +14,7 @@ import type { FragmentSource } from '../nai/fragments'
 import type { FragmentLibrary } from '../stores/fragments'
 import { modelCapabilities } from '../nai/models'
 import type { GenerationRequest } from '../nai/types'
+import { uid } from '../lib/util'
 import type { CharRef, Vibe } from '../stores/refs'
 import type { QueueBatch, QueuePlanItem } from '../stores/generation'
 import { joinPrompt, type GenerationJob } from './matrix'
@@ -27,7 +28,10 @@ export interface BatchContext {
   /** 조각 라이브러리 사본 (대기열 저장용)과 그것으로 만든 치환 함수 */
   fragmentLib: FragmentLibrary
   fragments: FragmentSource
-  /** 배치 id (기본: 1부터) */
+  /**
+   * 배치 id (기본: uid — 앱 전체에서 겹치지 않는다). 대기열·취소·대기열 저장(queue_batches)이 모두 id로 배치를 찾으므로
+   * 넣을 때마다 1부터 세면 다른 배치와 겹쳐 엉뚱한 배치가 취소되거나 저장 기록이 덮어써진다
+   */
   newId?: () => number
 }
 
@@ -74,8 +78,7 @@ function groupKey(job: GenerationJob): string {
 }
 
 export function jobsToBatches(projectName: string, jobs: readonly GenerationJob[], ctx: BatchContext): BuiltBatches {
-  let seq = 0
-  const newId = ctx.newId ?? (() => ++seq)
+  const newId = ctx.newId ?? uid
   const notes = new Set<string>()
   const groups = new Map<string, GenerationJob[]>()
   for (const job of jobs) {

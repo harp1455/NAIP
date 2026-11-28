@@ -307,7 +307,7 @@ export function SettingsPane(): ReactNode {
               onChange={(shareStripMeta) => s.patch({ shareStripMeta })}
             />
           </Row>
-          <Row label="히스토리 보관 한도" hint="넘으면 즐겨찾기를 뺀 오래된 이미지부터 앱에서 지웁니다">
+          <Row label="히스토리 보관 한도" hint="넘으면 즐겨찾기와 프로젝트 그림(탈락 제외)을 뺀 오래된 이미지부터 앱에서 지웁니다">
             <Select
               label="히스토리 보관 한도"
               className="w-36"

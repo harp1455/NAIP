@@ -24,6 +24,9 @@ export interface QueueBatchRow {
 
 export type QueueRepo = ReturnType<typeof createQueueRepo>
 
+/** 배치마다 마지막으로 보낸 장의 뽑기 상태(JSON)를 두는 app_kv 열쇠 — 이어서 생성이 순차·배치에 한 번 뽑기를 이어 간다 */
+const drawKey = (batchId: number): string => `queue-draw:${batchId}`
+
 /** 생성 대기열 보관 — 배치 내용은 파일로 한 번, 장마다의 진행은 작은 행으로 */
 export function createQueueRepo(driver: SqlDriver, files: FileStore) {
   const fileOf = (id: number): string => `queue/${id}.json`
@@ -43,7 +46,8 @@ export function createQueueRepo(driver: SqlDriver, files: FileStore) {
     async dropBatch(id: number): Promise<void> {
       await driver.batch([
         { sql: 'DELETE FROM queue_items WHERE batch_id = ?', params: [id] },
-        { sql: 'DELETE FROM queue_batches WHERE id = ?', params: [id] }
+        { sql: 'DELETE FROM queue_batches WHERE id = ?', params: [id] },
+        { sql: 'DELETE FROM app_kv WHERE key = ?', params: [drawKey(id)] }
       ])
       await files.remove([fileOf(id)]).catch(() => {})
     },
@@ -53,12 +57,19 @@ export function createQueueRepo(driver: SqlDriver, files: FileStore) {
       idx: number,
       state: QueueItemState,
       reqId: string,
-      extra: { imageId?: number; seed?: number } = {}
+      /** draw: 이 장의 뽑기 상태 JSON (보낼 때만) — 진행 행과 한 번에 쓴다 */
+      extra: { imageId?: number; seed?: number; draw?: string } = {}
     ): Promise<void> {
-      await driver.exec(
-        'INSERT OR REPLACE INTO queue_items (batch_id, idx, state, req_id, image_id, seed, updated) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [batchId, idx, state, reqId, extra.imageId ?? null, extra.seed ?? null, Date.now()]
-      )
+      const row = {
+        sql: 'INSERT OR REPLACE INTO queue_items (batch_id, idx, state, req_id, image_id, seed, updated) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        params: [batchId, idx, state, reqId, extra.imageId ?? null, extra.seed ?? null, Date.now()]
+      }
+      if (extra.draw === undefined) await driver.exec(row.sql, row.params)
+      else
+        await driver.batch([
+          row,
+          { sql: 'INSERT OR REPLACE INTO app_kv (key, value) VALUES (?, ?)', params: [drawKey(batchId), extra.draw] }
+        ])
     },
 
     /** 행의 상태만 바꾼다 (예: 확인 필요 → 다시 요청하지 않음) */
@@ -70,6 +81,12 @@ export function createQueueRepo(driver: SqlDriver, files: FileStore) {
           params: [state, Date.now(), batchId, ...part]
         }))
       )
+    },
+
+    /** 배치 id → 마지막으로 보낸 장의 뽑기 상태 JSON */
+    async draws(): Promise<Map<number, string>> {
+      const rows = await driver.query<{ key: string; value: string }>("SELECT key, value FROM app_kv WHERE key LIKE 'queue-draw:%'")
+      return new Map(rows.map((r) => [Number(r.key.slice('queue-draw:'.length)), r.value]))
     },
 
     async load(): Promise<{ batches: QueueBatchRow[]; items: QueueItemRow[] }> {

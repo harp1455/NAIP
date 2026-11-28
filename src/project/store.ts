@@ -5,11 +5,13 @@
  * 생성 대기열과 연결 (리드):
  *   planJobs → 배치에 넣을 때 markQueued, 한 장 요청을 시작할 때 markStarted,
  *   히스토리에 저장되면 addImage(분류 표시 tag의 key로), 실패하면 markFailed,
- *   멈춤·대기열에서 뺄 때 못 뽑은 장수만큼 releaseQueued.
- *   앱을 다시 열면 대기·생성 중 장수는 0으로 돌아간다 (대기열은 저장되지 않으므로).
+ *   멈춤·대기열에서 뺄 때 못 뽑은 장수만큼 releaseQueued (여러 장이면 releaseRuntime으로 한 번에).
+ *   앱을 다시 열면 대기·생성 중 장수는 0으로 돌아간다 — 대기열은 저장되지만(stores/queue-persist) 앱을 다시 열면
+ *   그 배치는 돌지 않으므로, 저장된 대기열을 읽을 때(loadResume) 보내지 않은 장을 다시 대기로 센다.
  */
 import { create } from 'zustand'
 import { createJSONStorage, persist, type StateStorage } from 'zustand/middleware'
+import { toast } from '../stores/toast'
 import * as cur from './curation'
 import * as model from './model'
 import type {
@@ -54,6 +56,8 @@ interface ProjectsState {
   // ── 생성 진행 (대기열 연결)
   markQueued: (projectId: string, jobs: readonly { key: string; count: number }[]) => void
   releaseQueued: (projectId: string, key: string, count: number) => void
+  /** 여러 조합의 대기·생성 중 장수를 한 번에 줄인다 (저장도 한 번) */
+  releaseRuntime: (projectId: string, deltas: readonly { key: string; queued: number; generating: number }[]) => void
   markStarted: (projectId: string, key: string) => void
   /** 시작했지만 멈춰서 끝내지 못한 장 (생성 중 장수만 되돌린다 — 실패로 세지 않는다) */
   cancelStarted: (projectId: string, key: string) => void
@@ -83,9 +87,39 @@ interface ProjectsState {
   removePreset: (id: string) => void
 }
 
+let lastSaveWarning = 0
+
+/**
+ * 저장이 실패해도(저장 공간 한도 초과 등) 동작을 막지 않는다 — zustand persist는 setItem 오류를 그대로 던져,
+ * 상태는 메모리에서 바뀐 채 그 동작을 부른 곳(생성 대기열의 진행 알림·선별 단추)이 오류로 멈춘다.
+ * 메모리의 상태는 그대로 두고 저장하지 못했다고 알린다 (자주 띄우지 않는다)
+ */
+export function guardedStorage(base: StateStorage, onError: (e: unknown) => void = warnSaveFailed): StateStorage {
+  return {
+    getItem: (k) => base.getItem(k),
+    setItem: (k, v) => {
+      try {
+        const r = base.setItem(k, v)
+        if (r instanceof Promise) r.catch(onError)
+      } catch (e) {
+        onError(e)
+      }
+    },
+    removeItem: (k) => base.removeItem(k)
+  }
+}
+
+function warnSaveFailed(e: unknown): void {
+  console.warn('프로젝트 기록 저장 실패', e)
+  const now = Date.now()
+  if (now - lastSaveWarning < 60_000) return
+  lastSaveWarning = now
+  toast('프로젝트 기록을 저장하지 못했습니다 (저장 한도) — 앱을 닫으면 최근 변경이 사라질 수 있으니 끝난 프로젝트를 정리해 주세요', true)
+}
+
 /** 브라우저가 아닌 곳(단위 테스트)에서는 메모리에 둔다 */
 function storage(): StateStorage {
-  if (typeof localStorage !== 'undefined') return localStorage
+  if (typeof localStorage !== 'undefined') return guardedStorage(localStorage)
   const mem = new Map<string, string>()
   return {
     getItem: (k) => mem.get(k) ?? null,
@@ -196,6 +230,13 @@ export const useProjects = create<ProjectsState>()(
             jobs.reduce((acc, j) => (j.count > 0 ? model.withItem(acc, j.key, (i) => cur.bumpRuntime(i, { queued: j.count })) : acc), p)
           ),
         releaseQueued: (projectId, key, count) => item(projectId, key, (i) => cur.bumpRuntime(i, { queued: -count })),
+        releaseRuntime: (projectId, deltas) =>
+          update(projectId, (p) =>
+            deltas.reduce(
+              (acc, d) => model.withItem(acc, d.key, (i) => cur.bumpRuntime(i, { queued: -d.queued, generating: -d.generating })),
+              p
+            )
+          ),
         markStarted: (projectId, key) =>
           item(projectId, key, (i) => cur.bumpRuntime(i, { queued: i.queued > 0 ? -1 : 0, generating: 1 })),
         cancelStarted: (projectId, key) => item(projectId, key, (i) => cur.bumpRuntime(i, { generating: -1 })),
@@ -273,7 +314,7 @@ export const useProjects = create<ProjectsState>()(
       version: 1,
       storage: createJSONStorage(storage),
       partialize: (s): Persisted => ({ projects: s.projects, activeId: s.activeId, presets: s.presets }),
-      // 빠진 칸 채우기 + 대기·생성 중 장수 초기화 (대기열은 저장되지 않는다)
+      // 빠진 칸 채우기 + 대기·생성 중 장수 초기화 (저장된 대기열의 장은 loadResume이 다시 센다)
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<Persisted>
         return {
@@ -290,6 +331,21 @@ export const useProjects = create<ProjectsState>()(
 /** 지금 고른 프로젝트 */
 export function activeProject(s: Pick<ProjectsState, 'projects' | 'activeId'> = useProjects.getState()): Project | null {
   return s.projects.find((p) => p.id === s.activeId) ?? null
+}
+
+/**
+ * 히스토리 보관 한도 정리(자동 삭제)에서 지우지 않을 그림 — 프로젝트에 든 그림 중 탈락이 아닌 것(미선별·채택·보류),
+ * 내보낸 것, 대표 그림. 이것들은 사용자가 직접 지울 때만 지운다 (모르는 사이에 지우면 조합이 비어 다시 생성·과금하게 된다)
+ */
+export function projectKeptImageIds(s: Pick<ProjectsState, 'projects'> = useProjects.getState()): Set<number> {
+  const ids = new Set<number>()
+  for (const p of s.projects) {
+    for (const it of Object.values(p.items)) {
+      if (it.representative !== undefined) ids.add(it.representative)
+      for (const img of it.images) if (img.mark !== 'rejected' || img.exported) ids.add(img.id)
+    }
+  }
+  return ids
 }
 
 /** 히스토리를 모두 지웠을 때 — 모든 프로젝트에서 그림을 뺀다 (선별·코드 기록은 칸에 남는다) */

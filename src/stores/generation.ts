@@ -15,7 +15,7 @@ import {
 } from '../lib/image'
 import type { HistoryMeta, SettingsSnapshot } from '../lib/db'
 import type { FragmentSource } from '../nai/fragments'
-import { processWildcards, resetSequentialCounters } from '../nai/fragments'
+import { processWildcards, resetSequentialCounters, restoreSequentialCounters, sequentialCounterEntries } from '../nai/fragments'
 import { cleanFileName, fileNameFor, job, setKeepAwake, wait } from '../lib/native'
 import { saveHistoryImageToGallery } from '../storage/export'
 import { randomSeed, uid } from '../lib/util'
@@ -38,7 +38,7 @@ import { snapshotCastPlan, useCharacters } from './characters'
 import { fragmentLibrary, fragmentSourceFrom, type FragmentLibrary } from './fragments'
 import { appendPrompt, useScenes } from './scenes'
 import { primeImageUrl, useHistory } from './history'
-import { newRequestId, queueStore, type ResumeEntry } from './queue-persist'
+import { newRequestId, queueStore, resumeDrawFor, type ResumeEntry } from './queue-persist'
 import { lowSpaceWarning } from '../storage'
 import { mergePromptParts, usePrompt } from './prompt'
 import { useRefs, vibeKey, type CharRef, type Vibe } from './refs'
@@ -111,6 +111,11 @@ interface GenerationState {
   resume: (entries: ResumeEntry[], withUncertain: boolean) => Promise<void>
   /** ── Phase 5: 미리 만든 배치(에셋 프로젝트)를 넣는다 — 생성 중이면 대기열 뒤에, 아니면 바로 돌린다 */
   enqueueBatches: (batches: Batch[]) => Promise<void>
+  /**
+   * ── Phase 5: 이 프로젝트의 장이 든 배치를 대기열에서 빼고, 지금 도는 배치가 그것이면 그 배치만 멈춘다
+   * (다른 배치는 이어서 돈다). 뺀 장수를 돌려준다
+   */
+  cancelProject: (projectId: string) => number
 }
 
 export interface QueuedBatch {
@@ -131,6 +136,16 @@ let lastPreviewAt = 0
 const pendingBatches: Batch[] = []
 /** 멈춰 있을 때 누른 "생성"이 공간 확인을 기다리는 중 (두 번 눌림 방지) */
 let preparingFresh = false
+/** 지금 도는 배치 */
+let current: Batch | null = null
+/** 지금 배치만 멈추고 대기열은 이어서 돌린다 (프로젝트 삭제로 그 프로젝트 배치만 취소할 때) */
+let skipCurrent = false
+/** 마지막으로 서버 응답(성공·실패)을 받은 시각 (performance.now, 0 = 아직 없음) — 배치가 바뀌어도 요청 간격을 지킨다 */
+let lastResponseAt = 0
+
+/** 이 장들 중 이 프로젝트의 장이 있는지 */
+const hasProject = (plan: readonly PlanItem[], projectId: string): boolean =>
+  plan.some((item) => item.project?.tag.projectId === projectId)
 
 /** 생성 계획 한 칸 = 서버 요청 1번 = 이미지 1장 */
 export interface PlanItem {
@@ -173,6 +188,18 @@ export interface Batch {
   cast: CastPlan | null
   /** 다시 생성: 원본의 뽑기 결과 기록을 그대로 물려준다 */
   castSent?: CastSent
+  /** 이어서 생성: 앱이 죽기 전의 뽑기 상태에서 이어 간다 (없으면 처음부터) */
+  resumeDraw?: DrawSnapshot
+}
+
+/** 배치의 뽑기 상태 — 조각 순차 카운터와 출연 슬롯·변형 뽑기 상태 (순수 JSON, 이어서 생성용으로 장마다 저장한다) */
+export interface DrawSnapshot {
+  counters: [string, number][]
+  states: [string, DrawState][]
+}
+
+function drawSnapshot(states: Map<string, DrawState>): DrawSnapshot {
+  return JSON.parse(JSON.stringify({ counters: sequentialCounterEntries(), states: [...states] })) as DrawSnapshot
 }
 
 // ── Phase 5: 프로젝트 배치를 밖(src/project/run.ts)에서 만들 수 있게 모양만 내보낸다
@@ -262,6 +289,20 @@ export const useGeneration = create<GenerationState>()((set, get) => {
     if (!prev || (seq !== undefined && prev.seq !== seq)) return
     if (prev.url) URL.revokeObjectURL(prev.url)
     set({ preview: null })
+  }
+
+  /**
+   * 앞 요청의 응답을 받은 뒤 설정한 간격([delayMin, delayMax]초에서 무작위)이 아직 지나지 않았으면 남은 만큼 기다린다.
+   * 배치 안의 장 사이는 아래 루프가 기다리고, 이것은 배치의 첫 요청(바이브 인코딩 포함) 앞에서 — 대기열의 다음 배치나
+   * 이어서 생성한 배치가 앞 배치의 마지막 응답 직후에 바로 보내지 않게 한다
+   */
+  const pace = async (signal: AbortSignal): Promise<void> => {
+    if (!lastResponseAt) return
+    const { delayMin, delayMax } = useSettings.getState()
+    const left = lastResponseAt + Math.round((delayMin + Math.random() * (delayMax - delayMin)) * 1000) - performance.now()
+    if (left <= 0) return
+    set({ phase: 'waiting' })
+    await wait(Math.round(left), signal)
   }
 
   const syncQueue = (): void =>
@@ -409,10 +450,15 @@ export const useGeneration = create<GenerationState>()((set, get) => {
     const generated = new Set<number>()
     set({ phase: 'preparing', total: count, done: 0, failed: 0, error: null, startedAt: Date.now(), currentLabel: batch.label })
     if (settings.background) job.update(`${batch.label} · 준비 중`, 0, count)
-    resetSequentialCounters()
     const timing = { count: 0, gaps: 0, waitMs: 0, downloadMs: 0, processMs: 0, gapMs: 0, sentBytes: 0, receivedBytes: 0 }
-    // ── Phase 2: 배치(씬마다 따로 뽑기면 씬)마다 이어지는 뽑기 상태와, 이 배치에서 이미 알린 참고 문구
-    const drawStates = new Map<string, DrawState>()
+    // ── Phase 2: 배치(씬마다 따로 뽑기면 씬)마다 이어지는 뽑기 상태와, 이 배치에서 이미 알린 참고 문구.
+    // 이어서 생성한 배치는 앱이 죽기 전의 상태에서 이어 간다 (처음부터 뽑으면 순차 조각·슬롯이 앞 장을 되풀이한다)
+    const resumeDraw = batch.resumeDraw
+    if (resumeDraw) restoreSequentialCounters(resumeDraw.counters)
+    else resetSequentialCounters()
+    const drawStates = new Map<string, DrawState>(
+      resumeDraw ? (JSON.parse(JSON.stringify(resumeDraw.states)) as [string, DrawState][]) : []
+    )
     const castNotes = new Set<string>()
     let loopStarted = 0
     let outcome: BatchOutcome = 'done'
@@ -426,7 +472,12 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         let encoded = v.encodings[key]
         if (!encoded) {
           if (!v.image) throw new Error(`"${v.name}" 바이브에 ${base.model} 인코딩이 없습니다`)
-          encoded = await encodeVibe(token, v.image, snapshotVibe.infoExtracted, base.model, signal)
+          await pace(signal)
+          try {
+            encoded = await encodeVibe(token, v.image, snapshotVibe.infoExtracted, base.model, signal)
+          } finally {
+            lastResponseAt = performance.now()
+          }
           useRefs.getState().setVibeEncoding(v.id, key, encoded)
         }
         vibes.push({ strength: snapshotVibe.strength, encodedVibeBase64: encoded })
@@ -472,8 +523,10 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         // 진행 기록의 열쇠 (이어서 돌리는 배치는 원래 위치)
         const key = item.key ?? i
         let reqId = ''
+        // 이 장을 뽑기 전 뽑기 상태 — "보냄"과 함께 남겨, 앱이 죽어도 이어서 생성이 같은 자리에서 이어 뽑는다
+        const drawBefore = batch.verbatim ? null : drawSnapshot(drawStates)
         // ── Phase 5: 프로젝트 장은 그 조합의 프롬프트·캐릭터로 (화면 프롬프트를 통째로 대신) — 아래 base·snap은 이 장의 것
-        const { base, snap } = item.project ? projectItemRequest(batch, item.project) : batch
+        const { base, snap } = item.project ? projectItemRequest(batch, item.project, item.size) : batch
         const seed =
           fixedSeed === null || !Number.isFinite(fixedSeed)
             ? randomSeed()
@@ -526,6 +579,8 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         const queued = pendingBatches.length ? ` (대기 ${pendingBatches.length})` : ''
         if (settings.background) job.update(`${i + 1}/${count}장 생성 중${label}${queued}`, i, count)
 
+        // 배치의 첫 장도 앞 배치(대기열·이어서 생성)의 마지막 응답 뒤 간격을 둔다 (그다음 장은 아래에서 기다린다)
+        if (i === 0) await pace(signal)
         // 재시도 대상은 네트워크 요청뿐 — 응답을 받은 뒤의 저장 오류로 다시 요청(이중 과금)하지 않는다
         projectItemStarted(item) // ── Phase 5
         let result: Awaited<ReturnType<typeof generateImage>> | null = null
@@ -535,7 +590,13 @@ export const useGeneration = create<GenerationState>()((set, get) => {
           try {
             // 보내기 전에 "보냄"을 먼저 남긴다 — 응답 전에 앱이 죽으면 이 장은 다시 보내지 않고 확인을 받는다
             reqId = newRequestId()
-            await queueStore.sending(batch.id, key, reqId, seed)
+            await queueStore.sending(
+              batch.id,
+              key,
+              reqId,
+              seed,
+              drawBefore ? { idx: key, before: drawBefore, after: drawSnapshot(drawStates) } : undefined
+            )
             const useStream = useSettings.getState().streaming && !streamUnsupported
             const seq = ++previewSeq
             const totalSteps = effectiveSteps(request.model, request.steps)
@@ -555,9 +616,11 @@ export const useGeneration = create<GenerationState>()((set, get) => {
                   throw e
                 })
               : await generateImage(token, request, buildOpts, signal)
+            lastResponseAt = performance.now()
             resultSeq = seq
             break
           } catch (e) {
+            lastResponseAt = performance.now()
             if (isAbort(e)) throw e
             if (e instanceof StreamInterruptedError) {
               // 생성이 시작된 뒤 끊겼다 — 서버가 이미 그렸을(과금했을) 수 있어 같은 장을 다시 요청하지 않는다
@@ -737,22 +800,33 @@ export const useGeneration = create<GenerationState>()((set, get) => {
     let totalFailed = 0
     let batches = 0
     let last: BatchOutcome = 'done'
+    skipCurrent = false
     for (let batch: Batch | undefined = first; batch; batch = pendingBatches.shift()) {
       syncQueue()
       controller = new AbortController()
+      current = batch
       last = await runBatch(batch, token, controller.signal)
+      current = null
       // 끝났거나 멈춘 배치는 기록에서 지운다 (못 뽑은 씬 장은 runBatch가 예약으로 돌려줬다)
-      queueStore.drop(batch.id)
+      void queueStore.drop(batch.id)
       batches++
       totalDone += get().done
       totalFailed += get().failed
+      // 이 배치만 취소한 경우(프로젝트 삭제) 대기열은 이어서 돈다
+      const skipped = last === 'stopped' && skipCurrent
+      skipCurrent = false
+      if (skipped) {
+        last = 'done'
+        continue
+      }
       if (last !== 'done') break
     }
     controller = null
+    skipCurrent = false
     // 멈췄거나 막혔으면 남은 대기열은 취소하고 씬 예약을 돌려준다
     for (const rest of pendingBatches.splice(0)) {
       release(rest.plan)
-      queueStore.drop(rest.id)
+      void queueStore.drop(rest.id)
     }
     syncQueue()
     const error = get().error
@@ -785,9 +859,10 @@ export const useGeneration = create<GenerationState>()((set, get) => {
     stop: () => {
       for (const rest of pendingBatches.splice(0)) {
         release(rest.plan)
-        queueStore.drop(rest.id)
+        void queueStore.drop(rest.id)
       }
       syncQueue()
+      skipCurrent = false
       controller?.abort()
     },
     removeQueued: (id) => {
@@ -795,8 +870,26 @@ export const useGeneration = create<GenerationState>()((set, get) => {
       if (i < 0) return
       const [removed] = pendingBatches.splice(i, 1)
       release(removed.plan)
-      queueStore.drop(removed.id)
+      void queueStore.drop(removed.id)
       syncQueue()
+    },
+    cancelProject: (projectId) => {
+      let n = 0
+      for (let i = pendingBatches.length - 1; i >= 0; i--) {
+        const b = pendingBatches[i]
+        if (!hasProject(b.plan, projectId)) continue
+        pendingBatches.splice(i, 1)
+        n += b.plan.length
+        release(b.plan)
+        void queueStore.drop(b.id)
+      }
+      syncQueue()
+      if (current && controller && hasProject(current.plan, projectId)) {
+        n += Math.max(0, get().total - get().done - get().failed)
+        skipCurrent = true
+        controller.abort()
+      }
+      return n
     },
     // ── Phase 5: 미리 만든 배치 — buildBatch 대신 받은 배치를 그대로 runQueue/대기열에 (간격·중지·대기열 취소는 같다)
     enqueueBatches: async (batches) => {
@@ -806,6 +899,12 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         for (const b of batches) release(b.plan)
         set({ error: 'API 토큰을 먼저 설정해 주세요 (설정 탭)' })
         return
+      }
+      // 배치는 id로 찾고(취소·대기열 저장) 지운다 — 대기·실행 중인 배치와 겹치면 새 id를 준다 (아직 저장 전이라 바꿔도 된다)
+      const taken = new Set([...pendingBatches.map((b) => b.id), ...(current ? [current.id] : [])])
+      for (const b of batches) {
+        if (taken.has(b.id)) b.id = uid()
+        taken.add(b.id)
       }
       const images = batches.reduce((n, b) => n + b.plan.length, 0)
       // start와 같이: 저장 공간을 묻고, 앱이 죽어도 이어서 할 수 있게 배치를 저장한다.
@@ -875,18 +974,22 @@ export const useGeneration = create<GenerationState>()((set, get) => {
       if (!token) return set({ error: 'API 토큰을 먼저 설정해 주세요 (설정 탭)' })
       const batches: Batch[] = []
       for (const e of entries) {
+        // 이미 돌거나 대기 중인 배치는 다시 넣지 않는다 (같은 장을 두 번 보내게 된다)
+        if (current?.id === e.batch.id || pendingBatches.some((b) => b.id === e.batch.id)) continue
         const extra = withUncertain ? e.uncertain.map((u) => u.item) : []
         // 다시 보내지 않기로 한 "확인 필요" 장은 다음에 또 묻지 않게 표시해 둔다
         if (!withUncertain && e.uncertain.length) await queueStore.skip(e.batch.id, e.uncertain.map((u) => u.key))
         const plan = [...e.remaining, ...extra].sort((a, b) => (a.key ?? 0) - (b.key ?? 0))
         if (!plan.length) {
-          queueStore.drop(e.batch.id)
+          void queueStore.drop(e.batch.id)
           continue
         }
+        queueStore.resumed(e.batch.id)
         // 이어서 뽑을 씬 장은 다시 이 배치가 가져간 것으로 표시한다 (예약은 처음 누를 때 이미 0으로 줄었다)
         for (const item of plan) if (item.scene?.reserved) claim(item.scene.id, 1)
         projectItemsQueued(plan) // ── Phase 5: 다시 돌릴 프로젝트 장만 대기로 센다 (다시 보내지 않는 "확인 필요" 장은 빼고)
-        batches.push({ ...e.batch, label: `${e.batch.label} · 이어서`, plan })
+        const resumeDraw = resumeDrawFor(e.draw, plan)
+        batches.push({ ...e.batch, label: `${e.batch.label} · 이어서`, plan, ...(resumeDraw ? { resumeDraw } : {}) })
       }
       if (!batches.length) return
       if (get().running) {

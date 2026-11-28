@@ -3,7 +3,7 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { AlertTriangle, Info } from 'lucide-react'
 import { cx } from '../../lib/util'
 import { formatDuration, planJobs, planWarnings, useProjects, type MatrixSelection, type PlanMode, type Project } from '../../project'
-import { enqueueJobs, estimateFor, referenceNotes } from '../../project/run'
+import { enqueueJobs, estimateFor, inFlightFor, referenceNotes } from '../../project/run'
 import { useGeneration } from '../../stores/generation'
 import { useRefs } from '../../stores/refs'
 import { useSettings } from '../../stores/settings'
@@ -48,8 +48,11 @@ export function PlanSheet(props: { project: Project; selection?: MatrixSelection
   const characters = new Set(plan.jobs.map((j) => j.character?.id ?? '')).size
 
   const go = (): void => {
-    const heavy = warnings.filter((w) => w.level === 'warn' && w.code !== 'emptyAxis')
-    if (heavy.length && !window.confirm(`${heavy.map((w) => `• ${w.message}`).join('\n')}\n\n그래도 ${estimate.images}장을 생성할까요?`)) return
+    const heavy = warnings.filter((w) => w.level === 'warn' && w.code !== 'emptyAxis').map((w) => w.message)
+    // "부족분만"은 대기·생성 중인 장을 이미 뺐다. 그 밖에는 같은 조합이 대기열에 있으면 겹쳐 더 생성(과금)되니 묻는다
+    const busy = mode === 'missing' ? 0 : inFlightFor(p, plan.jobs)
+    if (busy) heavy.push(`이 계획의 조합에 이미 대기·생성 중인 그림이 ${busy}장 있습니다 — 그만큼 겹쳐서 더 생성됩니다`)
+    if (heavy.length && !window.confirm(`${heavy.map((m) => `• ${m}`).join('\n')}\n\n그래도 ${estimate.images}장을 생성할까요?`)) return
     const r = enqueueJobs(p, plan.jobs)
     if (typeof r === 'string') {
       toast(r, true)

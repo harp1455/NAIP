@@ -1,9 +1,9 @@
 import { getStorage } from '../storage'
 import type { QueueBatchRow, QueueItemRow } from '../storage/queue-repo'
 import { fragmentSourceFrom, type FragmentLibrary } from './fragments'
-import type { Batch, PlanItem } from './generation'
+import type { Batch, DrawSnapshot, PlanItem } from './generation'
 import { useScenes } from './scenes'
-import { adoptTaggedImages } from '../project/queue' // ── Phase 5
+import { adoptCutoff, adoptTaggedImages, projectItemsQueued, releaseProjectItems } from '../project/queue' // ── Phase 5
 
 /**
  * 생성 대기열을 앱이 죽어도 남게 한다.
@@ -35,18 +35,19 @@ export function deserializeBatch(data: string): Batch {
 }
 
 const warn = (e: unknown): void => console.warn('대기열 기록 실패', e)
-/** 배치 내용을 쓰는 중인 것 — 그 배치의 첫 "보냄" 기록은 이것이 끝난 뒤에 쓴다 */
+/** 배치 내용을 쓰는 중인 것 — 그 배치의 첫 "보냄" 기록과 지우기(drop)는 이것이 끝난 뒤에 한다 */
 const saving = new Map<number, Promise<void>>()
 /**
- * 이번 실행에서 기록한 배치 — 지금 돌거나 대기 중이라 "지난 실행에서 끝나지 않은 생성"이 아니다.
- * 저장소 부팅이 대기열을 읽기 전에 "생성"을 누를 수 있다: 그 배치를 이어서 하자고 물으면 같은 장을 두 번 뽑는다
+ * 이 실행(앱 프로세스)이 저장해 아직 지우지 않은 배치 — 지금 돌거나 대기 중인 배치다.
+ * 다시 열기(loadResume)가 늦게 돌아도 이 배치들을 "끝나지 않은 생성"으로 내놓거나 진행 기록을 지우지 않게 한다
+ * (내놓으면 이어서 생성이 같은 장을 한 번 더 보낸다)
  */
-const thisRun = new Set<number>()
+const live = new Set<number>()
 
 /** 대기열 기록 — 기록이 실패해도 생성은 멈추지 않는다 (sending만 기다린다) */
 export const queueStore = {
   save(batch: Batch): Promise<void> {
-    thisRun.add(batch.id)
+    live.add(batch.id)
     const p = getStorage()
       .then((s) => s.queue.saveBatch(batch.id, batch.label, serializeBatch(batch)))
       .catch(warn)
@@ -58,10 +59,10 @@ export const queueStore = {
    * 요청을 보내기 직전 — 이 기록이 디스크에 닿은 뒤에 보낸다.
    * 배치 내용(수 MB일 수 있다)을 다 쓰기 전이면 기다린다: 진행 기록만 있고 배치가 없으면 이어서 할 수 없다
    */
-  async sending(batchId: number, key: number, reqId: string, seed: number): Promise<void> {
+  async sending(batchId: number, key: number, reqId: string, seed: number, draw?: DrawRecord): Promise<void> {
     await saving.get(batchId)
     return getStorage()
-      .then((s) => s.queue.mark(batchId, key, 'sending', reqId, { seed }))
+      .then((s) => s.queue.mark(batchId, key, 'sending', reqId, { seed, ...(draw ? { draw: JSON.stringify(draw) } : {}) }))
       .catch(warn)
   },
   done(batchId: number, key: number, reqId: string, imageId: number): void {
@@ -74,16 +75,54 @@ export const queueStore = {
       .then((s) => s.queue.mark(batchId, key, 'failed', reqId))
       .catch(warn)
   },
+  /** 지난 실행에서 저장된 배치를 이 실행에서 다시 돌린다 — 이제 이 실행의 배치로 본다 */
+  resumed(batchId: number): void {
+    live.add(batchId)
+  },
   skip(batchId: number, keys: number[]): Promise<void> {
     return getStorage()
       .then((s) => s.queue.setState(batchId, keys, 'skipped'))
       .catch(warn)
   },
-  drop(batchId: number): void {
-    void getStorage()
+  /**
+   * 배치 기록을 지운다. 아직 쓰는 중인 배치 내용(save)이 있으면 그것이 끝난 뒤에 지운다 —
+   * 먼저 지우면 늦게 끝난 save가 행·파일을 다시 남겨, 취소한 배치가 다음 실행에서 "이어서 생성"으로 나온다
+   */
+  drop(batchId: number): Promise<void> {
+    return (saving.get(batchId) ?? Promise.resolve())
+      .then(() => getStorage())
       .then((s) => s.queue.dropBatch(batchId))
       .catch(warn)
+      .finally(() => live.delete(batchId))
   }
+}
+
+/** 마지막으로 보낸 장(idx)의 뽑기 상태 — 그 장을 뽑기 전(before)과 뒤(after) */
+export interface DrawRecord {
+  idx: number
+  before: DrawSnapshot
+  after: DrawSnapshot
+}
+
+function parseDraw(text: string | undefined): DrawRecord | undefined {
+  if (!text) return undefined
+  try {
+    const d = JSON.parse(text) as DrawRecord
+    const ok = (x: DrawSnapshot | undefined): boolean => !!x && Array.isArray(x.counters) && Array.isArray(x.states)
+    return Number.isFinite(d?.idx) && ok(d.before) && ok(d.after) ? d : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 이어서 돌릴 계획의 첫 장에서 쓸 뽑기 상태. 마지막으로 보낸 장부터 다시 보내면(확인 필요 장) 그 장을 뽑기 전 상태,
+ * 그 뒤 장부터면 뽑은 뒤 상태 — 순차 조각·순차 슬롯이 처음부터 다시 돌지 않고, 배치에 한 번 뽑은 캐릭터·변형도 그대로다
+ */
+export function resumeDrawFor(draw: DrawRecord | undefined, plan: readonly PlanItem[]): DrawSnapshot | undefined {
+  if (!draw || !plan.length) return undefined
+  const first = Math.min(...plan.map((p) => p.key ?? 0))
+  return first <= draw.idx ? draw.before : draw.after
 }
 
 export interface UncertainItem {
@@ -104,6 +143,8 @@ export interface ResumeEntry {
   remaining: PlanItem[]
   /** 보냈는데 결과를 모르는 장 — 이미 과금됐을 수 있다 */
   uncertain: UncertainItem[]
+  /** 마지막으로 보낸 장의 뽑기 상태 (없으면 처음부터 뽑는다) */
+  draw?: DrawRecord
 }
 
 /**
@@ -113,7 +154,8 @@ export interface ResumeEntry {
 export function planResume(
   batches: QueueBatchRow[],
   items: QueueItemRow[],
-  found: Map<string, number>
+  found: Map<string, number>,
+  draws: Map<number, string> = new Map()
 ): { entries: ResumeEntry[]; resolved: { batchId: number; idx: number; reqId: string; imageId: number }[]; dropped: number[] } {
   const entries: ResumeEntry[] = []
   const resolved: { batchId: number; idx: number; reqId: string; imageId: number }[] = []
@@ -151,28 +193,47 @@ export function planResume(
       dropped.push(row.id)
       continue
     }
-    entries.push({ batch: { ...batch, plan }, total: plan.length, done, failed, remaining, uncertain })
+    const draw = parseDraw(draws.get(row.id))
+    entries.push({ batch: { ...batch, plan }, total: plan.length, done, failed, remaining, uncertain, ...(draw ? { draw } : {}) })
   }
   return { entries, resolved, dropped }
 }
 
 /** 지난 실행에서 끝나지 않은 대기열 */
 export async function loadResume(): Promise<ResumeEntry[]> {
-  const { queue } = await getStorage()
-  const stored = await queue.load()
-  // 이번 실행에서 시작한 배치(부팅보다 먼저 누른 "생성")는 빼고 본다 — 그 배치는 지금 생성기가 맡고 있다
-  const batches = stored.batches.filter((b) => !thisRun.has(b.id))
-  const items = stored.items.filter((i) => !thisRun.has(i.batch_id))
+  // 읽기 전에 이 실행의 배치를 적어 둔다 — 읽는 사이에 지워진(drop) 배치도 지난 실행의 것으로 착각하지 않게
+  const own = new Set(live)
+  const { queue, history } = await getStorage()
+  // ── Phase 5: 히스토리에는 분류 표시와 함께 들어갔는데 프로젝트 기록(localStorage — 늦게 디스크에 쓰인다)이
+  // 저장되기 전에 앱이 죽어 빠진 그림을 다시 넣는다. 대기열 기록이 이미 끝났거나 지워진 장도 있어 대기열과 따로 찾는다.
+  // 지금 도는 배치의 그림을 프로젝트 기록 직전에 먼저 넣어도 projectItemLanded가 그 장의 생성 중 장수를 돌려준다
+  const cutoff = adoptCutoff()
+  if (cutoff !== null) {
+    try {
+      adoptTaggedImages(await history.taggedSince(cutoff))
+    } catch (e) {
+      console.warn('프로젝트 그림을 맞추지 못했습니다', e)
+    }
+  }
+  const loaded = await queue.load()
+  // 이 실행에서 저장한 배치(지금 돌거나 대기 중)는 지난 실행의 것이 아니다 — 내놓지도 지우지도 않는다
+  const mine = (id: number): boolean => own.has(id) || live.has(id)
+  const batches = loaded.batches.filter((b) => !mine(b.id))
+  const items = loaded.items.filter((i) => !mine(i.batch_id))
   // 배치 없이 남은 진행 기록(배치를 쓰기 전에 꺼진 경우)은 이어서 할 수 없다
   const known = new Set(batches.map((b) => b.id))
   for (const id of new Set(items.filter((i) => !known.has(i.batch_id)).map((i) => i.batch_id))) await queue.dropBatch(id)
   if (!batches.length) return []
   const found = await queue.imagesByRequest(items.filter((i) => i.state === 'sending').map((i) => i.req_id))
-  const { entries, resolved, dropped } = planResume(batches, items, found)
+  const draws = await queue.draws().catch(() => new Map<number, string>())
+  const { entries, resolved, dropped } = planResume(batches, items, found, draws)
   for (const r of resolved) await queue.mark(r.batchId, r.idx, 'done', r.reqId, { imageId: r.imageId })
   // ── Phase 5: 히스토리에는 들어갔는데 프로젝트 기록 전에 죽은 장 — 분류 표시로 프로젝트에 넣는다
   if (resolved.length) adoptTaggedImages(await (await getStorage()).history.getMany(resolved.map((r) => r.imageId)))
   for (const id of dropped) await queue.dropBatch(id)
+  // ── Phase 5: 보내지 않은 프로젝트 장은 저장된 대기열에 그대로 있다 — 앱을 열면 0이 된 대기 장수를 다시 센다.
+  // 세지 않으면 "부족분만" 계획이 같은 장을 또 넣고, 나중에 이어서 생성하면 두 번 생성(과금)된다
+  projectItemsQueued(entries.flatMap((e) => e.remaining))
   return entries
 }
 
@@ -187,6 +248,7 @@ export async function discardResume(entries: ResumeEntry[]): Promise<void> {
     for (const item of e.remaining) {
       if (item.scene?.reserved && scenes.has(item.scene.id)) useScenes.getState().bumpReserve([item.scene.id], 1)
     }
+    releaseProjectItems(e.remaining) // ── Phase 5: 읽을 때 대기로 센 프로젝트 장을 돌려준다
     await queue.dropBatch(e.batch.id)
   }
 }
