@@ -1,6 +1,6 @@
 import { done, openIdb, txDone, type HistoryMeta } from '../lib/db'
 import { chunk, marks, type SqlStatement } from './driver'
-import { dataUrlMime } from './files'
+import { base64ToBytes, dataUrlMime } from './files'
 import { insertStatements, originalPath, thumbPathFor } from './history-repo'
 import type { Storage } from './index'
 
@@ -11,6 +11,8 @@ import type { Storage } from './index'
  * - 옛 데이터는 모든 장을 옮기고 검증(장수 + 장마다 파일 크기)이 끝난 뒤에만 비운다.
  * - id로 이어서 한다 — 이미 옮겨진 장(행이 있고 파일 크기가 맞음)은 건너뛰므로 중간에 앱이 죽어도 다시 시작하면 된다.
  * - 파일을 먼저 쓰고(임시 파일 → 이름 바꾸기) 크기를 확인한 뒤에 행을 넣는다. 행만 있고 파일이 없는 상태는 생기지 않는다.
+ *   원본이 없는 장(예전 저장소에 원본이 없거나, 확인하고 원본 없이 옮기는 장)은 썸네일이 남는 그림의 전부라
+ *   썸네일도 쓰고 크기를 확인한 뒤에만 행을 넣는다 (못 쓰면 그 장은 옮기지 않고 옛 데이터를 비우지 않는다).
  * - 시작 전에 남은 공간을 확인하고, 옮기는 중에도 공간이 떨어지면 멈춘다 (옛 데이터는 그대로).
  * - 한 장이 실패해도 그 묶음에서 다 옮긴 장의 행은 남긴다 (행 없는 원본 파일이 생기지 않게).
  * - 원본이 읽히지 않는 장은 건너뛰고 나머지를 옮긴다. 그런 장이 있으면 실패로 알리고 옛 데이터는 비우지 않는다.
@@ -175,7 +177,9 @@ export async function migrateLegacy(opts: {
   }
   /**
    * 한 장을 옮길 문장 — 원본(buf)이 있으면 파일을 먼저 쓰고 크기를 확인한다. buf 가 null 이면 원본 없는 기록.
-   * 썸네일은 쓸 수 있을 때만 (못 쓰면 원본이 있는 장은 화면이 원본에서 다시 만든다)
+   * 원본이 있는 장의 썸네일은 쓸 수 있을 때만 (못 쓰면 화면이 원본에서 다시 만든다).
+   * 원본이 없는 장은 썸네일이 남는 그림의 전부라, 쓰지 못하거나 크기가 맞지 않으면 이 장을 옮기지 않는다
+   * (행을 넣지 않으니 옛 데이터를 비우지 않고 다음에 다시 한다). 풀 수 없는 썸네일(깨진 base64)은 잃을 것이 없으니 없이 옮긴다
    */
   const copyOne = async (meta: HistoryMeta, buf: ArrayBuffer | null): Promise<{ statements: SqlStatement[]; size: number }> => {
     let file: string | null = null
@@ -187,11 +191,23 @@ export async function migrateLegacy(opts: {
     }
     let thumb: string | null = null
     if (typeof meta.thumb === 'string' && meta.thumb.startsWith('data:')) {
-      const path = thumbPathFor(meta.id, dataUrlMime(meta.thumb) ?? 'image/jpeg')
-      thumb = await files.write(path, meta.thumb).then(
-        () => path,
-        () => null
-      )
+      const mime = dataUrlMime(meta.thumb) ?? 'image/jpeg'
+      const path = thumbPathFor(meta.id, mime)
+      if (buf) {
+        thumb = await files.write(path, meta.thumb).then(
+          () => path,
+          () => null
+        )
+      } else {
+        const bytes = decodedThumb(meta.thumb)
+        if (bytes) {
+          const n = await files.write(path, new Blob([bytes as BlobPart], { type: mime })).catch((e: unknown) => {
+            throw new Error(`${meta.id}: 원본 없는 장의 썸네일을 쓰지 못했습니다 (${(e as Error)?.message ?? String(e)})`)
+          })
+          if (n !== bytes.byteLength) throw new Error(`${meta.id}: 원본 없는 장의 썸네일 크기가 맞지 않습니다 (${n}/${bytes.byteLength})`)
+          thumb = path
+        }
+      }
     }
     // 예전 판에서는 저장 기록이 없으면 미저장으로 표시했다 (v3 인덱스와 같은 규칙)
     const normalized: HistoryMeta = { ...meta, ...(meta.saved || meta.unsaved ? {} : { unsaved: 1 }) }
@@ -290,7 +306,12 @@ export async function migrateLegacy(opts: {
   const skipped = unreadable.length
   if (skipped) {
     const statements: SqlStatement[] = []
-    for (const id of unreadable) statements.push(...(await copyOne(unreadableMetas.get(id)!, null)).statements)
+    try {
+      // 썸네일을 모두 쓰고 크기를 확인한 뒤에만 행을 넣는다 — 한 장이라도 못 쓰면 아무 행도 넣지 않고 옛 데이터는 그대로
+      for (const id of unreadable) statements.push(...(await copyOne(unreadableMetas.get(id)!, null)).statements)
+    } catch (e) {
+      return { status: 'failed', error: (e as Error).message, done: verified, total }
+    }
     await driver.batch(statements)
     let kept = 0
     for (const part of chunk(unreadable)) {
@@ -312,6 +333,16 @@ export async function migrateLegacy(opts: {
   ])
   await source.clear()
   return { status: 'done', count: verified, bytes, missing, ...(skipped ? { skipped } : {}) }
+}
+
+/** 썸네일 dataURL 의 바이트 — 풀 수 없거나 비었으면 null */
+function decodedThumb(dataUrl: string): Uint8Array | null {
+  try {
+    const bytes = base64ToBytes(dataUrl)
+    return bytes.byteLength ? bytes : null
+  } catch {
+    return null
+  }
 }
 
 /** 아직 옮기지 않은 예전 히스토리가 남아 있는지 (읽을 수 없으면 false) */

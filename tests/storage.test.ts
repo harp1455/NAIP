@@ -723,6 +723,68 @@ describe('finishing a move that still has unreadable old records', () => {
     expect(await legacyCounts()).toEqual({ meta: 30, blobs: 30, text: 30, kv: 1 })
   })
 
+  it('keeps the old history when the thumbnail of a confirmed unreadable record cannot be written, and finishes on a later run', async () => {
+    const metas = Array.from({ length: 6 }, (_, i) => meta(9500 + i))
+    await seedLegacy(metas, metas.map(() => 24))
+    const s = await fresh()
+    const r1 = await migrateLegacy({ storage: s, source: brokenSource(9502), freeSpace: async () => 1e12 })
+    expect(r1).toMatchObject({ status: 'failed', unreadable: [9502] })
+    // 확인한 뒤의 실행에서 그 장의 썸네일만 쓰지 못한다 (입출력 오류·공간 부족) — 원본이 없으니 썸네일이 남는 그림의 전부다
+    const failing = {
+      ...s.files,
+      write: async (path: string, data: Blob | string): Promise<number> => {
+        if (path === 'thumbs/9502.jpg') throw new Error('disk full')
+        return s.files.write(path, data)
+      }
+    }
+    const r2 = await migrateLegacy({ storage: { driver: s.driver, files: failing }, source: brokenSource(9502), freeSpace: async () => 1e12, skipUnreadable: [9502] })
+    expect(r2.status).toBe('failed')
+    if (r2.status === 'failed') expect(r2.error).toContain('9502')
+    // 옛 데이터는 그대로, 그 장의 행도 넣지 않는다 — 다음 실행이 그 장을 다시 읽을 수 없는 장으로 알린다
+    expect(await legacyCounts()).toEqual({ meta: 6, blobs: 6, text: 6, kv: 1 })
+    expect(await s.history.row(9502)).toBeNull()
+    const r3 = await migrateLegacy({ storage: s, source: brokenSource(9502), freeSpace: async () => 1e12 })
+    expect(r3).toMatchObject({ status: 'failed', unreadable: [9502] })
+    // 쓸 수 있게 되면 확인한 대로 마친다 — 썸네일은 남는다
+    const r4 = await migrateLegacy({ storage: s, source: brokenSource(9502), freeSpace: async () => 1e12, skipUnreadable: [9502] })
+    expect(r4).toMatchObject({ status: 'done', count: 6, missing: 1, skipped: 1 })
+    expect(await s.history.row(9502)).toMatchObject({ file: null, thumb: 'thumbs/9502.jpg' })
+    expect(s.files.files.has('thumbs/9502.jpg')).toBe(true)
+    expect(await legacyCounts()).toEqual({ meta: 0, blobs: 0, text: 0, kv: 1 })
+  })
+
+  it('does not clear the old history while the thumbnail of a record without an original failed to write', async () => {
+    const metas = Array.from({ length: 6 }, (_, i) => meta(9600 + i))
+    // 9603 은 예전 저장소에도 원본이 없다 — 썸네일과 기록이 그 장의 전부다
+    await seedLegacy(metas, metas.map((m) => (m.id === 9603 ? null : 24)))
+    const s = await fresh()
+    const failing = {
+      ...s.files,
+      write: async (path: string, data: Blob | string): Promise<number> => {
+        if (path === 'thumbs/9603.jpg') throw new Error('I/O error')
+        return s.files.write(path, data)
+      }
+    }
+    const r1 = await migrateLegacy({ storage: { driver: s.driver, files: failing }, source: idbLegacySource(), freeSpace: async () => 1e12 })
+    expect(r1.status).toBe('failed')
+    expect(await legacyCounts()).toEqual({ meta: 6, blobs: 5, text: 6, kv: 1 })
+    expect(await s.history.row(9603)).toBeNull()
+    // 다음 실행이 그 장을 다시 옮긴다
+    const r2 = await migrateLegacy({ storage: s, source: idbLegacySource(), freeSpace: async () => 1e12 })
+    expect(r2).toMatchObject({ status: 'done', count: 6, missing: 1 })
+    expect(await s.history.row(9603)).toMatchObject({ file: null, thumb: 'thumbs/9603.jpg' })
+    expect(await legacyCounts()).toEqual({ meta: 0, blobs: 0, text: 0, kv: 1 })
+  })
+
+  it('still moves a record without an original whose thumbnail is undecodable (nothing there to keep)', async () => {
+    const metas = Array.from({ length: 4 }, (_, i) => meta(9700 + i, i === 1 ? { thumb: 'data:image/jpeg;base64,@@not base64@@' } : {}))
+    await seedLegacy(metas, metas.map((m) => (m.id === 9701 ? null : 24)))
+    const s = await fresh()
+    const r = await migrateLegacy({ storage: s, source: idbLegacySource(), freeSpace: async () => 1e12 })
+    expect(r).toMatchObject({ status: 'done', count: 4, missing: 1 })
+    expect(await s.history.row(9701)).toMatchObject({ file: null, thumb: null })
+  })
+
   it('does not leave behind unreadable records the user did not confirm', async () => {
     const metas = Array.from({ length: 10 }, (_, i) => meta(9300 + i))
     await seedLegacy(metas, metas.map(() => 24))
