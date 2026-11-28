@@ -5,6 +5,7 @@ import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.database.Cursor;
+import android.database.DatabaseErrorHandler;
 import android.database.sqlite.SQLiteCursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteProgram;
@@ -14,6 +15,7 @@ import android.os.Environment;
 import android.os.StatFs;
 import android.provider.MediaStore;
 import android.util.Base64;
+import android.util.Log;
 import androidx.core.content.FileProvider;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -46,6 +48,7 @@ import org.json.JSONObject;
 @CapacitorPlugin(name = "NaipStorage")
 public class NaipStoragePlugin extends Plugin {
 
+    private static final String TAG = "NaipStorage";
     private static final String DB_NAME = "naip-history.db";
     private final ExecutorService dbExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService fileExecutor = Executors.newFixedThreadPool(2);
@@ -56,10 +59,14 @@ public class NaipStoragePlugin extends Plugin {
             File file = getContext().getDatabasePath(DB_NAME);
             File parent = file.getParentFile();
             if (parent != null && !parent.exists()) parent.mkdirs();
+            // 기본 오류 처리기는 손상을 알리면 DB 파일을 지워 버린다 (빈 히스토리로 조용히 다시 시작).
+            // 히스토리는 지우지 않고 오류만 JS로 올려 보낸다 — 파일은 그대로 남아 백업·복구할 수 있다.
+            DatabaseErrorHandler keepFile = (corrupt) -> Log.e(TAG, "history database reported corruption; keeping the file");
             db = SQLiteDatabase.openDatabase(
                 file.getPath(),
                 null,
-                SQLiteDatabase.CREATE_IF_NECESSARY | SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING
+                SQLiteDatabase.CREATE_IF_NECESSARY | SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING,
+                keepFile
             );
         }
         return db;
@@ -286,13 +293,17 @@ public class NaipStoragePlugin extends Plugin {
                 // 임시 파일에 다 쓰고 디스크에 내린 뒤 이름을 바꾼다 — 중간에 죽어도 반쯤 쓴 파일이 원본 이름으로 남지 않는다
                 // 같은 파일을 동시에 쓰더라도 임시 파일이 겹치지 않게 이름을 따로 짓는다 (남은 .tmp는 저장 공간 점검이 찾는다)
                 File tmp = new File(dir, target.getName() + "." + System.nanoTime() + ".tmp");
-                try (FileOutputStream out = new FileOutputStream(tmp)) {
-                    out.write(bytes);
-                    out.getFD().sync();
-                }
-                if (!tmp.renameTo(target)) {
-                    tmp.delete();
-                    throw new IOException("rename failed: " + path);
+                boolean renamed = false;
+                try {
+                    try (FileOutputStream out = new FileOutputStream(tmp)) {
+                        out.write(bytes);
+                        out.getFD().sync();
+                    }
+                    renamed = tmp.renameTo(target);
+                    if (!renamed) throw new IOException("rename failed: " + path);
+                } finally {
+                    // 쓰다 실패하면(공간 부족 등) 반쯤 쓴 임시 파일이 남은 공간을 차지하지 않게 바로 지운다
+                    if (!renamed) tmp.delete();
                 }
                 JSObject out = new JSObject();
                 out.put("size", target.length());

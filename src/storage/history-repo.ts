@@ -262,11 +262,15 @@ export function createHistoryRepo(driver: SqlDriver, files: FileStore) {
       await driver.batch(insertStatements(meta, file, written, thumb))
     },
 
-    /** 메타데이터만 고친다 (즐겨찾기·저장 표시 등). 파일 경로·썸네일은 그대로 */
+    /** 메타데이터만 고친다 (즐겨찾기·저장 표시 등). 파일 경로·썸네일은 그대로. 지워진 장이면 아무것도 남기지 않는다 */
     async put(meta: HistoryMeta): Promise<void> {
       await driver.batch([
         { sql: `UPDATE images SET ${META_SET} WHERE id = ?`, params: [...metaColumns(meta), meta.id] },
-        { sql: 'INSERT OR REPLACE INTO image_text (id, body) VALUES (?, ?)', params: [meta.id, searchText(meta)] }
+        {
+          // 행이 없으면(지우는 사이에 늦게 온 저장 표시 등) 검색 글만 남아 검색 장수가 부풀지 않게
+          sql: 'INSERT OR REPLACE INTO image_text (id, body) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM images WHERE id = ?)',
+          params: [meta.id, searchText(meta), meta.id]
+        }
       ])
     },
 
@@ -348,12 +352,15 @@ export function createHistoryRepo(driver: SqlDriver, files: FileStore) {
       for (const part of chunk(paths, 200)) await files.remove(part).catch(() => {})
     },
 
+    /**
+     * 지우는 행이 가리키던 파일만 지운다. 폴더를 통째로 비우지 않는다 — 그러면 지우는 사이에 저장 중이던 그림
+     * (파일은 썼고 행은 아직)의 파일까지 지워져 행만 남는다. 기록 없는 파일은 저장 공간 점검이 찾는다.
+     */
     async clear(): Promise<void> {
+      const rows = await driver.query<{ file: string | null; thumb: string | null }>('SELECT file, thumb FROM images')
+      const paths = rows.flatMap((r) => [r.file, r.thumb].filter((p): p is string => !!p))
       await driver.batch([{ sql: 'DELETE FROM images' }, { sql: 'DELETE FROM image_text' }])
-      for (const dir of ['images', 'thumbs']) {
-        const names = (await files.list(dir)).map((f) => `${dir}/${f.name}`)
-        for (const part of chunk(names, 200)) await files.remove(part).catch(() => {})
-      }
+      for (const part of chunk(paths, 200)) await files.remove(part).catch(() => {})
     },
 
     async savedCount(): Promise<number> {
