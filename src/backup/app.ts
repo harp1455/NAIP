@@ -25,7 +25,7 @@ import { historyExportPort, historyImportPort, restoreHistorySafely, type SafeHi
 import type { NaipBackupReader } from './read'
 import { reportText } from './report'
 import { listSafetyBackups, pruneSafetyBackups, removeSafetyBackup, safetyName, safetySink, safetySource, type SafetyBackup } from './safety'
-import { applyRestorePlan, collectStoreData, normalizeBackupData, waitHydrated, withoutInvalidSections } from './stores'
+import { applyRestorePlan, collectStoreData, normalizeBackupData, waitHydrated, withoutInvalidSections, withoutJunkItems } from './stores'
 import {
   BACKUP_MIME,
   BackupError,
@@ -192,6 +192,8 @@ export interface RestoreSource {
   problems: EntryProblem[]
   /** 백업에 있었지만 손상돼 읽지 못했거나 모양이 잘못된 섹션 (복원하지 않는다) */
   damaged: DataSectionId[]
+  /** damaged 중 읽기는 했지만 모양이 잘못돼 뺀 섹션 (withoutInvalidSections) — 건너뛴 이유를 가른다 */
+  invalid: DataSectionId[]
   /** 이 앱이 모르는 섹션 (더 새로운 앱 또는 예전 생성 대기열) — 건너뛴다 */
   unknownSections: string[]
   /** NAIS3 변환 보고서 (.nais) */
@@ -213,13 +215,18 @@ async function processNais3Image(bytes: Uint8Array, mime: string, kind: 'vibe' |
   return { base64, thumb: await makeThumb(pngDataUrl(base64), 256) }
 }
 
-/** 모양이 잘못된 섹션(목록이어야 할 값이 없거나 목록이 아님)은 손상된 섹션처럼 빼고 알린다 — 미리보기·계획에 나오지 않는다 */
-function checkedData(data: BackupData): { data: BackupData; damaged: DataSectionId[]; problems: EntryProblem[] } {
+/**
+ * 모양이 잘못된 섹션(목록이어야 할 값이 없거나 목록이 아님)은 손상된 섹션처럼 빼고 알린다 — 미리보기·계획에 나오지 않는다.
+ * 온전한 섹션 목록 안의 쓸 수 없는 항목(null·숫자·문자열)은 그 항목만 빼고 섹션마다 뺀 수를 알린다
+ */
+function checkedData(data: BackupData): { data: BackupData; damaged: DataSectionId[]; invalid: DataSectionId[]; problems: EntryProblem[] } {
   const checked = withoutInvalidSections(data)
+  const clean = withoutJunkItems(checked.data)
   return {
-    data: normalizeBackupData(checked.data),
+    data: normalizeBackupData(clean.data),
     damaged: checked.invalid.map((x) => x.section),
-    problems: checked.invalid.map((x) => ({ path: sectionPath(x.section), kind: 'invalid-json' as const, detail: x.detail }))
+    invalid: checked.invalid.map((x) => x.section),
+    problems: [...checked.invalid, ...clean.dropped].map((x) => ({ path: sectionPath(x.section), kind: 'invalid-json' as const, detail: x.detail }))
   }
 }
 
@@ -263,6 +270,7 @@ export async function openRestoreSource(
         data: checked.data,
         problems: all,
         damaged,
+        invalid: checked.invalid,
         unknownSections: reader.unknownSections,
         manifest: reader.manifest,
         reader,
@@ -279,12 +287,19 @@ export async function openRestoreSource(
     if (opened.kind === 'naip-json') {
       await close()
       const checked = checkedData(opened.data)
-      return { ...base, data: checked.data, problems: checked.problems, damaged: checked.damaged }
+      return { ...base, data: checked.data, problems: checked.problems, damaged: checked.damaged, invalid: checked.invalid }
     }
     const { data, report } = await importNais3(opened.archive, { processImage: processNais3Image, newId: uid, signal: opts.signal })
     await close()
     const checked = checkedData(data)
-    return { ...base, data: checked.data, problems: [...report.problems, ...checked.problems], damaged: checked.damaged, report: reportText(report) }
+    return {
+      ...base,
+      data: checked.data,
+      problems: [...report.problems, ...checked.problems],
+      damaged: checked.damaged,
+      invalid: checked.invalid,
+      report: reportText(report)
+    }
   } catch (error) {
     await close()
     throw error
@@ -423,7 +438,10 @@ export async function applyRestore(
         reason: plan.unavailable?.includes(id) ? '이 기기의 지금 것을 불러오지 못함' : s ? '이 앱에 아직 넣을 곳이 없음' : '고르지 않음'
       })
   }
-  for (const id of src.damaged) summary.skipped.push({ section: id, label: SECTION_LABELS[id], reason: '파일 손상 — 읽지 못함' })
+  for (const id of src.damaged) {
+    const reason = src.invalid.includes(id) ? '형식이 잘못됨' : '파일 손상 — 읽지 못함'
+    summary.skipped.push({ section: id, label: SECTION_LABELS[id], reason })
+  }
 
   // 3) 히스토리 (오래 걸린다 — 기록은 페이지로, 원본은 한 장씩)
   const p = await ports()

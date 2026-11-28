@@ -74,6 +74,28 @@ export async function deleteStoredFiles(s: Pick<Storage, 'files'>, paths: string
   for (const part of chunk(paths, 200)) await s.files.remove(part)
 }
 
+/**
+ * 쓰지 않는 썸네일·임시 파일 지우기 (점검 결과의 orphanThumbs·leftovers, 사용자가 고른 것만). 점검 결과는 화면에 남아 있는
+ * 동안 낡을 수 있다 — 그 사이 복원 등으로 기록이 그 썸네일(또는 원본)을 가리키게 됐거나 대기열 배치가 그 파일을 쓰게
+ * 됐으면 지우지 않는다. 기록만 복원한 그림은 원본이 없어 썸네일을 다시 만들 수 없다
+ */
+export async function deleteUnusedFiles(s: Pick<Storage, 'driver' | 'files'>, paths: string[]): Promise<{ deleted: number; skipped: number }> {
+  const used = new Set<string>()
+  for (const part of chunk(paths)) {
+    const q = marks(part.length)
+    for (const sql of [
+      `SELECT thumb AS path FROM images WHERE thumb IN (${q})`,
+      `SELECT file AS path FROM images WHERE file IN (${q})`,
+      `SELECT file AS path FROM queue_batches WHERE file IN (${q})`
+    ]) {
+      for (const r of await s.driver.query<{ path: string }>(sql, part)) used.add(r.path)
+    }
+  }
+  const gone = paths.filter((p) => !used.has(p))
+  await deleteStoredFiles(s, gone)
+  return { deleted: gone.length, skipped: paths.length - gone.length }
+}
+
 const ORIGINAL_RE = /^images\/(\d+)\.(png|webp)$/
 
 /** 지금 기록이 있는 id → 그 기록의 원본 경로(원본 없는 기록이면 null)와 형식 */

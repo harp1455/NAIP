@@ -651,7 +651,7 @@ describe('finishing a move that still has unreadable old records', () => {
     }
   }
 
-  it('offers to leave only the unreadable records behind, and clears the old history after the confirmed run verifies the rest', async () => {
+  it('offers to finish without the unreadable originals, and clears the old history after the confirmed run verifies the rest', async () => {
     const metas = Array.from({ length: 30 }, (_, i) => meta(9000 + i))
     await seedLegacy(metas, metas.map(() => 48))
     const s = await fresh()
@@ -672,14 +672,20 @@ describe('finishing a move that still has unreadable old records', () => {
       skipUnreadable: [9003, 9017],
       onProgress: (p) => phases.push(p.phase)
     })
-    expect(r2).toMatchObject({ status: 'done', count: 28, skipped: 2 })
+    expect(r2).toMatchObject({ status: 'done', count: 30, missing: 2, skipped: 2 })
     expect(phases).toContain('verify')
     expect(await legacyCounts()).toEqual({ meta: 0, blobs: 0, text: 0, kv: 1 })
-    expect(await s.history.count()).toBe(28)
-    expect(await s.history.get(9003)).toBeNull()
+    // 원본을 읽지 못한 장도 기록(썸네일·프롬프트·시드·설정)은 원본 없는 장으로 남는다 — 예전 데이터를 비워도 잃지 않는다
+    expect(await s.history.count()).toBe(30)
+    for (const id of [9003, 9017]) {
+      expect(await s.history.get(id)).toMatchObject({ prompt: `1girl, prompt ${id}`, seed: id % 1000, width: 832, height: 1216 })
+      expect(await s.history.row(id)).toMatchObject({ file: null, thumb: `thumbs/${id}.jpg` })
+      expect(s.files.files.has(`thumbs/${id}.jpg`)).toBe(true)
+    }
     expect(s.files.files.get('images/9029.png')?.byteLength).toBe(48)
+    expect(await checkStorage(s)).toMatchObject({ rows: 30, missingOriginals: [], missingThumbs: [], orphanOriginals: [] })
     const [kv] = await s.driver.query<{ value: string }>('SELECT value FROM app_kv WHERE key = ?', [MIGRATION_KEY])
-    expect(JSON.parse(kv.value)).toMatchObject({ count: 28, skipped: 2 })
+    expect(JSON.parse(kv.value)).toMatchObject({ count: 30, missing: 2, skipped: 2 })
   })
 
   it('copies a confirmed record that has become readable again instead of dropping it', async () => {
@@ -689,8 +695,10 @@ describe('finishing a move that still has unreadable old records', () => {
     const r1 = await migrateLegacy({ storage: s, source: brokenSource(9102, 9105), freeSpace: async () => 1e12 })
     expect(r1).toMatchObject({ status: 'failed', unreadable: [9102, 9105] })
     const r2 = await migrateLegacy({ storage: s, source: brokenSource(9105), freeSpace: async () => 1e12, skipUnreadable: [9102, 9105] })
-    expect(r2).toMatchObject({ status: 'done', count: 9, skipped: 1 })
+    expect(r2).toMatchObject({ status: 'done', count: 10, missing: 1, skipped: 1 })
     expect(await s.history.get(9102)).not.toBeNull()
+    expect(s.files.files.get('images/9102.png')?.byteLength).toBe(24)
+    expect(await s.history.row(9105)).toMatchObject({ file: null })
     expect(await legacyCounts()).toEqual({ meta: 0, blobs: 0, text: 0, kv: 1 })
   })
 
@@ -735,23 +743,23 @@ describe('finishing a move that still has unreadable old records', () => {
     const { StorageGroup } = await import('../src/components/StorageSettings')
     await useStorageBoot.getState().migrate()
     expect(useStorageBoot.getState()).toMatchObject({ phase: 'failed', result: { status: 'failed', done: 28, unreadable: [9404, 9420] } })
-    expect((await html(StorageScreens))).toContain('읽을 수 없는 2장은 건너뛰고 마치기')
+    expect((await html(StorageScreens))).toContain('읽을 수 없는 2장은 원본 없이 옮기고 마치기')
 
     // "나중에" 뒤에도 설정 → 저장 공간에서 고를 수 있다
     useStorageBoot.getState().later()
     expect(useStorageBoot.getState()).toMatchObject({ phase: 'ready', legacyLeft: 2 })
-    expect((await html(StorageGroup))).toContain('읽을 수 없는 2장은 건너뛰고 마치기')
+    expect((await html(StorageGroup))).toContain('읽을 수 없는 2장은 원본 없이 옮기고 마치기')
 
     // 다른 실패(쓰기 실패 등)에는 내놓지 않고, 불러도 아무것도 지우지 않는다
     useStorageBoot.setState({ phase: 'failed', result: { status: 'failed', error: 'write failed', done: 28, total: 30 } })
-    expect((await html(StorageScreens))).not.toContain('건너뛰고 마치기')
+    expect((await html(StorageScreens))).not.toContain('원본 없이 옮기고 마치기')
     await useStorageBoot.getState().finishSkipping()
     expect((await legacyCounts()).meta).toBe(30)
 
     useStorageBoot.setState({ phase: 'ready', result: { status: 'failed', error: '', done: 28, total: 30, unreadable: [9404, 9420] } })
     await useStorageBoot.getState().finishSkipping()
-    expect(useStorageBoot.getState()).toMatchObject({ phase: 'ready', legacyLeft: 0, result: { status: 'done', count: 28, skipped: 2 } })
+    expect(useStorageBoot.getState()).toMatchObject({ phase: 'ready', legacyLeft: 0, result: { status: 'done', count: 30, missing: 2, skipped: 2 } })
     expect(await legacyCounts()).toEqual({ meta: 0, blobs: 0, text: 0, kv: 1 })
-    expect((await html(StorageGroup))).not.toContain('건너뛰고 마치기')
+    expect((await html(StorageGroup))).not.toContain('원본 없이 옮기고 마치기')
   })
 })

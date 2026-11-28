@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { loadImage, makeThumb } from '../lib/image'
 import { readImageSettings } from '../lib/metadata'
 import { clearCache, formatBytes, getStorage, storageInfo } from '../storage'
-import { checkStorage, deleteOrphanOriginals, deleteStoredFiles, recoverOrphans, stillMissingOriginals, type CheckReport } from '../storage/check'
+import { checkStorage, deleteOrphanOriginals, deleteUnusedFiles, recoverOrphans, stillMissingOriginals, type CheckReport } from '../storage/check'
 import { idbLegacySource } from '../storage/legacy'
 import type { StorageInfo } from '../storage/native'
 import { useGeneration } from '../stores/generation'
@@ -173,7 +173,9 @@ export function StorageGroup(): ReactNode {
                 disabled={!!busy}
                 onClick={() =>
                   void run('정리', async () => {
-                    await deleteStoredFiles(await getStorage(), [...report.orphanThumbs, ...report.leftovers])
+                    // 점검 뒤에 기록·대기열이 쓰게 된 파일(복원 등)은 지우지 않는다
+                    const r = await deleteUnusedFiles(await getStorage(), [...report.orphanThumbs, ...report.leftovers])
+                    if (r.skipped) toast(`${r.deleted}개를 지웠습니다 · ${r.skipped}개는 점검 뒤에 쓰이게 된 파일이라 지우지 않았습니다`)
                     await check()
                   })
                 }
@@ -222,8 +224,8 @@ export function StorageGroup(): ReactNode {
           {result?.status === 'failed' && !!result.unreadable?.length && (
             <div className="mb-2 rounded-lg border border-line bg-field p-2.5 text-xs leading-relaxed">
               <p>
-                {`읽을 수 없는 ${result.unreadable.length.toLocaleString()}장 때문에 옮기기를 마치지 못했습니다. ` +
-                  `나머지 ${result.done.toLocaleString()}장은 옮기고 확인했습니다. 다시 옮겨도 읽히지 않으면 그 장만 두고 마칠 수 있습니다.`}
+                {`원본을 읽을 수 없는 ${result.unreadable.length.toLocaleString()}장 때문에 옮기기를 마치지 못했습니다. ` +
+                  `나머지 ${result.done.toLocaleString()}장은 옮기고 확인했습니다. 다시 옮겨도 읽히지 않으면 그 장은 원본 없이(썸네일과 생성 정보만) 옮기고 마칠 수 있습니다.`}
               </p>
               <SkipUnreadableButton className="mt-2 w-full" disabled={running} />
             </div>

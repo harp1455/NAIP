@@ -8,8 +8,8 @@ import { useSettings } from '../stores/settings'
 import { Button, Sheet, Toggle } from './ui'
 
 /**
- * 읽을 수 없는 장만 남아 옮기기를 마치지 못했을 때 — 그 장을 두고 마치는 버튼 (실패 화면·설정 → 저장 공간).
- * 사용자가 확인한 뒤에만: 읽히는 장을 다시 검증하고, 맞을 때만 예전 히스토리를 지운다
+ * 원본을 읽을 수 없는 장만 남아 옮기기를 마치지 못했을 때 — 그 장은 원본 없이(썸네일·생성 정보만) 옮기고 마치는 버튼
+ * (실패 화면·설정 → 저장 공간). 사용자가 확인한 뒤에만: 읽히는 장을 다시 검증하고, 맞을 때만 예전 히스토리를 지운다
  */
 export function SkipUnreadableButton(props: { className?: string; disabled?: boolean }): ReactNode {
   const { result, finishSkipping } = useStorageBoot()
@@ -23,15 +23,16 @@ export function SkipUnreadableButton(props: { className?: string; disabled?: boo
       disabled={props.disabled}
       onClick={() => {
         const ok = window.confirm(
-          `읽을 수 없는 ${n}장은 건너뛰고 옮기기를 마칠까요?\n\n` +
-            `이 ${n}장은 예전 저장소에서 읽히지 않아 NAIP로는 되살릴 수 없습니다. ` +
+          `원본을 읽을 수 없는 ${n}장은 원본 없이 옮기고 마칠까요?\n\n` +
+            `이 ${n}장의 원본 그림은 예전 저장소에서 읽히지 않아 NAIP로는 되살릴 수 없습니다. ` +
+            '썸네일과 생성 정보(프롬프트·시드·설정)는 히스토리에 남깁니다. ' +
             `나머지 ${rest}장은 새 저장소로 옮기고 장수와 파일 크기를 확인했습니다.\n\n` +
             '마치기 전에 한 번 더 확인하고, 맞을 때만 예전 히스토리를 지웁니다. 되돌릴 수 없습니다.'
         )
         if (ok) void finishSkipping()
       }}
     >
-      {`읽을 수 없는 ${n}장은 건너뛰고 마치기`}
+      {`읽을 수 없는 ${n}장은 원본 없이 옮기고 마치기`}
     </Button>
   )
 }
@@ -100,8 +101,8 @@ function MigrationOverlay(): ReactNode {
             {phase === 'failed' && result?.status === 'failed' && !!result.unreadable?.length && (
               <div className="mt-3 rounded-lg border border-line bg-field p-2.5 text-xs leading-relaxed">
                 <p>
-                  나머지 {result.done.toLocaleString()}장은 새 저장소로 옮기고 확인했습니다. 다시 시도해도 같은 장이 읽히지 않으면 그
-                  장만 두고 옮기기를 마칠 수 있습니다.
+                  나머지 {result.done.toLocaleString()}장은 새 저장소로 옮기고 확인했습니다. 다시 시도해도 같은 장의 원본이 읽히지
+                  않으면 그 장은 원본 없이(썸네일과 생성 정보만) 옮기고 마칠 수 있습니다.
                 </p>
                 <SkipUnreadableButton className="mt-2 w-full" />
               </div>

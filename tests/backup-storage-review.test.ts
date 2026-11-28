@@ -26,7 +26,7 @@ import { bytesSource, historyExportPort, historyImportPort, memorySink, writeNai
 import { idbStorage, openIdb, type HistoryMeta } from '../src/lib/db'
 import { useProjects } from '../src/project/store'
 import { setStorageForTests } from '../src/storage'
-import { checkStorage, deleteOrphanOriginals, recoverOrphans, stillMissingOriginals } from '../src/storage/check'
+import { checkStorage, deleteOrphanOriginals, deleteUnusedFiles, recoverOrphans, stillMissingOriginals } from '../src/storage/check'
 import { memoryFileStore } from '../src/storage/files'
 import { createHistoryRepo } from '../src/storage/history-repo'
 import { idbLegacySource, migrateLegacy } from '../src/storage/legacy'
@@ -131,6 +131,63 @@ describe('a failed IndexedDB load does not overwrite the stored data', () => {
 
     await useMasks.persist.rehydrate()
     expect(masksLoadFailed()).toBe(false)
+    expect(useMasks.getState().masks.map((m) => m.id)).toEqual([7])
+  })
+})
+
+describe('a mask saved while the stored masks are still loading', () => {
+  beforeEach(async () => {
+    await useMasks.persist.rehydrate()
+    await settle()
+  })
+
+  /** 불러오기(IndexedDB 읽기)를 붙잡아 둔 채 다시 불러온다 — 업데이트 뒤 첫 실행에서 IndexedDB 올리기가 오래 걸릴 때 */
+  async function slowLoad(during: () => void): Promise<void> {
+    const read = idbStorage.getItem
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    idbStorage.getItem = async (name: string) => {
+      await gate
+      return read(name)
+    }
+    try {
+      const loading = useMasks.persist.rehydrate()
+      during()
+      release()
+      await loading
+    } finally {
+      idbStorage.getItem = read
+    }
+  }
+
+  it('saves it once the load finishes when nothing was stored yet', async () => {
+    await idbStorage.removeItem('naip-masks')
+    useMasks.setState({ masks: [] }, false)
+    await settle()
+    await idbStorage.removeItem('naip-masks')
+    await slowLoad(() => useMasks.getState().add({ name: 'early', width: 8, height: 8, data: 'data:image/png;base64,AA==' }))
+    expect(masksLoadFailed()).toBe(false)
+    expect(useMasks.getState().masks.map((m) => m.name)).toEqual(['early'])
+    await settle()
+    const stored = await idbStorage.getItem('naip-masks')
+    expect(stored).not.toBeNull()
+    expect(JSON.parse(stored!).state.masks.map((m: { name: string }) => m.name)).toEqual(['early'])
+  })
+
+  it('keeps it next to the stored masks instead of losing it when they arrive', async () => {
+    await idbStorage.setItem('naip-masks', JSON.stringify({ state: { masks: [mask(7), mask(8)] }, version: 0 }))
+    await slowLoad(() => useMasks.getState().add({ name: 'early', width: 8, height: 8, data: 'data:image/png;base64,AA==' }))
+    expect(useMasks.getState().masks.map((m) => m.name)).toEqual(['early', 'm7', 'm8'])
+    await settle()
+    expect(JSON.parse((await idbStorage.getItem('naip-masks'))!).state.masks.map((m: { name: string }) => m.name)).toEqual(['early', 'm7', 'm8'])
+  })
+
+  it('does not bring back on the next start a mask from an earlier run that was never saved', async () => {
+    // 불러오기에 실패한 실행에서 더한 마스크는 저장하지 않는다 — 다음 시작에는 저장된 것만
+    await idbStorage.setItem('naip-masks', JSON.stringify({ state: { masks: [mask(7)] }, version: 0 }))
+    await failOnce(useMasks)
+    useMasks.getState().add({ name: 'after failure', width: 8, height: 8, data: 'data:image/png;base64,AA==' })
+    await useMasks.persist.rehydrate()
     expect(useMasks.getState().masks.map((m) => m.id)).toEqual([7])
   })
 })
@@ -311,5 +368,31 @@ describe('acting on a storage check report that went stale (a restore ran in bet
     // 복원으로 H+1 의 원본이 다시 들어왔다
     await s.repo.add(meta(H + 1), png(400, 1))
     expect(await stillMissingOriginals(s, report.missingOriginals)).toEqual([H + 2])
+  })
+
+  it('does not clean up a thumbnail or queue file that came into use after the check', async () => {
+    const s = await store()
+    // 예전에 지운 기록의 썸네일이 남았다 (기록 지우기는 파일 지우기 실패를 넘긴다) + 정말 남는 것들
+    await s.files.write(`thumbs/${H + 1}.jpg`, THUMB)
+    await s.files.write(`thumbs/${H + 2}.jpg`, THUMB)
+    await s.files.write(`images/${H + 3}.png.123.tmp`, png(10))
+    await s.files.write(`queue/${H + 4}.json`, new Blob(['{}'], { type: 'application/json' }))
+    await s.files.write(`queue/${H + 5}.json`, new Blob(['{}'], { type: 'application/json' }))
+    const report = await checkStorage(s)
+    expect(report.orphanThumbs.sort()).toEqual([`thumbs/${H + 1}.jpg`, `thumbs/${H + 2}.jpg`])
+    expect(report.leftovers.sort()).toEqual([`images/${H + 3}.png.123.tmp`, `queue/${H + 4}.json`, `queue/${H + 5}.json`])
+    // 점검 결과를 띄워 둔 채: H+1 을 기록만 복원(썸네일은 그 파일을 가리키고 원본은 없다), H+4 배치가 대기열에 들어왔다
+    await historyImportPort(s).put(meta(H + 1) as never, null)
+    expect(await s.repo.row(H + 1)).toMatchObject({ thumb: `thumbs/${H + 1}.jpg`, file: null })
+    await s.driver.exec('INSERT INTO queue_batches (id, label, file, created) VALUES (?, ?, ?, ?)', [H + 4, 'batch', `queue/${H + 4}.json`, 1])
+
+    const r = await deleteUnusedFiles(s, [...report.orphanThumbs, ...report.leftovers])
+    expect(r).toEqual({ deleted: 3, skipped: 2 })
+    expect(s.files.files.has(`thumbs/${H + 1}.jpg`)).toBe(true)
+    expect(s.files.files.has(`queue/${H + 4}.json`)).toBe(true)
+    expect(s.files.files.has(`thumbs/${H + 2}.jpg`)).toBe(false)
+    expect(s.files.files.has(`images/${H + 3}.png.123.tmp`)).toBe(false)
+    expect(s.files.files.has(`queue/${H + 5}.json`)).toBe(false)
+    expect(await checkStorage(s)).toMatchObject({ orphanThumbs: [], leftovers: [], missingThumbs: [] })
   })
 })

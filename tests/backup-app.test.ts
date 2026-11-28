@@ -727,6 +727,80 @@ describe('sections whose lists are missing or not lists', () => {
       await expectUntouched()
     }
   })
+
+  it('gives a section left out for its shape a different skip reason from one that could not be read', async () => {
+    const { setStorageForTests } = await import('../src/storage')
+    const app = await import('../src/backup/app')
+    await setStorageForTests(await createSqlJsDriver(), memoryFileStore())
+    const sink = memorySink()
+    const data = {
+      vibes: { vibes: 'x' },
+      presets: { presets: [{ id: 11, name: 'tampered preset', base: 'lowres', detail: '', negative: '', params: {} }] },
+      scenes: { folders: [], scenes: [{ id: 77, name: 'kept scene', folderId: null, prompt: '', negative: '', size: null, cast: [], reserve: 0 }] }
+    } as unknown as BackupData
+    await writeNaipBackup(data, sink, { mode: 'light', appVersion: '0.12.0' })
+    // 프리셋 섹션은 체크섬이 맞지 않아 읽지 못한다
+    const tampered = await rewriteZip(sink.bytes(), (path, d) => (path === 'sections/presets.json' ? utf8(fromUtf8(d).replace('lowres', 'LOWRES')) : d))
+    const src = await app.openRestoreSource({ name: 'mixed.naipbackup', source: bytesSource(tampered) })
+    expect([...src.damaged].sort()).toEqual(['presets', 'vibes'])
+    await seedStores()
+    const plan = await app.planFor(src, { mode: 'overwrite', sections: {}, history: 'skip', originals: false })
+    const summary = await app.applyRestore(src, plan, { safety: false })
+    expect(summary.skipped).toContainEqual(expect.objectContaining({ section: 'vibes', reason: '형식이 잘못됨' }))
+    expect(summary.skipped).toContainEqual(expect.objectContaining({ section: 'presets', reason: '파일 손상 — 읽지 못함' }))
+    expect(summary.skipped.filter((x) => x.section === 'vibes')).toHaveLength(1)
+    await expectUntouched()
+  })
+
+  it('drops junk items (null, numbers, strings) from the lists of a good section, says how many, and restores the rest', async () => {
+    const { setStorageForTests } = await import('../src/storage')
+    const app = await import('../src/backup/app')
+    await setStorageForTests(await createSqlJsDriver(), memoryFileStore())
+    const sink = memorySink()
+    const junk = {
+      presets: { presets: [null, 'x', { id: 11, name: 'good preset', base: 'b', detail: '', negative: '', params: {} }, 5] },
+      characters: { folders: [null, { id: 21, name: 'good folder' }], characters: ['x'] },
+      saveFolders: { saveFolders: ['Restored', null, 3], nameCounters: {} },
+      masks: { masks: [{ id: 31, name: 'good mask', width: 8, height: 8, data: '', ts: 1 }, 'junk'] },
+      scenes: { folders: [], scenes: [{ id: 77, name: 'kept scene', folderId: null, prompt: '', negative: '', size: null, cast: [], reserve: 0 }] }
+    } as unknown as BackupData
+    await writeNaipBackup(junk, sink, { mode: 'light', appVersion: '0.12.0' })
+    const src = await app.openRestoreSource({ name: 'junk.naipbackup', source: bytesSource(sink.bytes()) })
+    // 섹션째 버리지 않는다 — 쓸 수 있는 항목만 남긴다
+    expect(src.damaged).toEqual([])
+    expect((src.data.presets!.presets as { name: string }[]).map((p) => p.name)).toEqual(['good preset'])
+    expect((src.data.characters as { folders: { name: string }[]; characters: unknown[] }).folders.map((f) => f.name)).toEqual(['good folder'])
+    expect((src.data.characters as { characters: unknown[] }).characters).toEqual([])
+    expect(src.data.saveFolders!.saveFolders).toEqual(['Restored'])
+    expect((src.data.masks!.masks as { name: string }[]).map((m) => m.name)).toEqual(['good mask'])
+    const problem = (id: string) => src.problems.find((p) => p.path === `sections/${id}.json`)
+    expect(problem('presets')?.detail).toContain('3개')
+    expect(problem('characters')?.detail).toContain('2개')
+    expect(problem('saveFolders')?.detail).toContain('2개')
+    expect(problem('masks')?.detail).toContain('1개')
+    expect(problem('scenes')).toBeUndefined()
+
+    await seedStores()
+    const plan = await app.planFor(src, { mode: 'overwrite', sections: {}, history: 'skip', originals: false })
+    const summary = await app.applyRestore(src, plan, { safety: false })
+    expect(summary.applied.map((a) => a.section)).toEqual(expect.arrayContaining(['presets', 'characters', 'saveFolders', 'scenes']))
+    const s = await stores()
+    expect(s.usePrompt.getState().presets.map((p) => p.name)).toEqual(['good preset'])
+    expect(useCharacters.getState().folders.map((f) => f.name)).toEqual(['good folder'])
+    expect(useSettings.getState().saveFolders).toEqual(['Restored'])
+    expect(summary.problems.find((p) => p.path === 'sections/presets.json')?.detail).toContain('3개')
+  })
+
+  it('applyRestorePlan never puts junk list items into a store, even from a plan built without opening a file', async () => {
+    await seedStores()
+    applyRestorePlan(
+      planRestore({}, { presets: { presets: [null, { id: 11, name: 'good preset', base: 'b', detail: '', negative: '', params: {} }] } } as unknown as BackupData, {
+        mode: 'overwrite'
+      })
+    )
+    const s = await stores()
+    expect(s.usePrompt.getState().presets.map((p) => p.name)).toEqual(['good preset'])
+  })
 })
 
 describe('credentials and the generation queue', () => {

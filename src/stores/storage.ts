@@ -20,11 +20,11 @@ interface StorageBootState {
   resume: ResumeEntry[] | null
   /** 앱을 열 때 한 번: 저장소를 열고, 예전 히스토리가 있으면 옮기고, 히스토리·대기열을 불러온다 */
   boot: () => Promise<void>
-  /** 예전 히스토리 옮기기 (다시 시도). skipUnreadable = 사용자가 두고 가기로 확인한 읽을 수 없는 장 */
+  /** 예전 히스토리 옮기기 (다시 시도). skipUnreadable = 사용자가 원본 없이 옮기기로 확인한, 원본을 읽을 수 없는 장 */
   migrate: (opts?: { skipUnreadable?: readonly number[] }) => Promise<void>
   /**
    * 실패 이유가 읽을 수 없는 장뿐일 때(result.unreadable), 사용자가 확인한 뒤에만 부른다:
-   * 그 장은 두고, 읽히는 장을 다시 검증해 맞으면 예전 히스토리를 비운다. 맞지 않으면 그대로 둔다
+   * 그 장은 원본 없이 기록(썸네일·생성 정보)만 옮기고, 읽히는 장을 다시 검증해 맞으면 예전 히스토리를 비운다. 맞지 않으면 그대로 둔다
    */
   finishSkipping: () => Promise<void>
   /** 옮기기를 미루고 앱을 쓴다 (예전 데이터는 그대로 남는다) */
@@ -89,7 +89,7 @@ export const useStorageBoot = create<StorageBootState>()((set, get) => ({
         if (result.status === 'done') {
           toast(
             `이전 히스토리 ${result.count.toLocaleString()}장을 새 저장소로 옮겼습니다` +
-              (result.skipped ? ` · 읽을 수 없는 ${result.skipped.toLocaleString()}장은 건너뛰었습니다` : '')
+              (result.skipped ? ` · 원본을 읽을 수 없던 ${result.skipped.toLocaleString()}장은 썸네일과 생성 정보만 옮겼습니다` : '')
           )
           await useHistory.getState().init()
         }

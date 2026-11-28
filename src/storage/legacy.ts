@@ -1,5 +1,5 @@
 import { done, openIdb, txDone, type HistoryMeta } from '../lib/db'
-import { chunk, marks } from './driver'
+import { chunk, marks, type SqlStatement } from './driver'
 import { dataUrlMime } from './files'
 import { insertStatements, originalPath, thumbPathFor } from './history-repo'
 import type { Storage } from './index'
@@ -13,9 +13,10 @@ import type { Storage } from './index'
  * - 파일을 먼저 쓰고(임시 파일 → 이름 바꾸기) 크기를 확인한 뒤에 행을 넣는다. 행만 있고 파일이 없는 상태는 생기지 않는다.
  * - 시작 전에 남은 공간을 확인하고, 옮기는 중에도 공간이 떨어지면 멈춘다 (옛 데이터는 그대로).
  * - 한 장이 실패해도 그 묶음에서 다 옮긴 장의 행은 남긴다 (행 없는 원본 파일이 생기지 않게).
- * - 읽히지 않는 장은 건너뛰고 나머지를 옮긴다. 그런 장이 있으면 실패로 알리고 옛 데이터는 비우지 않는다.
+ * - 원본이 읽히지 않는 장은 건너뛰고 나머지를 옮긴다. 그런 장이 있으면 실패로 알리고 옛 데이터는 비우지 않는다.
  *   읽히는 장을 모두 옮기고 검증까지 맞았는데 읽히지 않는 장만 남았으면 그 id를 알린다(unreadable).
- *   사용자가 그 장을 두고 가기로 확인한 뒤에만(skipUnreadable) 읽히는 장을 정상 경로와 똑같이 다시 검증하고 비운다.
+ *   사용자가 그 원본 없이 마치기로 확인한 뒤에만(skipUnreadable) 읽히는 장을 정상 경로와 똑같이 다시 검증하고,
+ *   그 장은 원본 없는 장(missing)처럼 기록(썸네일·프롬프트·시드·설정)만 옮겨 확인한 뒤에 비운다.
  *   확인한 적 없는 장이 읽히지 않거나 검증이 틀리면 비우지 않는다.
  * - 옮긴 뒤 지운 장은 forgetLegacy로 옛 데이터에서도 지운다 (다음 옮기기에서 되살아나지 않게).
  */
@@ -76,7 +77,7 @@ export type MigrationResult =
       count: number
       bytes: number
       missing: number
-      /** 사용자가 확인하고 두고 간, 읽을 수 없던 장수 */
+      /** 원본을 읽을 수 없어 사용자가 확인하고 기록만 옮긴 장수 (missing·count 에도 든다) */
       skipped?: number
     }
   | { status: 'nospace'; need: number; free: number; done: number; total: number }
@@ -87,7 +88,7 @@ export type MigrationResult =
       total: number
       /**
        * 실패 이유가 "읽을 수 없는 장"뿐일 때 그 id (오름차순) — 읽히는 장은 모두 옮겼고 검증도 맞았다.
-       * 이때만 사용자에게 그 장을 두고 마칠지 묻는다 (migrateLegacy 의 skipUnreadable)
+       * 이때만 사용자에게 그 장을 원본 없이 옮기고 마칠지 묻는다 (migrateLegacy 의 skipUnreadable)
        */
       unreadable?: number[]
     }
@@ -105,8 +106,8 @@ export async function migrateLegacy(opts: {
   freeSpace: () => Promise<number | null>
   onProgress?: (p: MigrationProgress) => void
   /**
-   * 사용자가 두고 가기로 확인한, 읽을 수 없는 장 (지난 실패의 unreadable). 이번에도 읽히지 않는 장이 모두 여기 있을 때만
-   * 그 장을 빼고 검증한 뒤 옛 데이터를 비운다. 그 사이 읽히게 된 장은 그대로 옮긴다
+   * 사용자가 원본 없이 옮기기로 확인한, 원본을 읽을 수 없는 장 (지난 실패의 unreadable). 이번에도 읽히지 않는 장이 모두
+   * 여기 있을 때만 그 장을 원본 없는 기록으로 옮기고 검증한 뒤 옛 데이터를 비운다. 그 사이 읽히게 된 장은 그대로 옮긴다
    */
   skipUnreadable?: readonly number[]
 }): Promise<MigrationResult> {
@@ -155,8 +156,10 @@ export async function migrateLegacy(opts: {
 
   // ── 옮기기
   const want = new Set(todo)
-  /** 두 번 읽어도 읽히지 않은 장 — 건너뛰고 나머지를 옮긴다. 하나라도 있으면 옛 데이터를 비우지 않는다 */
+  /** 두 번 읽어도 원본이 읽히지 않은 장 — 건너뛰고 나머지를 옮긴다. 하나라도 있으면 옛 데이터를 비우지 않는다 */
   const unreadable: number[] = []
+  /** 그 장의 기록 — 사용자가 확인하면 원본 없이 옮긴다 */
+  const unreadableMetas = new Map<number, HistoryMeta>()
   let unreadableError = ''
   const readBlob = async (id: number): Promise<ArrayBuffer | null | undefined> => {
     try {
@@ -170,6 +173,30 @@ export async function migrateLegacy(opts: {
       }
     }
   }
+  /**
+   * 한 장을 옮길 문장 — 원본(buf)이 있으면 파일을 먼저 쓰고 크기를 확인한다. buf 가 null 이면 원본 없는 기록.
+   * 썸네일은 쓸 수 있을 때만 (못 쓰면 원본이 있는 장은 화면이 원본에서 다시 만든다)
+   */
+  const copyOne = async (meta: HistoryMeta, buf: ArrayBuffer | null): Promise<{ statements: SqlStatement[]; size: number }> => {
+    let file: string | null = null
+    let size = 0
+    if (buf) {
+      file = originalPath(meta.id, meta.mime)
+      size = await files.write(file, new Blob([buf], { type: meta.mime }))
+      if (size !== buf.byteLength) throw new Error(`${meta.id}: 원본 크기가 맞지 않습니다 (${size}/${buf.byteLength})`)
+    }
+    let thumb: string | null = null
+    if (typeof meta.thumb === 'string' && meta.thumb.startsWith('data:')) {
+      const path = thumbPathFor(meta.id, dataUrlMime(meta.thumb) ?? 'image/jpeg')
+      thumb = await files.write(path, meta.thumb).then(
+        () => path,
+        () => null
+      )
+    }
+    // 예전 판에서는 저장 기록이 없으면 미저장으로 표시했다 (v3 인덱스와 같은 규칙)
+    const normalized: HistoryMeta = { ...meta, ...(meta.saved || meta.unsaved ? {} : { unsaved: 1 }) }
+    return { statements: insertStatements(normalized, file, size, thumb), size }
+  }
   let after: number | null = null
   let sinceCheck = 0
   try {
@@ -179,7 +206,7 @@ export async function migrateLegacy(opts: {
       after = metas[metas.length - 1].id
       const batch = metas.filter((m) => want.has(m.id))
       if (!batch.length) continue
-      const statements: { sql: string; params?: (string | number | null)[] }[] = []
+      const statements: SqlStatement[] = []
       let next = 0
       let failure = null as Error | null
       const lane = async (): Promise<void> => {
@@ -190,28 +217,13 @@ export async function migrateLegacy(opts: {
             const buf = await readBlob(meta.id)
             if (buf === undefined) {
               unreadable.push(meta.id)
+              unreadableMetas.set(meta.id, meta)
               continue
             }
-            let file: string | null = null
-            let size = 0
-            if (buf) {
-              file = originalPath(meta.id, meta.mime)
-              size = await files.write(file, new Blob([buf], { type: meta.mime }))
-              if (size !== buf.byteLength) throw new Error(`${meta.id}: 원본 크기가 맞지 않습니다 (${size}/${buf.byteLength})`)
-            }
-            let thumb: string | null = null
-            if (typeof meta.thumb === 'string' && meta.thumb.startsWith('data:')) {
-              const path = thumbPathFor(meta.id, dataUrlMime(meta.thumb) ?? 'image/jpeg')
-              thumb = await files.write(path, meta.thumb).then(
-                () => path,
-                () => null
-              )
-            }
-            // 예전 판에서는 저장 기록이 없으면 미저장으로 표시했다 (v3 인덱스와 같은 규칙)
-            const normalized: HistoryMeta = { ...meta, ...(meta.saved || meta.unsaved ? {} : { unsaved: 1 }) }
-            statements.push(...insertStatements(normalized, file, size, thumb))
+            const one = await copyOne(meta, buf)
+            statements.push(...one.statements)
             if (!buf) missing++
-            bytes += size
+            bytes += one.size
             doneCount++
             sinceCheck++
           } catch (e) {
@@ -273,10 +285,27 @@ export async function migrateLegacy(opts: {
     }
   }
 
-  // ── 다 맞으면 기록을 남기고 나서 옛 데이터를 비운다 (kv는 그대로).
-  // 읽을 수 없는 장이 남았다면 여기까지 오는 것은 사용자가 그 장을 두고 가기로 확인한 때뿐이다
-  report('clean')
+  // ── 원본을 읽을 수 없는 장 — 여기까지 오는 것은 사용자가 그 원본 없이 마치기로 확인한 때뿐이다.
+  // 원본 없는 장(missing)처럼 기록(썸네일·프롬프트·시드·설정)은 옮기고, 들어간 것을 확인한 뒤에만 비운다
   const skipped = unreadable.length
+  if (skipped) {
+    const statements: SqlStatement[] = []
+    for (const id of unreadable) statements.push(...(await copyOne(unreadableMetas.get(id)!, null)).statements)
+    await driver.batch(statements)
+    let kept = 0
+    for (const part of chunk(unreadable)) {
+      const [row] = await driver.query<{ n: number }>(`SELECT COUNT(*) AS n FROM images WHERE id IN (${marks(part.length)})`, part)
+      kept += Number(row?.n ?? 0)
+    }
+    if (kept !== skipped) {
+      return { status: 'failed', error: `검증 실패 — 원본 없이 옮긴 ${skipped}장 중 ${skipped - kept}장의 기록이 없습니다`, done: verified, total }
+    }
+    verified += kept
+    missing += kept
+  }
+
+  // ── 다 맞으면 기록을 남기고 나서 옛 데이터를 비운다 (kv는 그대로)
+  report('clean')
   await driver.exec('INSERT OR REPLACE INTO app_kv (key, value) VALUES (?, ?)', [
     MIGRATION_KEY,
     JSON.stringify({ count: verified, bytes, missing, ...(skipped ? { skipped } : {}), at: Date.now() })
