@@ -4,7 +4,7 @@
  * 에셋 프로젝트 섹션, 예전 형식 캐릭터 백업, 토큰이 백업 어디에도 없는지, 자동 백업, 대기열 제외.
  */
 import 'fake-indexeddb/auto'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // 스토어들이 localStorage 를 쓴다 (node 에는 없다) — 가져오기 전에 메모리 것을 둔다
 vi.hoisted(() => {
@@ -41,10 +41,11 @@ import {
 import { applyRestorePlan, collectStoreData, normalizeBackupData, normalizeCharactersSection } from '../src/backup/stores'
 import { fromUtf8, utf8 } from '../src/backup/bytes'
 import { sha256Hex } from '../src/backup/hash'
-import type { HistoryMeta } from '../src/lib/db'
+import { openIdb, type HistoryMeta } from '../src/lib/db'
 import { useProjects } from '../src/project/store'
 import { memoryFileStore } from '../src/storage/files'
 import { createHistoryRepo } from '../src/storage/history-repo'
+import { idbLegacySource, migrateLegacy } from '../src/storage/legacy'
 import { migrate } from '../src/storage/schema'
 import { createSqlJsDriver } from '../src/storage/sqljs'
 import { useCharacters } from '../src/stores/characters'
@@ -255,6 +256,59 @@ describe('history ports on the Phase 3 storage', () => {
     // 원본이 없는 기록은 원본 없이 (썸네일은 백업 것)
     expect((await dst.repo.row(H + 2))!.file).toBeNull()
     expect(dst.files.files.has(`thumbs/${H + 2}.jpg`)).toBe(true)
+  })
+
+  /** 예전 IndexedDB 히스토리(옮기기가 끝나기 전)에 기록과 원본을 넣는다 */
+  async function seedOldHistory(metas: HistoryMeta[]): Promise<void> {
+    const db = await openIdb()
+    const tx = db.transaction(['meta', 'blobs', 'text'], 'readwrite')
+    for (const m of metas) {
+      tx.objectStore('meta').put(m)
+      tx.objectStore('blobs').put(png(200, m.id % 7).buffer, m.id)
+      tx.objectStore('text').put(m.prompt, m.id)
+    }
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+  }
+
+  it('forgets images a replace restore removed from the unfinished old history too, so the next move does not bring them back', async () => {
+    const bytes = await fullBackup(await seeded())
+    const dst = await fresh()
+    // 예전 히스토리 옮기기를 "나중에"로 미룬 상태: H+98·H+99 는 옮겨졌고, H+97 은 아직 옮기지 않았다
+    await seedOldHistory([meta(H + 97), meta(H + 98), meta(H + 99)])
+    try {
+      await dst.repo.add(meta(H + 98), new Blob([png(200, (H + 98) % 7) as BlobPart]))
+      await dst.repo.add(meta(H + 99), new Blob([png(200, (H + 99) % 7) as BlobPart]))
+      const r = await restoreHistorySafely(await openNaipBackup(bytesSource(bytes)), historyImportPort(dst), { mode: 'replace', originals: true })
+      expect(r).toMatchObject({ added: 5, failed: 0, removed: 2, removedIds: [H + 98, H + 99] })
+      // 바꾸기로 지운 장만 예전 저장소에서도 지운다 — 아직 옮기지 않은 H+97 은 확인 없이 지우지 않는다
+      expect(await idbLegacySource().ids()).toEqual([H + 97])
+      // 다음 실행의 옮기기는 지운 그림을 되살리지 않고, 남은 장만 옮긴다
+      const moved = await migrateLegacy({ storage: dst, source: idbLegacySource(), freeSpace: async () => 1e12 })
+      expect(moved).toMatchObject({ status: 'done', count: 1 })
+      expect(await dst.repo.get(H + 98)).toBeNull()
+      expect(await dst.repo.get(H + 99)).toBeNull()
+      expect(await dst.repo.get(H + 97)).not.toBeNull()
+      expect(await dst.repo.count({})).toBe(6)
+    } finally {
+      await idbLegacySource().clear()
+    }
+  })
+
+  it('a plain replace restore (port.clear) forgets only the moved images in the old history too', async () => {
+    const bytes = await fullBackup(await seeded())
+    const dst = await fresh()
+    await seedOldHistory([meta(H + 97), meta(H + 99)])
+    try {
+      await dst.repo.add(meta(H + 99), new Blob([png(200, (H + 99) % 7) as BlobPart]))
+      const r = await restoreHistory(await openNaipBackup(bytesSource(bytes)), historyImportPort(dst), { mode: 'replace', originals: true })
+      expect(r).toMatchObject({ added: 5, failed: 0 })
+      expect(await idbLegacySource().ids()).toEqual([H + 97])
+    } finally {
+      await idbLegacySource().clear()
+    }
   })
 
   it('rejects malformed records without stopping the rest', async () => {
@@ -564,6 +618,114 @@ describe('asset projects section', () => {
     expect(s.projects[0].items.k).toMatchObject({ queued: 0, generating: 0 })
     expect(s.activeId).toBeNull()
     expect(typeof s.create).toBe('function')
+  })
+})
+
+describe('sections whose lists are missing or not lists', () => {
+  /** 조작된 섹션들 — 목록이어야 할 키가 없거나(덮어쓰기에서 undefined 로 들어가던 것) 목록·맵이 아니다 */
+  function crafted(): BackupData {
+    return {
+      presets: {},
+      vibes: { vibes: 'x' },
+      charRefs: { charRefs: null },
+      characters: { folders: [], characters: 'x' },
+      fragments: { folders: 'x', fragments: [] },
+      masks: { masks: 5 },
+      tagUsage: { entries: [] },
+      saveFolders: { saveFolders: 'NAIP' },
+      settings: { autoSave: false, nameCounters: [] },
+      prompt: { base: 'crafted', presets: 'x' },
+      projects: { projects: 'x' },
+      // 온전한 섹션은 그대로 복원된다
+      scenes: { folders: [], scenes: [{ id: 77, name: 'kept scene', folderId: null, prompt: '', negative: '', size: null, cast: [], reserve: 0 }] }
+    } as unknown as BackupData
+  }
+
+  async function stores() {
+    const [{ usePrompt }, { useRefs }, { useScenes }, { useFragments }, { useMasks }, { useTagUsage }] = await Promise.all([
+      import('../src/stores/prompt'),
+      import('../src/stores/refs'),
+      import('../src/stores/scenes'),
+      import('../src/stores/fragments'),
+      import('../src/stores/masks'),
+      import('../src/stores/tagUsage')
+    ])
+    return { usePrompt, useRefs, useScenes, useFragments, useMasks, useTagUsage }
+  }
+
+  // 이 묶음이 바꾼 스토어는 끝나면 되돌린다 (뒤 시험이 처음 상태를 본다)
+  let saved: [{ getState: () => unknown; setState: (s: never, replace: true) => void }, unknown][] = []
+  beforeEach(async () => {
+    const s = await stores()
+    saved = [s.usePrompt, s.useRefs, s.useScenes, s.useFragments, s.useMasks, s.useTagUsage, useSettings, useCharacters, useProjects].map((st) => [
+      st as never,
+      st.getState()
+    ])
+  })
+  afterEach(() => {
+    for (const [st, state] of saved) st.setState(state as never, true)
+  })
+
+  async function seedStores(): Promise<void> {
+    const s = await stores()
+    s.usePrompt.setState({ base: 'mine', presets: [{ id: 1, name: 'P', base: 'b', detail: '', negative: '', params: {} as never }] })
+    s.useRefs.setState({ vibes: [{ id: 2, name: 'V' }] as never, charRefs: [{ id: 3, name: 'R' }] as never })
+    s.useFragments.setState({ folders: [{ id: 4, name: 'F' }], fragments: [] })
+    s.useMasks.setState({ masks: [{ id: 5, name: 'M', width: 8, height: 8, data: '', ts: 1 }] })
+    s.useTagUsage.setState({ entries: { a: { hit: { tag: 'a' }, n: 1, last: 1 } } as never })
+    useSettings.setState({ autoSave: true, saveFolders: ['Mine'], nameCounters: { x: 1 } })
+    useCharacters.setState({ folders: [], characters: [{ id: 6, name: 'C', folderId: null, base: '', additional: '', detail: '', negative: '', variations: [] }] as never })
+    useProjects.setState({ projects: [] })
+  }
+
+  async function expectUntouched(): Promise<void> {
+    const s = await stores()
+    expect(s.usePrompt.getState().presets.map((p) => p.name)).toEqual(['P'])
+    expect(s.usePrompt.getState().base).toBe('mine')
+    expect(s.useRefs.getState().vibes.map((v) => v.name)).toEqual(['V'])
+    expect(s.useRefs.getState().charRefs.map((v) => v.name)).toEqual(['R'])
+    expect(s.useFragments.getState().folders.map((f) => f.name)).toEqual(['F'])
+    expect(s.useMasks.getState().masks.map((m) => m.name)).toEqual(['M'])
+    expect(Object.keys(s.useTagUsage.getState().entries)).toEqual(['a'])
+    expect(useSettings.getState()).toMatchObject({ autoSave: true, saveFolders: ['Mine'], nameCounters: { x: 1 } })
+    expect(useCharacters.getState().characters.map((c) => c.name)).toEqual(['C'])
+    expect(useProjects.getState().projects).toEqual([])
+    expect(s.useScenes.getState().scenes.map((x) => x.name)).toEqual(['kept scene'])
+  }
+
+  const INVALID = ['settings', 'saveFolders', 'tagUsage', 'presets', 'prompt', 'characters', 'fragments', 'vibes', 'charRefs', 'masks', 'projects']
+
+  it('applyRestorePlan skips them on overwrite with a reason instead of wiping the store or setting undefined', async () => {
+    await seedStores()
+    const r = applyRestorePlan(planRestore({}, crafted(), { mode: 'overwrite' }))
+    expect(r.applied).toEqual(['scenes'])
+    expect(r.invalid.map((x) => x.section).sort()).toEqual([...INVALID].sort())
+    expect(r.invalid.find((x) => x.section === 'presets')!.detail).toContain('프롬프트 프리셋')
+    await expectUntouched()
+  })
+
+  it('a restore from a crafted .naipbackup reports them as damaged, leaves them out of the preview and keeps the stores', async () => {
+    const { setStorageForTests } = await import('../src/storage')
+    const app = await import('../src/backup/app')
+    await setStorageForTests(await createSqlJsDriver(), memoryFileStore())
+    const sink = memorySink()
+    await writeNaipBackup(crafted(), sink, { mode: 'light', appVersion: '0.12.0' })
+    const src = await app.openRestoreSource({ name: 'crafted.naipbackup', source: bytesSource(sink.bytes()) })
+    expect([...src.damaged].sort()).toEqual([...INVALID].sort())
+    expect(src.problems.map((p) => p.path)).toContain('sections/presets.json')
+    expect(src.data.presets).toBeUndefined()
+    expect((await app.previewFor(src)).map((p) => p.section)).toEqual(['scenes'])
+
+    for (const mode of ['overwrite', 'merge'] as const) {
+      await seedStores()
+      const plan = await app.planFor(src, { mode, sections: {}, history: 'skip', originals: false })
+      expect(Object.keys(plan.sections)).toEqual(['scenes'])
+      const summary = await app.applyRestore(src, plan, { safety: false })
+      expect(summary.applied.map((a) => a.section)).toEqual(['scenes'])
+      expect(summary.skipped).toContainEqual(expect.objectContaining({ section: 'vibes' }))
+      expect(summary.problems.some((p) => p.path === 'sections/vibes.json')).toBe(true)
+      await expectUntouched()
+    }
   })
 })
 

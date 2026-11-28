@@ -9,6 +9,7 @@ import { useGeneration } from '../stores/generation'
 import { useHistory } from '../stores/history'
 import { useStorageBoot } from '../stores/storage'
 import { toast } from '../stores/toast'
+import { SkipUnreadableButton } from './StorageScreens'
 import { Button, Row } from './ui'
 
 /** 그림 하나에서 히스토리 기록에 필요한 것 (기록 없는 원본 되살리기용) */
@@ -42,7 +43,7 @@ export function StorageGroup(): ReactNode {
   const [busy, setBusy] = useState<string | null>(null)
   const running = useGeneration((g) => g.running)
   const total = useHistory((h) => h.total)
-  const { legacyLeft, migrate, phase } = useStorageBoot()
+  const { legacyLeft, migrate, phase, result } = useStorageBoot()
 
   const refresh = async (): Promise<void> => {
     const [i, s] = await Promise.all([
@@ -204,11 +205,22 @@ export function StorageGroup(): ReactNode {
         </div>
       )}
       {legacyLeft > 0 && phase === 'ready' && (
-        <Row label="이전 히스토리 옮기기" hint={`아직 옮기지 못한 예전 히스토리 ${legacyLeft.toLocaleString()}장이 있습니다`}>
-          <Button variant="primary" disabled={running} onClick={() => void migrate()}>
-            옮기기
-          </Button>
-        </Row>
+        <>
+          <Row label="이전 히스토리 옮기기" hint={`아직 옮기지 못한 예전 히스토리 ${legacyLeft.toLocaleString()}장이 있습니다`}>
+            <Button variant="primary" disabled={running} onClick={() => void migrate()}>
+              옮기기
+            </Button>
+          </Row>
+          {result?.status === 'failed' && !!result.unreadable?.length && (
+            <div className="mb-2 rounded-lg border border-line bg-field p-2.5 text-xs leading-relaxed">
+              <p>
+                {`읽을 수 없는 ${result.unreadable.length.toLocaleString()}장 때문에 옮기기를 마치지 못했습니다. ` +
+                  `나머지 ${result.done.toLocaleString()}장은 옮기고 확인했습니다. 다시 옮겨도 읽히지 않으면 그 장만 두고 마칠 수 있습니다.`}
+              </p>
+              <SkipUnreadableButton className="mt-2 w-full" disabled={running} />
+            </div>
+          )}
+        </>
       )}
     </>
   )

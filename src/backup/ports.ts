@@ -8,11 +8,14 @@
  * - 넣을 때 썸네일이 없으면 원본으로 새로 만든다(makeThumb). 원본 없이 기록만 넣으면 같은 id 의
  *   지금 원본 파일을 계속 가리킨다 (기록만 바꾸고 그림은 지우지 않는다).
  * - "바꾸기" 복원은 restoreHistorySafely 로: 지금 기록을 먼저 지우지 않는다.
+ * - 지운 기록은 이전 히스토리 옮기기가 끝나기 전이면 예전 저장소에서도 지운다 (forgetLegacy — 히스토리 화면에서
+ *   지울 때와 같게). 그러지 않으면 다음 실행의 옮기기가 지운 그림을 되살린다. 아직 옮기지 않은 장은 건드리지 않는다.
  */
 import type { HistoryMeta } from '../lib/db'
 import { chunk, marks, type SqlDriver } from '../storage/driver'
 import { dataUrlMime, type FileStore } from '../storage/files'
 import { createHistoryRepo, insertStatements, originalPath, rowToMeta, thumbPathFor, type ImageRow } from '../storage/history-repo'
+import { forgetLegacy, legacyPending } from '../storage/legacy'
 import { sniffImage, toBase64 } from './bytes'
 import { HISTORY_PAGE_RE } from './format'
 import type { HistoryExportPort, HistoryImportPort, HistoryRecord, HistoryRestoreResult } from './history'
@@ -93,7 +96,7 @@ export interface HistoryImportOptions {
 export interface AppHistoryImportPort extends HistoryImportPort {
   /** 지금 있는 모든 기록 id */
   allIds(): Promise<number[]>
-  /** 기록과 그 원본·썸네일 파일을 지운다 */
+  /** 기록과 그 원본·썸네일 파일을 지운다 (이전 히스토리 옮기기가 끝나기 전이면 예전 저장소에서도) */
   remove(ids: number[]): Promise<void>
 }
 
@@ -136,7 +139,10 @@ export function historyImportPort(s: HistoryStore, opts: HistoryImportOptions = 
       return found
     },
     async clear() {
+      // 옮기기가 끝나기 전이면 지금 히스토리에 있는(옮겨진) 장만 예전 저장소에서도 지운다. 아직 옮기지 않은 장은 남긴다
+      const moved = (await legacyPending()) ? await repo.ids({}) : []
       await repo.clear()
+      if (moved.length) await forgetLegacy(moved).catch((e: unknown) => console.warn('이전 히스토리에서 지우지 못했습니다', e))
     },
     async put(record, original) {
       const meta = recordToMeta(record, original)
@@ -168,7 +174,10 @@ export function historyImportPort(s: HistoryStore, opts: HistoryImportOptions = 
       return rows.map((r) => Number(r.id))
     },
     async remove(ids) {
-      if (ids.length) await repo.remove(ids)
+      if (!ids.length) return
+      await repo.remove(ids)
+      // 다음 옮기기에서 되살아나지 않게 — 지운 장만 (useHistory.remove 와 같게)
+      await forgetLegacy(ids).catch((e: unknown) => console.warn('이전 히스토리에서 지우지 못했습니다', e))
     }
   }
 }

@@ -20,8 +20,13 @@ interface StorageBootState {
   resume: ResumeEntry[] | null
   /** 앱을 열 때 한 번: 저장소를 열고, 예전 히스토리가 있으면 옮기고, 히스토리·대기열을 불러온다 */
   boot: () => Promise<void>
-  /** 예전 히스토리 옮기기 (다시 시도) */
-  migrate: () => Promise<void>
+  /** 예전 히스토리 옮기기 (다시 시도). skipUnreadable = 사용자가 두고 가기로 확인한 읽을 수 없는 장 */
+  migrate: (opts?: { skipUnreadable?: readonly number[] }) => Promise<void>
+  /**
+   * 실패 이유가 읽을 수 없는 장뿐일 때(result.unreadable), 사용자가 확인한 뒤에만 부른다:
+   * 그 장은 두고, 읽히는 장을 다시 검증해 맞으면 예전 히스토리를 비운다. 맞지 않으면 그대로 둔다
+   */
+  finishSkipping: () => Promise<void>
   /** 옮기기를 미루고 앱을 쓴다 (예전 데이터는 그대로 남는다) */
   later: () => void
   closeResume: () => void
@@ -59,7 +64,7 @@ export const useStorageBoot = create<StorageBootState>()((set, get) => ({
     })
     if (entries.length) set({ resume: entries })
   },
-  migrate: async () => {
+  migrate: async (opts) => {
     set({ phase: 'migrating', progress: null, result: null, error: null })
     setKeepAwake(true)
     let last = 0
@@ -69,6 +74,7 @@ export const useStorageBoot = create<StorageBootState>()((set, get) => ({
         storage,
         source: idbLegacySource(),
         freeSpace: () => freeSpace(true),
+        skipUnreadable: opts?.skipUnreadable,
         onProgress: (progress) => {
           // 너무 자주 그리지 않는다
           const now = performance.now()
@@ -81,7 +87,10 @@ export const useStorageBoot = create<StorageBootState>()((set, get) => ({
       if (result.status === 'done' || result.status === 'none') {
         set({ phase: 'ready', result, legacyLeft: 0 })
         if (result.status === 'done') {
-          toast(`이전 히스토리 ${result.count.toLocaleString()}장을 새 저장소로 옮겼습니다`)
+          toast(
+            `이전 히스토리 ${result.count.toLocaleString()}장을 새 저장소로 옮겼습니다` +
+              (result.skipped ? ` · 읽을 수 없는 ${result.skipped.toLocaleString()}장은 건너뛰었습니다` : '')
+          )
           await useHistory.getState().init()
         }
       } else {
@@ -94,6 +103,12 @@ export const useStorageBoot = create<StorageBootState>()((set, get) => ({
     } finally {
       setKeepAwake(false)
     }
+  },
+  finishSkipping: async () => {
+    const r = get().result
+    // 확인한 장만 넘긴다 — 다른 이유의 실패에서는 아무것도 하지 않는다
+    if (r?.status !== 'failed' || !r.unreadable?.length) return
+    await get().migrate({ skipUnreadable: r.unreadable })
   },
   later: () => {
     const r = get().result
