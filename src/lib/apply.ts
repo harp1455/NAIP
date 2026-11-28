@@ -4,7 +4,7 @@ import { MODELS, NOISE_SCHEDULES, SAMPLERS } from '../nai/constants'
 import { fitNaiGenerationResolution } from '../nai/resolution'
 import { composeCaption, joinPromptParts } from '../nai/cast'
 import { useCharacters } from '../stores/characters'
-import { usePrompt, type Params } from '../stores/prompt'
+import { hasUnsavedPrompt, rememberForUndo, sameParams, snapshotOf, usePrompt, type Params } from '../stores/prompt'
 import { useRefs } from '../stores/refs'
 
 const IMPORT_FOLDER = '가져온 캐릭터'
@@ -125,6 +125,8 @@ function applyCast(chars: Importable['chars']): void {
 /**
  * 고른 항목만 현재 설정에 적용한다 (고르지 않은 항목은 지금 값 유지).
  * presetName을 주면 적용한 결과를 새 프롬프트 프리셋으로 저장하고 그 프리셋을 선택한다.
+ * 프리셋에 저장하지 않은 프롬프트(또는 가변)를 바꿨으면 바뀌기 전 것을 되돌리기용으로 잡아 두고 undoable로 알린다
+ * (프롬프트·네거티브·생성 설정·시드·고른 프리셋만 — 캐릭터·바이브는 되돌리지 않는다).
  */
 export function applyImport(
   data: Importable,
@@ -132,8 +134,10 @@ export function applyImport(
   presetName: string | null,
   /** 바이브의 인코딩 모델을 이미지에서 알 수 없을 때 사용자가 고른 모델 */
   chosenVibeModel?: string
-): void {
+): { undoable: boolean } {
   const p = usePrompt.getState()
+  const before = snapshotOf(p, true)
+  const unsaved = hasUnsavedPrompt(p) || p.additional.trim() !== ''
   if (parts.has('prompt')) p.set({ base: data.base, additional: data.additional, detail: data.detail })
   if (parts.has('negative')) p.set({ negative: data.negative })
   if (parts.has('seed') && data.seed !== undefined) p.set({ seed: String(data.seed) })
@@ -152,4 +156,15 @@ export function applyImport(
     useRefs.getState().restoreVibes(data.vibes, vibeModel)
   }
   if (presetName !== null) usePrompt.getState().savePreset(presetName)
+  const after = snapshotOf(usePrompt.getState(), true)
+  const replaced =
+    before.base !== after.base ||
+    before.additional !== after.additional ||
+    before.detail !== after.detail ||
+    before.negative !== after.negative ||
+    !sameParams(before.params, after.params) ||
+    before.activePresetId !== after.activePresetId
+  const undoable = unsaved && replaced
+  if (undoable) rememberForUndo(before)
+  return { undoable }
 }
