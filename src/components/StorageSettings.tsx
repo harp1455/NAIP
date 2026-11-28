@@ -224,8 +224,8 @@ export function StorageGroup(): ReactNode {
           {result?.status === 'failed' && !!result.unreadable?.length && (
             <div className="mb-2 rounded-lg border border-line bg-field p-2.5 text-xs leading-relaxed">
               <p>
-                {`읽을 수 없는 ${result.unreadable.length.toLocaleString()}장 때문에 옮기기를 마치지 못했습니다. ` +
-                  `나머지 ${result.done.toLocaleString()}장은 옮기고 확인했습니다. 다시 옮겨도 읽히지 않으면 그 장만 두고 마칠 수 있습니다.`}
+                {`원본을 읽을 수 없는 ${result.unreadable.length.toLocaleString()}장 때문에 옮기기를 마치지 못했습니다. ` +
+                  `나머지 ${result.done.toLocaleString()}장은 옮기고 확인했습니다. 다시 옮겨도 읽히지 않으면 그 장은 원본 없이(썸네일과 생성 정보만) 옮기고 마칠 수 있습니다.`}
               </p>
               <SkipUnreadableButton className="mt-2 w-full" disabled={running} />
             </div>
