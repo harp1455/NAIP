@@ -10,7 +10,7 @@ NAIP가 무엇을 어디에 저장하는지, 버전을 올리거나 내릴 때·
 | 히스토리 원본·썸네일 | 앱 전용 `files/images/<id>.png·webp`, `files/thumbs/<id>.jpg` | 앱을 지우면 함께 지워집니다 |
 | 대기열(이어서 생성용) | 앱 전용 `files/queue/<배치>.json` + DB의 진행 행·뽑기 상태(`app_kv`의 `queue-draw:<배치>`) | 끝난 배치는 지웁니다 |
 | 복원 전 자동 백업 | 앱 전용 `files/backups/` | 최근 3개만 둡니다 |
-| 프롬프트·프리셋·캐릭터·씬·조각·설정·프로젝트 | 웹뷰 localStorage (`naip-*`) | |
+| 프롬프트·프리셋·캐릭터·씬·조각·설정·프로젝트 | 웹뷰 localStorage (`naip-*`) | 접어 둔 칸(`naip-sections`)은 이 기기 화면 설정이라 백업에 넣지 않습니다 |
 | 바이브·레퍼런스·마스크 | 웹뷰 IndexedDB `kv` | |
 | NovelAI·GitHub 토큰 | Android Keystore(AES-256-GCM, 토큰마다 따로 만든 키)로 암호화한 앱 전용 설정 | 0.13.0부터. 백업에도 기기 간 전송에도 넣지 않습니다(키가 기기를 떠나지 않아 새 기기에서는 토큰을 다시 넣습니다) |
 | 갤러리에 저장한 그림 | `Pictures/NAIP/…` (MediaStore) | 앱을 지워도 남습니다 |
