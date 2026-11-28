@@ -1,25 +1,34 @@
 import { create } from 'zustand'
 
+/** 알림 옆에 붙는 버튼 하나 (예: 되돌리기) */
+export interface ToastAction {
+  label: string
+  run: () => void
+}
+
 /** 화면 아래에 잠깐 뜨는 알림 한 줄 (복사·공유 결과 등) */
 interface ToastState {
   text: string | null
   error: boolean
+  /** 버튼이 있으면 누를 틈을 주려고 조금 더 오래 띄운다 */
+  action: ToastAction | null
   /** 같은 문구가 이어서 떠도 다시 보이도록 매번 바뀌는 값 */
   seq: number
-  show: (text: string, error?: boolean) => void
+  show: (text: string, error?: boolean, action?: ToastAction) => void
   hide: () => void
 }
 
 export const useToast = create<ToastState>()((set) => ({
   text: null,
   error: false,
+  action: null,
   seq: 0,
-  show: (text, error = false) => set((s) => ({ text, error, seq: s.seq + 1 })),
-  hide: () => set({ text: null })
+  show: (text, error = false, action) => set((s) => ({ text, error, action: action ?? null, seq: s.seq + 1 })),
+  hide: () => set({ text: null, action: null })
 }))
 
-export function toast(text: string, error = false): void {
-  useToast.getState().show(text, error)
+export function toast(text: string, error = false, action?: ToastAction): void {
+  useToast.getState().show(text, error, action)
 }
 
 const unloaded = new Set<string>()

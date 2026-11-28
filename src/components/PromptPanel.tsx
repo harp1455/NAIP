@@ -13,7 +13,7 @@ import { useCharacters } from '../stores/characters'
 import { useDirector } from '../stores/director'
 import { useFragments } from '../stores/fragments'
 import { useImporter } from '../stores/importer'
-import { mergePromptParts, usePrompt } from '../stores/prompt'
+import { hasUnsavedPrompt, mergePromptParts, usePrompt } from '../stores/prompt'
 import { useRefs } from '../stores/refs'
 import { useSource } from '../stores/source'
 import { ResolutionSelect } from './ResolutionSelect'
@@ -101,6 +101,7 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
   const negCount = useTokenCount(p.params.model, [mergedUc, ...activeChars.map((c) => c.negative)])
 
   const preset = p.presets.find((x) => x.id === p.activePresetId)
+  const edited = !!preset && hasUnsavedPrompt(p)
   return (
     <div className="flex flex-col gap-1 p-3">
       <button
@@ -108,8 +109,9 @@ export function PromptPanel(props: { open: (s: SheetName) => void }): ReactNode 
         onClick={() => props.open('presets')}
         className="flex h-11 items-center gap-2 rounded-lg border border-line bg-field px-3 text-left"
       >
-        <span className="min-w-0 flex-1 truncate font-semibold">{preset?.name ?? '프리셋 없음'}</span>
-        <span className="shrink-0 text-xs text-dim">프롬프트 프리셋</span>
+        <span className="min-w-0 truncate font-semibold">{preset?.name ?? '프리셋 없음'}</span>
+        {edited && <span className="shrink-0 text-[11px] text-accent">수정됨</span>}
+        <span className="ml-auto shrink-0 text-xs text-dim">프롬프트 프리셋</span>
         <ChevronDown size={16} className="shrink-0 text-dim" />
       </button>
 

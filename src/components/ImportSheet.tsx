@@ -4,6 +4,8 @@ import { MODELS, SAMPLERS, UC_PRESET_OPTIONS } from '../nai/constants'
 import { applyImport, availableParts, type ImportPart } from '../lib/apply'
 import { cx } from '../lib/util'
 import { useImporter } from '../stores/importer'
+import { hasUnsavedPrompt, usePrompt } from '../stores/prompt'
+import { toastPromptReplaced } from './PresetSwitchDialog'
 import { Button, Row, Select, Sheet, TextInput, Toggle } from './ui'
 
 const PART_LABEL: Record<ImportPart, string> = {
@@ -29,6 +31,9 @@ export function ImportSheet(): ReactNode {
   const [asPreset, setAsPreset] = useState(true)
   const [name, setName] = useState(origin)
   const [vibeModel, setVibeModel] = useState('nai-diffusion-4-5-full')
+  // 지금 화면의 프롬프트 중 프리셋에 없는 것 (가변은 프리셋에 저장하지 않는다)
+  const unsaved = usePrompt((s) => hasUnsavedPrompt(s))
+  const additional = usePrompt((s) => s.additional.trim() !== '')
   if (!data) return null
 
   const parts = availableParts(data)
@@ -89,8 +94,10 @@ export function ImportSheet(): ReactNode {
             className="flex-1"
             disabled={checked.size === 0}
             onClick={() => {
-              applyImport(data, checked, asPreset ? name : null, vibeModel)
+              const { undoable } = applyImport(data, checked, asPreset ? name : null, vibeModel)
               close()
+              const saved = asPreset ? usePrompt.getState().presets.find((x) => x.id === usePrompt.getState().activePresetId) : null
+              toastPromptReplaced(saved ? `「${saved.name}」 프리셋으로 불러왔습니다` : '설정을 불러왔습니다', undoable)
             }}
           >
             {asPreset ? `${checked.size}개 항목을 새 프리셋으로` : `${checked.size}개 항목 적용`}
@@ -101,6 +108,11 @@ export function ImportSheet(): ReactNode {
       <p className="mb-2 text-xs text-dim">
         불러올 항목만 체크하세요. 체크하지 않은 항목은 지금 설정을 그대로 둡니다.
       </p>
+      {((unsaved && (checked.has('prompt') || checked.has('negative'))) || (additional && checked.has('prompt'))) && (
+        <p className="mb-2 rounded-lg border border-line bg-field px-3 py-2 text-xs text-dim">
+          지금 적어 둔 프롬프트를 바꿉니다 (프리셋에 저장하지 않은 내용 포함). 적용한 뒤 알림의 "되돌리기"로 돌아갈 수 있습니다.
+        </p>
+      )}
       {parts.length === 0 && <p className="py-8 text-center text-sm text-dim">불러올 수 있는 항목이 없습니다</p>}
       <ul className="flex flex-col gap-1.5">
         {parts.map((part) => {
