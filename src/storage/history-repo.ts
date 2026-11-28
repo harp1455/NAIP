@@ -52,6 +52,9 @@ export interface ImageRow {
   extra: string | null
 }
 
+/** ── Phase 5: 분류로 배정한 그림 id를 적어 두는 app_kv 열쇠 앞부분 (noteAssigned) */
+const ASSIGNED_PREFIX = 'project-assigned:'
+
 /** 열로 따로 두는 HistoryMeta 필드. 나머지는 extra JSON으로 보존한다 */
 const COLUMN_FIELDS = new Set([
   'id', 'ts', 'thumb', 'width', 'height', 'seed', 'model', 'kind', 'prompt', 'negative', 'mime',
@@ -333,6 +336,39 @@ export function createHistoryRepo(driver: SqlDriver, files: FileStore) {
         [afterId]
       )
       return (await toMetas(rows)).filter((m) => !!m.project)
+    },
+
+    /**
+     * ── Phase 5: 분류로 프로젝트에 배정하는 그림 id를 적어 둔다 (app_kv, 분류 표시를 쓰기 전에). 프로젝트 기록(localStorage)은
+     * 늦게 디스크에 쓰여, 그 전에 앱이 죽으면 표시만 남는다 — 이 그림들은 id가 오래돼 taggedSince로는 찾지 못한다
+     */
+    async noteAssigned(ids: number[]): Promise<void> {
+      if (!ids.length) return
+      const key = `${ASSIGNED_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+      await driver.exec('INSERT OR REPLACE INTO app_kv (key, value) VALUES (?, ?)', [key, JSON.stringify(ids)])
+    },
+
+    /** 적어 둔 배정 (열쇠마다 그림 id들). 읽을 수 없는 값은 빈 목록으로 */
+    async assignedNotes(): Promise<{ key: string; ids: number[] }[]> {
+      const rows = await driver.query<{ key: string; value: string }>(
+        `SELECT key, value FROM app_kv WHERE key LIKE '${ASSIGNED_PREFIX}%'`
+      )
+      return rows.map((r) => {
+        let ids: number[] = []
+        try {
+          const v = JSON.parse(r.value) as unknown
+          if (Array.isArray(v)) ids = v.map(Number).filter(Number.isFinite)
+        } catch {
+          /* 빈 목록 */
+        }
+        return { key: String(r.key), ids }
+      })
+    },
+
+    async dropAssignedNotes(keys: string[]): Promise<void> {
+      for (const part of chunk(keys)) {
+        await driver.exec(`DELETE FROM app_kv WHERE key IN (${marks(part.length)})`, part)
+      }
     },
 
     /** 보관 한도 정리용: 즐겨찾기와 keep(예: 프로젝트에 든 그림)을 뺀 가장 오래된 n장의 id */

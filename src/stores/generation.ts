@@ -38,7 +38,7 @@ import { snapshotCastPlan, useCharacters } from './characters'
 import { fragmentLibrary, fragmentSourceFrom, type FragmentLibrary } from './fragments'
 import { appendPrompt, useScenes } from './scenes'
 import { primeImageUrl, useHistory } from './history'
-import { newRequestId, queueStore, resumeDrawFor, type ResumeEntry } from './queue-persist'
+import { cancelSavedProject, newRequestId, queueStore, resumeDrawFor, savedBatchCancelled, type ResumeEntry } from './queue-persist'
 import { lowSpaceWarning } from '../storage'
 import { mergePromptParts, usePrompt } from './prompt'
 import { useRefs, vibeKey, type CharRef, type Vibe } from './refs'
@@ -113,7 +113,8 @@ interface GenerationState {
   enqueueBatches: (batches: Batch[]) => Promise<void>
   /**
    * ── Phase 5: 이 프로젝트의 장이 든 배치를 대기열에서 빼고, 지금 도는 배치가 그것이면 그 배치만 멈춘다
-   * (다른 배치는 이어서 돈다). 뺀 장수를 돌려준다
+   * (다른 배치는 이어서 돈다). 지난 실행에서 남아 이어서 할지 아직 고르지 않은 그 프로젝트의 배치도 버린다.
+   * 뺀 장수를 돌려준다
    */
   cancelProject: (projectId: string) => number
 }
@@ -639,11 +640,14 @@ export const useGeneration = create<GenerationState>()((set, get) => {
             if (transient && attempt < MAX_RETRIES) {
               const backoff =
                 (e instanceof NaiHttpError ? e.retryAfterMs : undefined) ?? 3000 * 2 ** attempt
+              // 서버가 알려 준 대기(Retry-After)가 짧아도(0, 지난 시각) 설정한 요청 간격보다 빨리 다시 보내지 않는다
+              const { delayMin, delayMax } = useSettings.getState()
+              const gap = Math.round((delayMin + Math.random() * (delayMax - delayMin)) * 1000)
               set({
                 phase: 'retrying',
                 error: `${(e as Error).message} — 재시도 ${attempt + 1}/${MAX_RETRIES}`
               })
-              await wait(Math.min(backoff, 60000), signal)
+              await wait(Math.max(Math.min(backoff, 60000), gap), signal)
               continue
             }
             set((s) => ({ failed: s.failed + 1, error: (e as Error).message }))
@@ -819,6 +823,9 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         last = 'done'
         continue
       }
+      // 중지(stop)는 그때까지의 대기열을 이미 비웠다 — 남은 배치는 멈춘 배치가 끝나기를 기다리는 사이에 넣은 것이다
+      // (아직 "생성 중"으로 보여 대기열 추가를 눌렀다). 취소하면 "대기열에 추가했습니다"라고 한 배치가 말없이 사라진다
+      if (last === 'stopped' && pendingBatches.length) continue
       if (last !== 'done') break
     }
     controller = null
@@ -889,6 +896,8 @@ export const useGeneration = create<GenerationState>()((set, get) => {
         skipCurrent = true
         controller.abort()
       }
+      // 앱을 열 때 대기로 센 저장된 대기열의 장 — 그대로 두면 다음 실행에서 또 묻고, 이어서 생성하면 지운 프로젝트의 그림을 보낸다
+      n += cancelSavedProject(projectId)
       return n
     },
     // ── Phase 5: 미리 만든 배치 — buildBatch 대신 받은 배치를 그대로 runQueue/대기열에 (간격·중지·대기열 취소는 같다)
@@ -974,8 +983,9 @@ export const useGeneration = create<GenerationState>()((set, get) => {
       if (!token) return set({ error: 'API 토큰을 먼저 설정해 주세요 (설정 탭)' })
       const batches: Batch[] = []
       for (const e of entries) {
-        // 이미 돌거나 대기 중인 배치는 다시 넣지 않는다 (같은 장을 두 번 보내게 된다)
-        if (current?.id === e.batch.id || pendingBatches.some((b) => b.id === e.batch.id)) continue
+        // 이미 돌거나 대기 중인 배치는 다시 넣지 않는다 (같은 장을 두 번 보내게 된다).
+        // 프로젝트를 지우며 취소한 배치도 — 그 전에 읽어 둔 목록으로 눌렀을 수 있다
+        if (current?.id === e.batch.id || pendingBatches.some((b) => b.id === e.batch.id) || savedBatchCancelled(e.batch.id)) continue
         const extra = withUncertain ? e.uncertain.map((u) => u.item) : []
         // 다시 보내지 않기로 한 "확인 필요" 장은 다음에 또 묻지 않게 표시해 둔다
         if (!withUncertain && e.uncertain.length) await queueStore.skip(e.batch.id, e.uncertain.map((u) => u.key))

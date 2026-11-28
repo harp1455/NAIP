@@ -10,8 +10,8 @@
 import type { HistoryMeta, SettingsSnapshot } from '../lib/db'
 import type { CharacterPromptInput, GenerationRequest } from '../nai/types'
 import type { NewAssetImage } from './curation'
-import { useProjects } from './store'
-import type { ProjectImageTag } from './types'
+import { addedInThisRun, useProjects } from './store'
+import type { Project, ProjectImageTag } from './types'
 
 /** 프로젝트 장 하나에 붙는 내용 (순수 JSON) */
 export interface ProjectPlanItem {
@@ -143,9 +143,11 @@ export function projectItemsQueued(items: readonly Carrier[]): void {
 }
 
 /**
- * 프로젝트 기록에서 빠졌을 수 있는 그림을 찾을 시작점 — 프로젝트 기록에 있는 가장 새 그림 id(없으면 가장 먼저 만든
- * 프로젝트의 생성 시각). 프로젝트 기록(localStorage)은 통째로 저장되므로, 저장되기 전에 앱이 죽어 빠진 그림은
- * 저장된 가장 새 그림보다 나중 것이다 (그림 id = 만든 시각). 프로젝트가 없으면 null
+ * 프로젝트 기록에서 빠졌을 수 있는 생성 그림을 찾을 시작점 — 디스크에서 읽은 프로젝트 기록에 있는 가장 새 그림 id
+ * (없으면 가장 먼저 만든 프로젝트의 생성 시각). 프로젝트 기록(localStorage)은 통째로 저장되므로, 저장되기 전에 앱이 죽어
+ * 빠진 생성 그림은 저장된 가장 새 그림보다 나중 것이다 (그림 id = 만든 시각). 이번 실행에 넣은 그림은 세지 않는다 —
+ * 늦게 돈 찾기 전에 들어온 새 그림이 지난 실행에 빠진 그림을 가린다. 분류로 넣은 그림(id가 오래됐다)은 따로 적어 두고
+ * 찾는다 (storage/history-repo.ts noteAssigned). 프로젝트가 없으면 null
  */
 export function adoptCutoff(): number | null {
   const { projects } = useProjects.getState()
@@ -154,25 +156,39 @@ export function adoptCutoff(): number | null {
   let oldestProject = Infinity
   for (const p of projects) {
     oldestProject = Math.min(oldestProject, p.createdAt)
-    for (const it of Object.values(p.items)) for (const img of it.images) newest = Math.max(newest, img.id)
+    for (const it of Object.values(p.items)) {
+      for (const img of it.images) if (!addedInThisRun(img.id)) newest = Math.max(newest, img.id)
+    }
   }
   return Math.max(newest, Number.isFinite(oldestProject) ? oldestProject - 1 : 0)
 }
 
 /**
  * 히스토리에 분류 표시와 함께 들어갔는데 프로젝트에는 아직 없는 그림을 넣는다 (같은 id는 그대로).
- * 앱이 히스토리에 저장한 직후 죽어 프로젝트 기록이 빠진 경우 — 대기열을 다시 열 때(loadResume) 부른다
+ * 앱이 히스토리에 저장한 직후 죽어 프로젝트 기록이 빠진 경우 — 대기열을 다시 열 때(loadResume) 부른다. 넣은 그림 id를 돌려준다
  */
-export function adoptTaggedImages(metas: readonly HistoryMeta[]): number {
-  let added = 0
+export function adoptTaggedImages(metas: readonly HistoryMeta[]): number[] {
+  const added: number[] = []
   const s = useProjects.getState()
+  // 프로젝트마다 이미 든 그림 (모든 칸) — 조합 키가 옮겨져(carryItemKeys) 다른 칸에 든 그림을 분류 표시의 옛 키로
+  // 다시 넣으면 같은 그림이 두 칸에 든다
+  const known = new Map<string, Set<number>>()
+  const imagesIn = (p: Project): Set<number> => {
+    let ids = known.get(p.id)
+    if (!ids) {
+      ids = new Set(Object.values(p.items).flatMap((i) => i.images.map((img) => img.id)))
+      known.set(p.id, ids)
+    }
+    return ids
+  }
   for (const m of metas) {
     const tag = m.project
     if (!tag) continue
     const project = s.projects.find((p) => p.id === tag.projectId)
-    if (!project || project.items[tag.key]?.images.some((i) => i.id === m.id)) continue
+    if (!project || imagesIn(project).has(m.id)) continue
     s.addImage(tag.projectId, tag.key, { id: m.id, ts: m.ts, seed: m.seed, width: m.width, height: m.height, mime: m.mime }, { fromQueue: false })
-    added++
+    imagesIn(project).add(m.id)
+    added.push(m.id)
   }
   return added
 }
