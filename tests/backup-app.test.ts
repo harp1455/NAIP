@@ -41,10 +41,11 @@ import {
 import { applyRestorePlan, collectStoreData, normalizeBackupData, normalizeCharactersSection } from '../src/backup/stores'
 import { fromUtf8, utf8 } from '../src/backup/bytes'
 import { sha256Hex } from '../src/backup/hash'
-import type { HistoryMeta } from '../src/lib/db'
+import { openIdb, type HistoryMeta } from '../src/lib/db'
 import { useProjects } from '../src/project/store'
 import { memoryFileStore } from '../src/storage/files'
 import { createHistoryRepo } from '../src/storage/history-repo'
+import { idbLegacySource, migrateLegacy } from '../src/storage/legacy'
 import { migrate } from '../src/storage/schema'
 import { createSqlJsDriver } from '../src/storage/sqljs'
 import { useCharacters } from '../src/stores/characters'
@@ -255,6 +256,59 @@ describe('history ports on the Phase 3 storage', () => {
     // 원본이 없는 기록은 원본 없이 (썸네일은 백업 것)
     expect((await dst.repo.row(H + 2))!.file).toBeNull()
     expect(dst.files.files.has(`thumbs/${H + 2}.jpg`)).toBe(true)
+  })
+
+  /** 예전 IndexedDB 히스토리(옮기기가 끝나기 전)에 기록과 원본을 넣는다 */
+  async function seedOldHistory(metas: HistoryMeta[]): Promise<void> {
+    const db = await openIdb()
+    const tx = db.transaction(['meta', 'blobs', 'text'], 'readwrite')
+    for (const m of metas) {
+      tx.objectStore('meta').put(m)
+      tx.objectStore('blobs').put(png(200, m.id % 7).buffer, m.id)
+      tx.objectStore('text').put(m.prompt, m.id)
+    }
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+  }
+
+  it('forgets images a replace restore removed from the unfinished old history too, so the next move does not bring them back', async () => {
+    const bytes = await fullBackup(await seeded())
+    const dst = await fresh()
+    // 예전 히스토리 옮기기를 "나중에"로 미룬 상태: H+98·H+99 는 옮겨졌고, H+97 은 아직 옮기지 않았다
+    await seedOldHistory([meta(H + 97), meta(H + 98), meta(H + 99)])
+    try {
+      await dst.repo.add(meta(H + 98), new Blob([png(200, (H + 98) % 7) as BlobPart]))
+      await dst.repo.add(meta(H + 99), new Blob([png(200, (H + 99) % 7) as BlobPart]))
+      const r = await restoreHistorySafely(await openNaipBackup(bytesSource(bytes)), historyImportPort(dst), { mode: 'replace', originals: true })
+      expect(r).toMatchObject({ added: 5, failed: 0, removed: 2, removedIds: [H + 98, H + 99] })
+      // 바꾸기로 지운 장만 예전 저장소에서도 지운다 — 아직 옮기지 않은 H+97 은 확인 없이 지우지 않는다
+      expect(await idbLegacySource().ids()).toEqual([H + 97])
+      // 다음 실행의 옮기기는 지운 그림을 되살리지 않고, 남은 장만 옮긴다
+      const moved = await migrateLegacy({ storage: dst, source: idbLegacySource(), freeSpace: async () => 1e12 })
+      expect(moved).toMatchObject({ status: 'done', count: 1 })
+      expect(await dst.repo.get(H + 98)).toBeNull()
+      expect(await dst.repo.get(H + 99)).toBeNull()
+      expect(await dst.repo.get(H + 97)).not.toBeNull()
+      expect(await dst.repo.count({})).toBe(6)
+    } finally {
+      await idbLegacySource().clear()
+    }
+  })
+
+  it('a plain replace restore (port.clear) forgets only the moved images in the old history too', async () => {
+    const bytes = await fullBackup(await seeded())
+    const dst = await fresh()
+    await seedOldHistory([meta(H + 97), meta(H + 99)])
+    try {
+      await dst.repo.add(meta(H + 99), new Blob([png(200, (H + 99) % 7) as BlobPart]))
+      const r = await restoreHistory(await openNaipBackup(bytesSource(bytes)), historyImportPort(dst), { mode: 'replace', originals: true })
+      expect(r).toMatchObject({ added: 5, failed: 0 })
+      expect(await idbLegacySource().ids()).toEqual([H + 97])
+    } finally {
+      await idbLegacySource().clear()
+    }
   })
 
   it('rejects malformed records without stopping the rest', async () => {
