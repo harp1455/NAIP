@@ -14,6 +14,9 @@ import type { Storage } from './index'
  * - 시작 전에 남은 공간을 확인하고, 옮기는 중에도 공간이 떨어지면 멈춘다 (옛 데이터는 그대로).
  * - 한 장이 실패해도 그 묶음에서 다 옮긴 장의 행은 남긴다 (행 없는 원본 파일이 생기지 않게).
  * - 읽히지 않는 장은 건너뛰고 나머지를 옮긴다. 그런 장이 있으면 실패로 알리고 옛 데이터는 비우지 않는다.
+ *   읽히는 장을 모두 옮기고 검증까지 맞았는데 읽히지 않는 장만 남았으면 그 id를 알린다(unreadable).
+ *   사용자가 그 장을 두고 가기로 확인한 뒤에만(skipUnreadable) 읽히는 장을 정상 경로와 똑같이 다시 검증하고 비운다.
+ *   확인한 적 없는 장이 읽히지 않거나 검증이 틀리면 비우지 않는다.
  * - 옮긴 뒤 지운 장은 forgetLegacy로 옛 데이터에서도 지운다 (다음 옮기기에서 되살아나지 않게).
  */
 export interface LegacySource {
@@ -67,9 +70,27 @@ export interface MigrationProgress {
 
 export type MigrationResult =
   | { status: 'none' }
-  | { status: 'done'; count: number; bytes: number; missing: number }
+  | {
+      status: 'done'
+      /** 옮기고 검증한 장수 */
+      count: number
+      bytes: number
+      missing: number
+      /** 사용자가 확인하고 두고 간, 읽을 수 없던 장수 */
+      skipped?: number
+    }
   | { status: 'nospace'; need: number; free: number; done: number; total: number }
-  | { status: 'failed'; error: string; done: number; total: number }
+  | {
+      status: 'failed'
+      error: string
+      done: number
+      total: number
+      /**
+       * 실패 이유가 "읽을 수 없는 장"뿐일 때 그 id (오름차순) — 읽히는 장은 모두 옮겼고 검증도 맞았다.
+       * 이때만 사용자에게 그 장을 두고 마칠지 묻는다 (migrateLegacy 의 skipUnreadable)
+       */
+      unreadable?: number[]
+    }
 
 /** 옮길 때 남겨 둘 여유 공간 */
 const MARGIN = 64 * 1024 * 1024
@@ -83,6 +104,11 @@ export async function migrateLegacy(opts: {
   source: LegacySource
   freeSpace: () => Promise<number | null>
   onProgress?: (p: MigrationProgress) => void
+  /**
+   * 사용자가 두고 가기로 확인한, 읽을 수 없는 장 (지난 실패의 unreadable). 이번에도 읽히지 않는 장이 모두 여기 있을 때만
+   * 그 장을 빼고 검증한 뒤 옛 데이터를 비운다. 그 사이 읽히게 된 장은 그대로 옮긴다
+   */
+  skipUnreadable?: readonly number[]
 }): Promise<MigrationResult> {
   const { driver, files } = opts.storage
   const { source } = opts
@@ -208,22 +234,15 @@ export async function migrateLegacy(opts: {
   } catch (e) {
     return { status: 'failed', error: (e as Error).message, done: doneCount, total }
   }
-  if (unreadable.length) {
-    // 읽히는 장은 모두 옮겼다. 읽히지 않는 장이 있으니 옛 데이터는 그대로 두고, 다시 시도하면 그 장만 다시 읽는다
-    const shown = unreadable.slice(0, 5).join(', ') + (unreadable.length > 5 ? ' …' : '')
-    return {
-      status: 'failed',
-      error: `${unreadable.length}장의 원본을 읽지 못했습니다 (id ${shown}): ${unreadableError}`,
-      done: doneCount,
-      total
-    }
-  }
+  unreadable.sort((a, b) => a - b)
+  const skip = new Set(unreadable)
 
-  // ── 검증: 옛 장수만큼 행이 있고, 원본이 있는 장은 파일 크기가 기록과 같아야 한다
+  // ── 검증: 옛 장수만큼 행이 있고, 원본이 있는 장은 파일 크기가 기록과 같아야 한다.
+  // 읽을 수 없는 장이 있으면 그 장만 빼고 같은 검증을 한다 — 남은 문제가 그것뿐인지 알아야 두고 갈지 물을 수 있다
   report('verify')
   let verified = 0
   const problems: string[] = []
-  for (const part of chunk(ids)) {
+  for (const part of chunk(ids.filter((id) => !skip.has(id)))) {
     const rows = await driver.query<{ id: number; file: string | null; bytes: number }>(
       `SELECT id, file, bytes FROM images WHERE id IN (${marks(part.length)})`,
       part
@@ -236,18 +255,34 @@ export async function migrateLegacy(opts: {
     })
     verified += rows.length
   }
-  if (problems.length || verified !== total) {
+  if (problems.length || verified !== total - unreadable.length) {
     return { status: 'failed', error: `검증 실패 — ${problems.slice(0, 3).join(', ')}`, done: verified, total }
   }
+  if (unreadable.length) {
+    const confirmed = new Set(opts.skipUnreadable ?? [])
+    if (!unreadable.every((id) => confirmed.has(id))) {
+      // 읽히는 장은 모두 옮기고 검증했다. 읽히지 않는 장이 있으니 옛 데이터는 그대로 두고, 다시 시도하면 그 장만 다시 읽는다
+      const shown = unreadable.slice(0, 5).join(', ') + (unreadable.length > 5 ? ' …' : '')
+      return {
+        status: 'failed',
+        error: `${unreadable.length}장의 원본을 읽지 못했습니다 (id ${shown}): ${unreadableError}`,
+        done: doneCount,
+        total,
+        unreadable
+      }
+    }
+  }
 
-  // ── 다 맞으면 기록을 남기고 나서 옛 데이터를 비운다 (kv는 그대로)
+  // ── 다 맞으면 기록을 남기고 나서 옛 데이터를 비운다 (kv는 그대로).
+  // 읽을 수 없는 장이 남았다면 여기까지 오는 것은 사용자가 그 장을 두고 가기로 확인한 때뿐이다
   report('clean')
+  const skipped = unreadable.length
   await driver.exec('INSERT OR REPLACE INTO app_kv (key, value) VALUES (?, ?)', [
     MIGRATION_KEY,
-    JSON.stringify({ count: total, bytes, missing, at: Date.now() })
+    JSON.stringify({ count: verified, bytes, missing, ...(skipped ? { skipped } : {}), at: Date.now() })
   ])
   await source.clear()
-  return { status: 'done', count: total, bytes, missing }
+  return { status: 'done', count: verified, bytes, missing, ...(skipped ? { skipped } : {}) }
 }
 
 /** 아직 옮기지 않은 예전 히스토리가 남아 있는지 (읽을 수 없으면 false) */
